@@ -126,26 +126,16 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   };
 
   const downloadPhoto = async (photo: Photo) => {
-    try {
-      // Create a link element with download attribute
-      const link = document.createElement('a');
-      link.href = photo.url;
-      link.download = photo.fileName || `photo-${new Date().getTime()}.jpg`;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      
-      // For Firebase Storage URLs, we need to trigger the download differently
-      // First try the standard approach
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // If that doesn't work due to CORS, the browser will open it in a new tab
-      // which allows the user to save it manually
-    } catch (error) {
-      console.error('Download failed:', error);
-      // Fallback to opening in new tab
-      window.open(photo.url + '&download=true', '_blank');
+    console.log('Opening image for download:', photo.fileName);
+    
+    // Due to Firebase Storage CORS limitations during development,
+    // we open the image in a new tab where users can right-click to save
+    const newWindow = window.open(photo.url, '_blank');
+    if (newWindow) {
+      newWindow.focus();
+      console.log('Image opened in new tab. Right-click on the image and select "Save image as..." to download');
+    } else {
+      console.error('Failed to open new tab. Please check your popup blocker settings.');
     }
   };
 

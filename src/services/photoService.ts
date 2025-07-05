@@ -127,32 +127,22 @@ export const downloadAllPhotos = async (
     throw new Error('No photos to download');
   }
 
+  console.log(`Opening ${photos.length} photos in new tabs for download...`);
+  console.log('Due to Firebase Storage CORS limitations, photos will open in new tabs.');
+  console.log('Right-click on each image and select "Save image as..." to download.');
+
+  // Open all photos in new tabs with a slight delay between each
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
-    try {
-      // Create a temporary link to download each photo
-      const response = await fetch(photo.url);
-      const blob = await response.blob();
-      
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = photo.fileName || `wedding-photo-${i + 1}.jpg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Clean up the object URL
-      URL.revokeObjectURL(link.href);
+    
+    setTimeout(() => {
+      console.log(`Opening photo ${i + 1}/${photos.length}:`, photo.fileName);
+      window.open(photo.url, '_blank');
       
       // Report progress
       onProgress?.(i + 1, photos.length);
-      
-      // Add a small delay between downloads to avoid overwhelming the browser
-      if (i < photos.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-    } catch (error) {
-      console.error(`Failed to download photo ${photo.fileName}:`, error);
-    }
+    }, i * 300); // 300ms delay between each tab opening
   }
+
+  console.log('All photos will be opened in new tabs. Right-click each image to save.');
 };
