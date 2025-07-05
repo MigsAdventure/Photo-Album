@@ -8,11 +8,9 @@ import {
   Alert,
   Card,
   CardContent,
-  IconButton,
   List,
   ListItem,
   ListItemText,
-  ListItemSecondaryAction,
   useTheme,
   alpha
 } from '@mui/material';
@@ -159,28 +157,54 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           Drag and drop photos here, or click to select from your device
         </Typography>
 
+        {/* Hidden file inputs for different scenarios */}
         <input
-          id="photo-upload-input"
+          id="photo-gallery-input"
           type="file"
           multiple
+          accept="image/*"
+          onChange={handleFileInputChange}
+          style={{ display: 'none' }}
+        />
+        
+        <input
+          id="photo-camera-input"
+          type="file"
           accept="image/*"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
           capture="environment"
         />
 
-        <Button
-          variant="contained"
-          size="large"
-          startIcon={<Add />}
-          sx={{ px: 4, py: 1.5 }}
-          onClick={(e) => {
-            e.stopPropagation();
-            handleButtonClick();
-          }}
-        >
-          Choose Photos
-        </Button>
+        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, justifyContent: 'center' }}>
+          <Button
+            variant="contained"
+            size="large"
+            startIcon={<PhotoCamera />}
+            sx={{ px: 4, py: 1.5 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              const cameraInput = document.getElementById('photo-camera-input') as HTMLInputElement;
+              cameraInput?.click();
+            }}
+          >
+            Take Photo
+          </Button>
+          
+          <Button
+            variant="outlined"
+            size="large"
+            startIcon={<Add />}
+            sx={{ px: 4, py: 1.5 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              const galleryInput = document.getElementById('photo-gallery-input') as HTMLInputElement;
+              galleryInput?.click();
+            }}
+          >
+            Choose from Gallery
+          </Button>
+        </Box>
 
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
           Supports: JPG, PNG, HEIC and other image formats

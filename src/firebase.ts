@@ -2,15 +2,15 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
-// Firebase configuration - Real config from your Firebase project
+// Firebase configuration from environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyAyNVqZHZaRXvwGKIi--h1UAuiOAW9lrJ4",
-  authDomain: "wedding-photo-240c9.firebaseapp.com",
-  projectId: "wedding-photo-240c9",
-  storageBucket: "wedding-photo-240c9.firebasestorage.app",
-  messagingSenderId: "767610841427",
-  appId: "1:767610841427:web:e78675ba1d30c4fe4e19a6",
-  measurementId: "G-HRXH4LVZBS"
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID,
+  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
 };
 
 // Initialize Firebase

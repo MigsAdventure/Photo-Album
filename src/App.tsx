@@ -17,8 +17,7 @@ import {
   ListItemIcon,
   ListItemText,
   Card,
-  CardContent,
-  Fab
+  CardContent
 } from '@mui/material';
 import {
   PhotoCamera,
@@ -29,11 +28,11 @@ import {
   Home,
   Visibility
 } from '@mui/icons-material';
-import PhotoUpload from './components/PhotoUpload';
 import PhotoGallery from './components/PhotoGallery';
 import QRCodeDisplay from './components/QRCodeDisplay';
-import { createWedding, getWedding } from './services/photoService';
-import { Wedding } from './types';
+import BottomNavbar from './components/BottomNavbar';
+import { createWedding, getWedding, subscribeToPhotos } from './services/photoService';
+import { Wedding, Photo } from './types';
 
 // Create a wedding-themed Material UI theme
 const theme = createTheme({
@@ -210,6 +209,7 @@ const AdminDashboard: React.FC = () => {
 const GuestView: React.FC = () => {
   const { weddingId } = useParams<{ weddingId: string }>();
   const [wedding, setWedding] = useState<Wedding | null>(null);
+  const [photos, setPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -238,6 +238,21 @@ const GuestView: React.FC = () => {
 
     loadWedding();
   }, [weddingId]);
+
+  // Subscribe to photos for the bottom navbar
+  useEffect(() => {
+    if (!weddingId) return;
+
+    const unsubscribe = subscribeToPhotos(weddingId, (newPhotos) => {
+      setPhotos(newPhotos);
+    });
+
+    return () => unsubscribe();
+  }, [weddingId]);
+
+  const handleUploadComplete = () => {
+    // Photos will automatically update via subscription
+  };
 
   if (loading) {
     return (
@@ -298,12 +313,16 @@ const GuestView: React.FC = () => {
         </Container>
       </Box>
 
-      <Container maxWidth="lg" sx={{ py: 4 }}>
-        <PhotoUpload weddingId={weddingId} />
-        <Box sx={{ mt: 4 }}>
-          <PhotoGallery weddingId={weddingId} />
-        </Box>
+      <Container maxWidth="lg" sx={{ py: 4, pb: 12 }}>
+        <PhotoGallery weddingId={weddingId} />
       </Container>
+
+      {/* Bottom Navigation */}
+      <BottomNavbar 
+        photos={photos} 
+        weddingId={weddingId} 
+        onUploadComplete={handleUploadComplete} 
+      />
     </Box>
   );
 };

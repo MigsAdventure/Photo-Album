@@ -249,6 +249,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ weddingId }) => {
                 alt={selectedPhoto.fileName || 'Wedding photo'}
                 sx={{
                   width: '100%',
+                  maxWidth: '100%',
                   height: 'auto',
                   display: 'block',
                   maxHeight: isMobile ? '80vh' : '70vh',
