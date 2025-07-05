@@ -15,16 +15,16 @@ import {
   UploadTaskSnapshot 
 } from 'firebase/storage';
 import { db, storage } from '../firebase';
-import { Photo, Wedding } from '../types';
+import { Photo, Event } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 export const uploadPhoto = async (
   file: File, 
-  weddingId: string,
+  eventId: string,
   onProgress?: (progress: number) => void
 ): Promise<string> => {
   const photoId = uuidv4();
-  const storageRef = ref(storage, `weddings/${weddingId}/photos/${photoId}`);
+  const storageRef = ref(storage, `events/${eventId}/photos/${photoId}`);
   
   const uploadTask = uploadBytesResumable(storageRef, file);
   
@@ -48,7 +48,7 @@ export const uploadPhoto = async (
             id: photoId,
             url: downloadURL,
             uploadedAt: new Date(),
-            weddingId,
+            eventId,
             fileName: file.name,
             size: file.size
           });
@@ -63,12 +63,12 @@ export const uploadPhoto = async (
 };
 
 export const subscribeToPhotos = (
-  weddingId: string,
+  eventId: string,
   callback: (photos: Photo[]) => void
 ) => {
   const q = query(
     collection(db, 'photos'),
-    where('weddingId', '==', weddingId),
+    where('eventId', '==', eventId),
     orderBy('uploadedAt', 'desc')
   );
   
@@ -80,7 +80,7 @@ export const subscribeToPhotos = (
         id: doc.id,
         url: data.url,
         uploadedAt: data.uploadedAt.toDate(),
-        weddingId: data.weddingId,
+        eventId: data.eventId,
         fileName: data.fileName,
         size: data.size
       });
@@ -89,8 +89,8 @@ export const subscribeToPhotos = (
   });
 };
 
-export const createWedding = async (title: string, date: string): Promise<string> => {
-  const docRef = await addDoc(collection(db, 'weddings'), {
+export const createEvent = async (title: string, date: string): Promise<string> => {
+  const docRef = await addDoc(collection(db, 'events'), {
     title,
     date,
     createdAt: new Date(),
@@ -99,8 +99,8 @@ export const createWedding = async (title: string, date: string): Promise<string
   return docRef.id;
 };
 
-export const getWedding = async (weddingId: string): Promise<Wedding | null> => {
-  const docRef = doc(db, 'weddings', weddingId);
+export const getEvent = async (eventId: string): Promise<Event | null> => {
+  const docRef = doc(db, 'events', eventId);
   const docSnap = await getDoc(docRef);
   
   if (docSnap.exists()) {

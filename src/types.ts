@@ -2,12 +2,12 @@ export interface Photo {
   id: string;
   url: string;
   uploadedAt: Date;
-  weddingId: string;
+  eventId: string;
   fileName?: string;
   size?: number;
 }
 
-export interface Wedding {
+export interface Event {
   id: string;
   title: string;
   date: string;

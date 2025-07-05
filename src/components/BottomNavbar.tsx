@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -11,30 +11,42 @@ import {
   Typography,
   LinearProgress,
   useTheme,
-  alpha
+  alpha,
+  useMediaQuery
 } from '@mui/material';
 import {
   PhotoCamera,
   PhotoLibrary,
   FileDownload,
-  Warning
+  Warning,
+  QrCode,
+  Close,
+  Download,
+  ContentCopy
 } from '@mui/icons-material';
 import { downloadAllPhotos, uploadPhoto } from '../services/photoService';
 import { Photo, UploadProgress } from '../types';
+import QRCode from 'qrcode';
 
 interface BottomNavbarProps {
   photos: Photo[];
-  weddingId: string;
+  eventId: string;
   onUploadComplete?: () => void;
 }
 
-const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUploadComplete }) => {
+const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadComplete }) => {
   const [showDownloadDialog, setShowDownloadDialog] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  const [showQRDialog, setShowQRDialog] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const qrCanvasRef = useRef<HTMLCanvasElement>(null);
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+
+  const eventUrl = `${window.location.origin}/event/${eventId}`;
 
   const handleFileSelect = async (files: FileList) => {
     const imageFiles = Array.from(files).filter(file => 
@@ -57,7 +69,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUpload
     // Upload files concurrently
     const uploadPromises = imageFiles.map(async (file, index) => {
       try {
-        await uploadPhoto(file, weddingId, (progress) => {
+        await uploadPhoto(file, eventId, (progress) => {
           setUploadProgress(prev => 
             prev.map((item, i) => 
               i === index ? { ...item, progress } : item
@@ -134,6 +146,50 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUpload
     const files = e.target.files;
     if (files) {
       handleFileSelect(files);
+    }
+  };
+
+  // QR Code functionality
+  useEffect(() => {
+    if (showQRDialog && qrCanvasRef.current) {
+      QRCode.toCanvas(qrCanvasRef.current, eventUrl, {
+        width: isMobile ? 200 : 300,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#FFFFFF',
+        },
+      }, (error: Error | null | undefined) => {
+        if (error) console.error('QR code generation error:', error);
+      });
+    }
+  }, [showQRDialog, eventUrl, isMobile]);
+
+  const downloadQR = () => {
+    if (qrCanvasRef.current) {
+      const link = document.createElement('a');
+      link.download = `event-qr-code.png`;
+      link.href = qrCanvasRef.current.toDataURL();
+      link.click();
+    }
+  };
+
+  const copyQRLink = async () => {
+    try {
+      await navigator.clipboard.writeText(eventUrl);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 3000);
+    } catch (error) {
+      console.error('Failed to copy link:', error);
+      // Fallback for browsers that don't support clipboard API
+      const textArea = document.createElement('textarea');
+      textArea.value = eventUrl;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 3000);
     }
   };
 
@@ -226,6 +282,28 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUpload
             </Typography>
           </Box>
 
+          {/* QR Code Button */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <IconButton
+              onClick={() => setShowQRDialog(true)}
+              sx={{
+                bgcolor: alpha(theme.palette.info.main, 0.1),
+                color: theme.palette.info.main,
+                width: 48,
+                height: 48,
+                mb: 0.5,
+                '&:hover': {
+                  bgcolor: alpha(theme.palette.info.main, 0.2),
+                }
+              }}
+            >
+              <QrCode />
+            </IconButton>
+            <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>
+              QR Code
+            </Typography>
+          </Box>
+
           {/* Download All Button */}
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <IconButton
@@ -251,7 +329,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUpload
                 color: photos.length > 0 ? 'text.secondary' : 'text.disabled' 
               }}
             >
-              Download Photos
+              Download All
             </Typography>
           </Box>
         </Box>
@@ -331,6 +409,117 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, weddingId, onUpload
             </Box>
           ))}
         </DialogContent>
+      </Dialog>
+
+      {/* QR Code Full Screen Dialog */}
+      <Dialog 
+        open={showQRDialog} 
+        onClose={() => setShowQRDialog(false)}
+        fullScreen={isMobile}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            bgcolor: 'background.paper',
+            backgroundImage: 'none'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          display: 'flex', 
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          borderBottom: `1px solid ${theme.palette.divider}`
+        }}>
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <QrCode sx={{ mr: 1, color: 'primary.main' }} />
+            <Typography variant="h6">Event QR Code</Typography>
+          </Box>
+          <IconButton onClick={() => setShowQRDialog(false)}>
+            <Close />
+          </IconButton>
+        </DialogTitle>
+        
+        <DialogContent sx={{ textAlign: 'center', py: 4 }}>
+          <Typography variant="h6" gutterBottom color="primary">
+            Share Your Event Gallery
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 4 }}>
+            Guests can scan this QR code or click the link to access the gallery
+          </Typography>
+          
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            mb: 3,
+            p: 2,
+            bgcolor: 'white',
+            borderRadius: 2,
+            border: `1px solid ${theme.palette.divider}`,
+            boxShadow: theme.shadows[2]
+          }}>
+            <canvas 
+              ref={qrCanvasRef}
+              style={{ 
+                maxWidth: '100%',
+                height: 'auto'
+              }} 
+            />
+          </Box>
+
+          <Typography 
+            variant="body2" 
+            color="primary"
+            sx={{ 
+              wordBreak: 'break-all',
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              p: 2,
+              borderRadius: 1,
+              fontFamily: 'monospace',
+              cursor: 'pointer',
+              textDecoration: 'underline',
+              mb: 3,
+              '&:hover': {
+                bgcolor: alpha(theme.palette.primary.main, 0.2),
+              }
+            }}
+            onClick={() => window.open(eventUrl, '_blank')}
+          >
+            {eventUrl}
+          </Typography>
+
+          {copySuccess && (
+            <Typography variant="body2" color="success.main" sx={{ mb: 2 }}>
+              ✅ Link copied to clipboard!
+            </Typography>
+          )}
+        </DialogContent>
+
+        <DialogActions sx={{ p: 3, justifyContent: 'center', gap: 2 }}>
+          <Button 
+            onClick={downloadQR} 
+            variant="outlined"
+            startIcon={<Download />}
+            sx={{ minWidth: 130 }}
+          >
+            Download QR
+          </Button>
+          <Button 
+            onClick={copyQRLink} 
+            variant="outlined"
+            startIcon={<ContentCopy />}
+            sx={{ minWidth: 130 }}
+          >
+            Copy Link
+          </Button>
+          <Button 
+            onClick={() => window.open(eventUrl, '_blank')} 
+            variant="contained"
+            sx={{ minWidth: 130 }}
+          >
+            Visit Gallery
+          </Button>
+        </DialogActions>
       </Dialog>
     </>
   );

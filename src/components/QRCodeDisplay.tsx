@@ -15,25 +15,26 @@ import {
   QrCode,
   Download,
   ContentCopy,
-  CheckCircle
+  CheckCircle,
+  Launch
 } from '@mui/icons-material';
 import QRCode from 'qrcode';
 
 interface QRCodeDisplayProps {
-  weddingId: string;
+  eventId: string;
   title: string;
 }
 
-const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
+const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ eventId, title }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const theme = useTheme();
   
-  const weddingUrl = `${window.location.origin}/wedding/${weddingId}`;
+  const eventUrl = `${window.location.origin}/event/${eventId}`;
 
   useEffect(() => {
     if (canvasRef.current) {
-      QRCode.toCanvas(canvasRef.current, weddingUrl, {
+      QRCode.toCanvas(canvasRef.current, eventUrl, {
         width: 256,
         margin: 2,
         color: {
@@ -44,7 +45,7 @@ const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
         if (error) console.error('QR code generation error:', error);
       });
     }
-  }, [weddingUrl]);
+  }, [eventUrl]);
 
   const downloadQR = () => {
     if (canvasRef.current) {
@@ -57,13 +58,13 @@ const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(weddingUrl);
+      await navigator.clipboard.writeText(eventUrl);
       setCopySuccess(true);
     } catch (error) {
       console.error('Failed to copy link:', error);
       // Fallback for browsers that don't support clipboard API
       const textArea = document.createElement('textarea');
-      textArea.value = weddingUrl;
+      textArea.value = eventUrl;
       document.body.appendChild(textArea);
       textArea.select();
       document.execCommand('copy');
@@ -83,7 +84,7 @@ const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
           <Box sx={{ mb: 3 }}>
             <QrCode sx={{ fontSize: 40, color: 'primary.main', mb: 1 }} />
             <Typography variant="h5" gutterBottom color="primary">
-              Share Your Wedding Gallery
+              Share Your Event Gallery
             </Typography>
             <Typography variant="body1" color="text.secondary">
               Guests can scan this QR code to upload and view photos
@@ -112,23 +113,37 @@ const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
             </Typography>
             <Typography 
               variant="body2" 
-              color="text.secondary"
+              color="primary"
               sx={{ 
                 wordBreak: 'break-all',
                 bgcolor: 'grey.50',
                 p: 1,
                 borderRadius: 1,
-                fontFamily: 'monospace'
+                fontFamily: 'monospace',
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                '&:hover': {
+                  bgcolor: alpha(theme.palette.primary.main, 0.1),
+                }
               }}
+              onClick={() => window.open(eventUrl, '_blank')}
             >
-              {weddingUrl}
+              {eventUrl}
             </Typography>
           </Paper>
 
-          <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', mb: 3 }}>
+          <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap', mb: 3 }}>
+            <Button 
+              onClick={() => window.open(eventUrl, '_blank')} 
+              variant="contained"
+              startIcon={<Launch />}
+              sx={{ px: 3 }}
+            >
+              Visit Gallery
+            </Button>
             <Button 
               onClick={downloadQR} 
-              variant="contained"
+              variant="outlined"
               startIcon={<Download />}
               sx={{ px: 3 }}
             >
@@ -170,7 +185,7 @@ const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ weddingId, title }) => {
             </Box>
             <Box component="li">
               <Typography variant="body2">
-                View all wedding photos in real-time
+                View all event photos in real-time
               </Typography>
             </Box>
           </Box>

@@ -26,10 +26,10 @@ import { subscribeToPhotos } from '../services/photoService';
 import { Photo } from '../types';
 
 interface PhotoGalleryProps {
-  weddingId: string;
+  eventId: string;
 }
 
-const PhotoGallery: React.FC<PhotoGalleryProps> = ({ weddingId }) => {
+const PhotoGallery: React.FC<PhotoGalleryProps> = ({ eventId }) => {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
@@ -37,13 +37,13 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ weddingId }) => {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   useEffect(() => {
-    const unsubscribe = subscribeToPhotos(weddingId, (newPhotos) => {
+    const unsubscribe = subscribeToPhotos(eventId, (newPhotos) => {
       setPhotos(newPhotos);
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [weddingId]);
+  }, [eventId]);
 
   const openModal = (photo: Photo) => {
     setSelectedPhoto(photo);
@@ -133,7 +133,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ weddingId }) => {
         <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
           <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
           <Typography variant="h4" color="primary" sx={{ flexGrow: 1 }}>
-            Wedding Gallery
+            Event Gallery
           </Typography>
           <Chip 
             label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}

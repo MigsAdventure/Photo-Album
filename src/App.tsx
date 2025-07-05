@@ -28,13 +28,13 @@ import {
   Home,
   Visibility
 } from '@mui/icons-material';
-import PhotoGallery from './components/PhotoGallery';
+import EnhancedPhotoGallery from './components/EnhancedPhotoGallery';
 import QRCodeDisplay from './components/QRCodeDisplay';
 import BottomNavbar from './components/BottomNavbar';
-import { createWedding, getWedding, subscribeToPhotos } from './services/photoService';
-import { Wedding, Photo } from './types';
+import { createEvent, getEvent, subscribeToPhotos } from './services/photoService';
+import { Event, Photo } from './types';
 
-// Create a wedding-themed Material UI theme
+// Create a celebration-themed Material UI theme
 const theme = createTheme({
   palette: {
     primary: {
@@ -67,53 +67,53 @@ const theme = createTheme({
   },
 });
 
-// Admin Dashboard - Create new wedding
+// Admin Dashboard - Create new event
 const AdminDashboard: React.FC = () => {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState('');
   const [loading, setLoading] = useState(false);
-  const [wedding, setWedding] = useState<Wedding | null>(null);
+  const [event, setEvent] = useState<Event | null>(null);
   const navigate = useNavigate();
 
-  const handleCreateWedding = async (e: React.FormEvent) => {
+  const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title || !date) return;
 
     setLoading(true);
     try {
-      const weddingId = await createWedding(title, date);
-      const newWedding: Wedding = {
-        id: weddingId,
+      const eventId = await createEvent(title, date);
+      const newEvent: Event = {
+        id: eventId,
         title,
         date,
         createdAt: new Date(),
         isActive: true
       };
-      setWedding(newWedding);
+      setEvent(newEvent);
     } catch (error) {
-      console.error('Failed to create wedding:', error);
-      alert('Failed to create wedding. Please try again.');
+      console.error('Failed to create event:', error);
+      alert('Failed to create event. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   const goToGuestView = () => {
-    if (wedding) {
-      navigate(`/wedding/${wedding.id}`);
+    if (event) {
+      navigate(`/event/${event.id}`);
     }
   };
 
-  if (wedding) {
+  if (event) {
     return (
       <Container maxWidth="md" sx={{ py: 4 }}>
         <Box textAlign="center" mb={4}>
           <Typography variant="h1" gutterBottom color="primary">
-            Wedding Created Successfully! 🎉
+            Event Created Successfully! 🎉
           </Typography>
         </Box>
         
-        <QRCodeDisplay weddingId={wedding.id} title={wedding.title} />
+        <QRCodeDisplay eventId={event.id} title={event.title} />
         
         <Box textAlign="center" mt={4}>
           <Button
@@ -136,27 +136,27 @@ const AdminDashboard: React.FC = () => {
         <Box textAlign="center" mb={4}>
           <PhotoCamera sx={{ fontSize: 60, color: 'primary.main', mb: 2 }} />
           <Typography variant="h1" gutterBottom color="primary">
-            Wedding Photo Sharing
+            Shared Moments
           </Typography>
           <Typography variant="body1" color="text.secondary">
-            Create a photo gallery for your special day
+            Capture and share memories from any celebration
           </Typography>
         </Box>
 
-        <Box component="form" onSubmit={handleCreateWedding} sx={{ mb: 4 }}>
+        <Box component="form" onSubmit={handleCreateEvent} sx={{ mb: 4 }}>
           <TextField
             fullWidth
-            label="Wedding Title"
+            label="Event Title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g., Sarah & John's Wedding"
+            placeholder="e.g., Sarah's Birthday Party, Company Picnic"
             required
             sx={{ mb: 3 }}
           />
 
           <TextField
             fullWidth
-            label="Wedding Date"
+            label="Event Date"
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
@@ -174,21 +174,21 @@ const AdminDashboard: React.FC = () => {
             startIcon={loading ? <CircularProgress size={20} /> : <CloudUpload />}
             sx={{ py: 1.5 }}
           >
-            {loading ? 'Creating...' : 'Create Wedding Gallery'}
+            {loading ? 'Creating...' : 'Create Event Gallery'}
           </Button>
         </Box>
 
         <Card variant="outlined" sx={{ bgcolor: 'grey.50' }}>
           <CardContent>
             <Typography variant="h6" gutterBottom color="primary">
-              What you'll get:
+              Perfect for any celebration:
             </Typography>
             <List dense>
               {[
                 { icon: <QrCode />, text: 'QR code for easy guest access' },
                 { icon: <CloudUpload />, text: 'Real-time photo uploads' },
-                { icon: <PhoneAndroid />, text: 'Mobile-optimized interface' },
-                { icon: <CheckCircle />, text: 'Unlimited photo sharing' }
+                { icon: <PhoneAndroid />, text: 'Perfect for any celebration' },
+                { icon: <CheckCircle />, text: 'Weddings, birthdays, corporate events & more' }
               ].map((feature, index) => (
                 <ListItem key={index} sx={{ pl: 0 }}>
                   <ListItemIcon sx={{ minWidth: 36 }}>
@@ -207,48 +207,48 @@ const AdminDashboard: React.FC = () => {
 
 // Guest View - Upload and view photos
 const GuestView: React.FC = () => {
-  const { weddingId } = useParams<{ weddingId: string }>();
-  const [wedding, setWedding] = useState<Wedding | null>(null);
+  const { eventId } = useParams<{ eventId: string }>();
+  const [event, setEvent] = useState<Event | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadWedding = async () => {
-      if (!weddingId) {
-        setError('Wedding ID not found');
+    const loadEvent = async () => {
+      if (!eventId) {
+        setError('Event ID not found');
         setLoading(false);
         return;
       }
 
       try {
-        const weddingData = await getWedding(weddingId);
-        if (weddingData) {
-          setWedding(weddingData);
+        const eventData = await getEvent(eventId);
+        if (eventData) {
+          setEvent(eventData);
         } else {
-          setError('Wedding not found');
+          setError('Event not found');
         }
       } catch (error) {
-        console.error('Failed to load wedding:', error);
-        setError('Failed to load wedding');
+        console.error('Failed to load event:', error);
+        setError('Failed to load event');
       } finally {
         setLoading(false);
       }
     };
 
-    loadWedding();
-  }, [weddingId]);
+    loadEvent();
+  }, [eventId]);
 
   // Subscribe to photos for the bottom navbar
   useEffect(() => {
-    if (!weddingId) return;
+    if (!eventId) return;
 
-    const unsubscribe = subscribeToPhotos(weddingId, (newPhotos) => {
+    const unsubscribe = subscribeToPhotos(eventId, (newPhotos) => {
       setPhotos(newPhotos);
     });
 
     return () => unsubscribe();
-  }, [weddingId]);
+  }, [eventId]);
 
   const handleUploadComplete = () => {
     // Photos will automatically update via subscription
@@ -259,13 +259,13 @@ const GuestView: React.FC = () => {
       <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
         <CircularProgress size={60} sx={{ mb: 2 }} />
         <Typography variant="h6" color="text.secondary">
-          Loading wedding gallery...
+          Loading event gallery...
         </Typography>
       </Container>
     );
   }
 
-  if (error || !wedding || !weddingId) {
+  if (error || !event || !eventId) {
     return (
       <Container maxWidth="sm" sx={{ py: 8 }}>
         <Alert severity="error" sx={{ mb: 3 }}>
@@ -273,7 +273,7 @@ const GuestView: React.FC = () => {
             Oops! 😅
           </Typography>
           <Typography variant="body1">
-            {error || 'Wedding not found'}
+            {error || 'Event not found'}
           </Typography>
         </Alert>
         <Button
@@ -300,10 +300,10 @@ const GuestView: React.FC = () => {
       >
         <Container maxWidth="md">
           <Typography variant="h2" gutterBottom>
-            {wedding.title}
+            {event.title}
           </Typography>
           <Typography variant="h6">
-            {new Date(wedding.date).toLocaleDateString('en-US', {
+            {new Date(event.date).toLocaleDateString('en-US', {
               weekday: 'long',
               year: 'numeric',
               month: 'long',
@@ -314,13 +314,13 @@ const GuestView: React.FC = () => {
       </Box>
 
       <Container maxWidth="lg" sx={{ py: 4, pb: 12 }}>
-        <PhotoGallery weddingId={weddingId} />
+        <EnhancedPhotoGallery eventId={eventId} />
       </Container>
 
       {/* Bottom Navigation */}
       <BottomNavbar 
         photos={photos} 
-        weddingId={weddingId} 
+        eventId={eventId} 
         onUploadComplete={handleUploadComplete} 
       />
     </Box>
@@ -335,7 +335,7 @@ const App: React.FC = () => {
       <Router>
         <Routes>
           <Route path="/" element={<AdminDashboard />} />
-          <Route path="/wedding/:weddingId" element={<GuestView />} />
+          <Route path="/event/:eventId" element={<GuestView />} />
         </Routes>
       </Router>
     </ThemeProvider>
