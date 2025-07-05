@@ -125,12 +125,28 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
   };
 
-  const downloadPhoto = (photo: Photo) => {
-    const link = document.createElement('a');
-    link.href = photo.url;
-    link.download = photo.fileName || 'event-photo.jpg';
-    link.target = '_blank';
-    link.click();
+  const downloadPhoto = async (photo: Photo) => {
+    try {
+      // Create a link element with download attribute
+      const link = document.createElement('a');
+      link.href = photo.url;
+      link.download = photo.fileName || `photo-${new Date().getTime()}.jpg`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      
+      // For Firebase Storage URLs, we need to trigger the download differently
+      // First try the standard approach
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // If that doesn't work due to CORS, the browser will open it in a new tab
+      // which allows the user to save it manually
+    } catch (error) {
+      console.error('Download failed:', error);
+      // Fallback to opening in new tab
+      window.open(photo.url + '&download=true', '_blank');
+    }
   };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
@@ -296,7 +312,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             <DialogTitle sx={{ 
               display: 'flex', 
               alignItems: 'center',
-              bgcolor: alpha('black', 0.8),
+              bgcolor: alpha('#000000', 0.8),
               color: 'white',
               position: 'absolute',
               top: 0,
@@ -348,10 +364,10 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     top: '50%',
                     transform: 'translateY(-50%)',
                     zIndex: 2,
-                    bgcolor: alpha('black', 0.5),
+                    bgcolor: alpha('#000000', 0.5),
                     color: 'white',
                     '&:hover': {
-                      bgcolor: alpha('black', 0.7),
+                      bgcolor: alpha('#000000', 0.7),
                     }
                   }}
                 >
@@ -383,10 +399,10 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     top: '50%',
                     transform: 'translateY(-50%)',
                     zIndex: 2,
-                    bgcolor: alpha('black', 0.5),
+                    bgcolor: alpha('#000000', 0.5),
                     color: 'white',
                     '&:hover': {
-                      bgcolor: alpha('black', 0.7),
+                      bgcolor: alpha('#000000', 0.7),
                     }
                   }}
                 >
@@ -403,7 +419,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 bottom: 0,
                 left: 0,
                 right: 0,
-                bgcolor: alpha('black', 0.9),
+                bgcolor: alpha('#000000', 0.9),
                 p: 2,
                 borderRadius: 0
               }}
@@ -418,14 +434,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     height: 4,
                   },
                   '&::-webkit-scrollbar-track': {
-                    bgcolor: alpha('white', 0.1),
+                    bgcolor: alpha('#ffffff', 0.1),
                     borderRadius: 2,
                   },
                   '&::-webkit-scrollbar-thumb': {
-                    bgcolor: alpha('white', 0.3),
+                    bgcolor: alpha('#ffffff', 0.3),
                     borderRadius: 2,
                     '&:hover': {
-                      bgcolor: alpha('white', 0.5),
+                      bgcolor: alpha('#ffffff', 0.5),
                     }
                   }
                 }}

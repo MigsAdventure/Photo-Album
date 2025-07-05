@@ -3,8 +3,7 @@ import {
   addDoc, 
   onSnapshot, 
   query, 
-  where, 
-  orderBy,
+  where,
   doc,
   getDoc 
 } from 'firebase/firestore';
@@ -68,8 +67,7 @@ export const subscribeToPhotos = (
 ) => {
   const q = query(
     collection(db, 'photos'),
-    where('eventId', '==', eventId),
-    orderBy('uploadedAt', 'desc')
+    where('eventId', '==', eventId)
   );
   
   return onSnapshot(q, (snapshot) => {
@@ -85,6 +83,10 @@ export const subscribeToPhotos = (
         size: data.size
       });
     });
+    
+    // Sort in JavaScript instead of Firestore to avoid index requirement
+    photos.sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime());
+    
     callback(photos);
   });
 };

@@ -151,17 +151,31 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
 
   // QR Code functionality
   useEffect(() => {
-    if (showQRDialog && qrCanvasRef.current) {
-      QRCode.toCanvas(qrCanvasRef.current, eventUrl, {
-        width: isMobile ? 200 : 300,
-        margin: 2,
-        color: {
-          dark: '#000000',
-          light: '#FFFFFF',
-        },
-      }, (error: Error | null | undefined) => {
-        if (error) console.error('QR code generation error:', error);
-      });
+    if (showQRDialog && eventUrl) {
+      // Use a longer delay and ensure the canvas exists
+      const timer = setTimeout(() => {
+        if (qrCanvasRef.current) {
+          console.log('Generating QR code for:', eventUrl);
+          QRCode.toCanvas(qrCanvasRef.current, eventUrl, {
+            width: isMobile ? 200 : 300,
+            margin: 2,
+            color: {
+              dark: '#000000',
+              light: '#FFFFFF',
+            },
+          }, (error: Error | null | undefined) => {
+            if (error) {
+              console.error('QR code generation error:', error);
+            } else {
+              console.log('QR code generated successfully');
+            }
+          });
+        } else {
+          console.warn('Canvas ref not available for QR code generation');
+        }
+      }, 300);
+
+      return () => clearTimeout(timer);
     }
   }, [showQRDialog, eventUrl, isMobile]);
 
