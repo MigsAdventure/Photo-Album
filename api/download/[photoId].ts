@@ -86,14 +86,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contentType: photoData.contentType 
     });
 
-    const { r2Key, fileName, contentType } = photoData;
+    const { r2Key, fileName, contentType, url } = photoData;
 
     if (!r2Key) {
-      console.log('Photo does not have R2 key - might be Firebase Storage photo');
-      return res.status(400).json({ 
-        error: 'Photo not stored in R2',
-        details: 'This photo was uploaded to Firebase Storage and cannot be downloaded via this endpoint'
-      });
+      console.log('Photo does not have R2 key - this is a Firebase Storage photo');
+      console.log('Firebase Storage URL:', url);
+      
+      // For Firebase Storage photos, redirect to the original URL
+      // This allows the browser to download the file directly
+      if (url) {
+        console.log('Redirecting to Firebase Storage URL for download');
+        return res.redirect(302, url);
+      } else {
+        return res.status(400).json({ 
+          error: 'Photo URL not found',
+          details: 'This photo has no R2 key or Firebase Storage URL'
+        });
+      }
     }
 
     // Get file from R2

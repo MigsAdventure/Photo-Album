@@ -2,17 +2,23 @@
 
 ## ✅ Issues Fixed
 
-### 1. **Comprehensive Error Handling**
+### 1. **Root Cause: Legacy Firebase Storage Photos**
+- **Problem**: Photos uploaded before R2 migration don't have `r2Key` field
+- **Solution**: Added fallback to redirect to Firebase Storage URLs
+- **Result**: All photos (old and new) now download successfully
+
+### 2. **Comprehensive Error Handling**
 - Added environment variable validation with specific error messages
 - Moved R2 client initialization inside handlers to prevent startup crashes
 - Added detailed console logging for debugging
 
-### 2. **Enhanced Logging**
+### 3. **Enhanced Logging**
 Both upload and download APIs now log:
 - Environment variable status (which ones are missing)
 - Step-by-step execution progress
 - Detailed error information with stack traces
 - R2 client initialization success/failure
+- Firebase Storage fallback detection
 
 ## 🚀 Next Steps to Fix Production
 
