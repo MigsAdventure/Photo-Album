@@ -119,17 +119,16 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     });
   }, []);
 
-  // Sequential upload processing
-  const processUploadQueue = useCallback(async () => {
-    if (uploading || uploadProgress.length === 0) return;
+  // Sequential upload processing - simplified approach
+  const startUploads = useCallback(async (queue: UploadProgress[]) => {
+    console.log('🚀 Starting sequential upload processing...', queue.length, 'files');
     
-    for (let i = 0; i < uploadProgress.length; i++) {
-      const item = uploadProgress[i];
-      
-      // Skip completed items
-      if (item.status === 'completed') continue;
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
       
       try {
+        console.log(`📤 Processing upload ${i + 1}/${queue.length}: ${item.fileName}`);
+        
         // Update status to show this file is active
         setUploadProgress(prev => 
           prev.map((q, idx) => 
@@ -141,6 +140,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         
         // Compress if needed
         if (item.isCamera && item.file!.size > 8 * 1024 * 1024) {
+          console.log(`🗜️ Compressing camera photo: ${item.fileName}`);
           setUploadProgress(prev => 
             prev.map((q, idx) => 
               idx === i ? { ...q, status: 'compressing', progress: 20 } : q
@@ -157,6 +157,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         }
 
         // Upload the file
+        console.log(`⬆️ Starting upload: ${item.fileName}`);
         await uploadPhoto(fileToUpload, eventId, (progress) => {
           setUploadProgress(prev => 
             prev.map((q, idx) => 
@@ -172,15 +173,15 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           )
         );
         
-        console.log(`✅ Upload ${i + 1}/${uploadProgress.length} completed: ${item.fileName}`);
+        console.log(`✅ Upload ${i + 1}/${queue.length} completed: ${item.fileName}`);
         
         // Delay between uploads for stability
-        if (i < uploadProgress.length - 1) {
+        if (i < queue.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
         
       } catch (error) {
-        console.error(`❌ Upload ${i + 1}/${uploadProgress.length} failed:`, error);
+        console.error(`❌ Upload ${i + 1}/${queue.length} failed:`, error);
         
         setUploadProgress(prev => 
           prev.map((q, idx) => 
@@ -197,15 +198,19 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     }
     
     // Check if all completed
-    const allCompleted = uploadProgress.every(item => item.status === 'completed');
-    if (allCompleted) {
-      setTimeout(() => {
-        setUploading(false);
-        setUploadProgress([]);
-        onUploadComplete?.();
-      }, 3000);
-    }
-  }, [uploadProgress, uploading, eventId, onUploadComplete, compressImage]);
+    setUploadProgress(current => {
+      const allCompleted = current.every(item => item.status === 'completed');
+      if (allCompleted && current.length > 0) {
+        console.log('🎉 All uploads completed!');
+        setTimeout(() => {
+          setUploadProgress([]);
+          onUploadComplete?.();
+        }, 3000);
+      }
+      setUploading(false);
+      return current;
+    });
+  }, [eventId, onUploadComplete, compressImage]);
 
   const handleFileSelect = async (files: FileList) => {
     const imageFiles = Array.from(files).filter(file => 
@@ -235,32 +240,35 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       };
     });
 
-    setUploading(true);
     setUploadProgress(newQueue);
+    setUploading(true);
     
-    // Start sequential processing
-    setTimeout(() => processUploadQueue(), 100);
+    // Start processing immediately
+    setTimeout(() => startUploads(newQueue), 100);
   };
 
   const retryUpload = useCallback((fileIndex: number) => {
-    setUploadProgress(prev => 
-      prev.map((item, idx) => 
+    setUploadProgress(prev => {
+      const updated = prev.map((item, idx) => 
         idx === fileIndex ? { 
           ...item, 
-          status: 'waiting',
+          status: 'waiting' as const,
           progress: 0,
           error: undefined,
           canRetry: false
         } : item
-      )
-    );
-    
-    // Restart processing if not already running
-    if (!uploading) {
-      setUploading(true);
-      setTimeout(() => processUploadQueue(), 100);
-    }
-  }, [uploading, processUploadQueue]);
+      );
+      
+      // Start uploads for waiting files only
+      const waitingFiles = updated.filter(item => item.status === 'waiting');
+      if (waitingFiles.length > 0 && !uploading) {
+        setUploading(true);
+        setTimeout(() => startUploads(updated), 100);
+      }
+      
+      return updated;
+    });
+  }, [uploading, startUploads]);
 
   const removeFromQueue = useCallback((fileIndex: number) => {
     setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
