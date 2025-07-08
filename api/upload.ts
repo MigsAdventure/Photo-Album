@@ -4,7 +4,8 @@ import { addDoc, collection } from 'firebase/firestore';
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
-import multer from 'multer';
+import formidable from 'formidable';
+import { readFileSync } from 'fs';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -20,36 +21,6 @@ const firebaseConfig = {
 // Initialize Firebase (only if not already initialized)
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const db = getFirestore(app);
-
-// R2 client will be initialized inside the handler
-
-// Configure multer for file uploads
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    // Allow only images
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  },
-});
-
-// Helper to run multer middleware
-function runMiddleware(req: any, res: any, fn: any) {
-  return new Promise((resolve, reject) => {
-    fn(req, res, (result: any) => {
-      if (result instanceof Error) {
-        return reject(result);
-      }
-      return resolve(result);
-    });
-  });
-}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log('Upload API called with method:', req.method);
@@ -82,6 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         details: 'Firebase environment variables not properly configured'
       });
     }
+
     // Initialize R2 client inside handler
     const r2Client = new S3Client({
       region: 'auto',
@@ -94,17 +66,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log('R2 client initialized successfully');
 
-    // Run multer middleware
-    console.log('Running multer middleware...');
-    await runMiddleware(req, res, upload.single('photo'));
+    // Parse form with formidable
+    console.log('Parsing form data with formidable...');
+    const form = formidable({
+      maxFileSize: 10 * 1024 * 1024, // 10MB
+    });
 
-    const file = (req as any).file;
-    const { eventId } = req.body;
+    const [fields, files] = await form.parse(req);
+    
+    const file = Array.isArray(files.photo) ? files.photo[0] : files.photo;
+    const eventId = Array.isArray(fields.eventId) ? fields.eventId[0] : fields.eventId;
 
     console.log('File received:', { 
       hasFile: !!file, 
       eventId,
-      fileName: file?.originalname,
+      fileName: file?.originalFilename,
       size: file?.size 
     });
 
@@ -116,9 +92,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Event ID is required' });
     }
 
+    // Validate file type
+    if (!file.mimetype?.startsWith('image/')) {
+      return res.status(400).json({ error: 'Only image files are allowed' });
+    }
+
+    // Read file data
+    const fileBuffer = readFileSync(file.filepath);
+
     // Generate unique file key
     const photoId = uuidv4();
-    const extension = file.originalname.split('.').pop();
+    const extension = file.originalFilename?.split('.').pop() || 'jpg';
     const key = `events/${eventId}/photos/${photoId}.${extension}`;
 
     console.log('Uploading to R2 with key:', key);
@@ -127,11 +111,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const uploadCommand = new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype,
+      Body: fileBuffer,
+      ContentType: file.mimetype || 'image/jpeg',
       Metadata: {
         eventId,
-        originalFileName: file.originalname,
+        originalFileName: file.originalFilename || 'image.jpg',
         uploadedAt: new Date().toISOString(),
       }
     });
@@ -149,19 +133,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       r2Key: key,
       uploadedAt: new Date(),
       eventId,
-      fileName: file.originalname,
-      size: file.size,
-      contentType: file.mimetype
+      fileName: file.originalFilename || 'image.jpg',
+      size: file.size || 0,
+      contentType: file.mimetype || 'image/jpeg'
     });
 
-    console.log(`Photo uploaded successfully: ${file.originalname} -> ${key}`);
+    console.log(`Photo uploaded successfully: ${file.originalFilename} -> ${key}`);
 
     res.status(200).json({
       success: true,
       photoId,
       url: publicUrl,
-      fileName: file.originalname,
-      size: file.size
+      fileName: file.originalFilename || 'image.jpg',
+      size: file.size || 0
     });
 
   } catch (error) {
@@ -173,7 +157,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// Disable body parser for multer
+// Disable body parser for formidable
 export const config = {
   api: {
     bodyParser: false,
