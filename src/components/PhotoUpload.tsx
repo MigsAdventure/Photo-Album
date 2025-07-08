@@ -78,14 +78,53 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           throw error;
         }
 
-        await uploadPhoto(file, weddingId, (progress) => {
-          console.log(`Upload progress for ${file.name}: ${progress}%`);
-          setUploadProgress(prev => 
-            prev.map((item, i) => 
-              i === index ? { ...item, progress } : item
-            )
-          );
-        });
+        // Add retry logic for mobile uploads
+        let uploadSuccess = false;
+        let retryCount = 0;
+        const maxRetries = 3;
+        
+        while (!uploadSuccess && retryCount < maxRetries) {
+          try {
+            if (retryCount > 0) {
+              console.log(`Retry attempt ${retryCount} for ${file.name}`);
+              // Show retry message to user
+              setUploadProgress(prev => 
+                prev.map((item, i) => 
+                  i === index ? { 
+                    ...item, 
+                    progress: 0,
+                    error: `Retrying upload... (${retryCount}/${maxRetries})`
+                  } : item
+                )
+              );
+              // Wait a bit before retry
+              await new Promise<void>(resolve => setTimeout(resolve, 1000));
+            }
+            
+            await uploadPhoto(file, weddingId, (progress) => {
+              console.log(`Upload progress for ${file.name}: ${progress}%`);
+              setUploadProgress(prev => 
+                prev.map((item, i) => 
+                  i === index ? { 
+                    ...item, 
+                    progress,
+                    error: undefined // Clear any retry messages
+                  } : item
+                )
+              );
+            });
+            
+            uploadSuccess = true;
+            
+          } catch (error) {
+            retryCount++;
+            console.error(`Upload attempt ${retryCount} failed for ${file.name}:`, error);
+            
+            if (retryCount >= maxRetries) {
+              throw error; // Final failure after all retries
+            }
+          }
+        }
 
         console.log(`Upload completed for ${file.name}`);
         setUploadProgress(prev => 

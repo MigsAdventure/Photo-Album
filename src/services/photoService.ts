@@ -102,9 +102,20 @@ export const uploadPhoto = async (
       console.log('Making fetch request to /.netlify/functions/upload');
       onProgress?.(10);
       
+      // Mobile uploads can take longer due to large file sizes and network conditions
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        if (isMobile) {
+          console.log('Mobile upload timeout extended to 30 seconds...');
+        } else {
+          controller.abort();
+        }
+      }, isMobile ? 30000 : 10000); // 30 seconds for mobile, 10 for desktop
+
       const response = await fetch('/.netlify/functions/upload', {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
         // Add mobile-specific headers
         ...(isMobile && {
           headers: {
@@ -113,6 +124,8 @@ export const uploadPhoto = async (
           }
         })
       });
+
+      clearTimeout(timeoutId);
 
       console.log('Response received:', {
         status: response.status,
