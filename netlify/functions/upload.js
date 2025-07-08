@@ -2,7 +2,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { initializeApp, getApps } = require('firebase/app');
 const { getFirestore, addDoc, collection } = require('firebase/firestore');
 const { v4: uuidv4 } = require('uuid');
-const multiparty = require('multiparty');
+const busboy = require('busboy');
 
 // Firebase configuration
 const firebaseConfig = {
@@ -201,8 +201,6 @@ async function processUpload(event, context, requestId, headers, isMobile, isIOS
   }
 
   // Parse multipart form data using busboy for Netlify
-  const busboy = require('busboy');
-  
   return new Promise((resolve, reject) => {
     try {
       const contentType = event.headers['content-type'] || event.headers['Content-Type'] || 'multipart/form-data';
