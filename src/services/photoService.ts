@@ -75,7 +75,7 @@ export const uploadPhoto = async (
     formData.append('eventId', eventId);
 
     try {
-      const response = await fetch('/api/upload', {
+      const response = await fetch('/.netlify/functions/upload', {
         method: 'POST',
         body: formData,
       });
@@ -186,7 +186,7 @@ export const downloadPhoto = async (photoId: string): Promise<void> => {
       // Production: Use professional API download
       console.log('Production mode: Using professional download');
       const link = document.createElement('a');
-      link.href = `/api/download/${photoId}`;
+      link.href = `/.netlify/functions/download/${photoId}`;
       link.style.display = 'none';
       
       document.body.appendChild(link);
@@ -250,7 +250,7 @@ export const downloadAllPhotos = async (
       onProgress?.(0, 1);
       
       const link = document.createElement('a');
-      link.href = `/api/bulk/${eventId}`;
+      link.href = `/.netlify/functions/bulk/${eventId}`;
       link.style.display = 'none';
       
       document.body.appendChild(link);
