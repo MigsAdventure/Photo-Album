@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -22,7 +22,11 @@ import {
   QrCode,
   Close,
   Download,
-  ContentCopy
+  ContentCopy,
+  Refresh,
+  Delete,
+  CheckCircle,
+  Error as ErrorIcon
 } from '@mui/icons-material';
 import { downloadAllPhotos, uploadPhoto } from '../services/photoService';
 import { Photo, UploadProgress } from '../types';
@@ -48,9 +52,165 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
 
   const eventUrl = `${window.location.origin}/event/${eventId}`;
 
+  // Analyze file to determine if it's a camera photo vs screenshot
+  const analyzeFile = useCallback((file: File): { isCamera: boolean; needsCompression: boolean } => {
+    const sizeMB = file.size / 1024 / 1024;
+    
+    // Heuristics to detect camera photos vs screenshots
+    const isCamera = (
+      sizeMB > 3 || // Camera photos are usually >3MB
+      file.name.toLowerCase().includes('img_') || // iOS camera naming
+      file.name.toLowerCase().includes('dsc') || // Camera naming
+      (file.type === 'image/jpeg' && sizeMB > 1.5) // Large JPEG likely camera
+    );
+    
+    const needsCompression = isCamera && sizeMB > 8;
+    
+    return { isCamera, needsCompression };
+  }, []);
+
+  // Compress large camera photos
+  const compressImage = useCallback(async (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // More aggressive compression for camera photos
+        const maxWidth = 1280;
+        const maxHeight = 720;
+        let { width, height } = img;
+        
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        if (height > maxHeight) {
+          width = (width * maxHeight) / height;
+          height = maxHeight;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        // Draw and compress aggressively for camera photos
+        ctx?.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              const compressedFile = new File([blob], file.name, {
+                type: 'image/jpeg',
+                lastModified: Date.now()
+              });
+              console.log(`📷 Camera photo compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
+              resolve(compressedFile);
+            } else {
+              resolve(file);
+            }
+          },
+          'image/jpeg',
+          0.6 // More aggressive 60% quality for camera photos
+        );
+      };
+      
+      img.onerror = () => resolve(file);
+      img.src = URL.createObjectURL(file);
+    });
+  }, []);
+
+  // Sequential upload processing
+  const processUploadQueue = useCallback(async () => {
+    if (uploading || uploadProgress.length === 0) return;
+    
+    for (let i = 0; i < uploadProgress.length; i++) {
+      const item = uploadProgress[i];
+      
+      // Skip completed items
+      if (item.status === 'completed') continue;
+      
+      try {
+        // Update status to show this file is active
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'uploading', progress: 0, error: undefined } : q
+          )
+        );
+
+        let fileToUpload = item.file!;
+        
+        // Compress if needed
+        if (item.isCamera && item.file!.size > 8 * 1024 * 1024) {
+          setUploadProgress(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, status: 'compressing', progress: 20 } : q
+            )
+          );
+          
+          fileToUpload = await compressImage(item.file!);
+          
+          setUploadProgress(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, status: 'uploading', progress: 30 } : q
+            )
+          );
+        }
+
+        // Upload the file
+        await uploadPhoto(fileToUpload, eventId, (progress) => {
+          setUploadProgress(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, progress: Math.max(progress, 30) } : q
+            )
+          );
+        });
+        
+        // Mark as completed
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'completed', progress: 100 } : q
+          )
+        );
+        
+        console.log(`✅ Upload ${i + 1}/${uploadProgress.length} completed: ${item.fileName}`);
+        
+        // Delay between uploads for stability
+        if (i < uploadProgress.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
+      } catch (error) {
+        console.error(`❌ Upload ${i + 1}/${uploadProgress.length} failed:`, error);
+        
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { 
+              ...q, 
+              status: 'error',
+              progress: 0,
+              error: error instanceof Error ? error.message : 'Upload failed',
+              canRetry: true
+            } : q
+          )
+        );
+      }
+    }
+    
+    // Check if all completed
+    const allCompleted = uploadProgress.every(item => item.status === 'completed');
+    if (allCompleted) {
+      setTimeout(() => {
+        setUploading(false);
+        setUploadProgress([]);
+        onUploadComplete?.();
+      }, 3000);
+    }
+  }, [uploadProgress, uploading, eventId, onUploadComplete, compressImage]);
+
   const handleFileSelect = async (files: FileList) => {
     const imageFiles = Array.from(files).filter(file => 
-      file.type.startsWith('image/')
+      file.type.startsWith('image/') || file.type === '' || 
+      file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/)
     );
 
     if (imageFiles.length === 0) {
@@ -58,52 +218,53 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       return;
     }
 
-    setUploading(true);
-        const initialProgress: UploadProgress[] = imageFiles.map((file, index) => ({
-          fileName: file.name,
-          progress: 0,
-          status: 'uploading' as const,
-          fileIndex: index,
-          file,
-          canRetry: false
-        }));
-    setUploadProgress(initialProgress);
+    console.log('📤 Files selected for sequential upload:', imageFiles.length);
 
-    // Upload files concurrently
-    const uploadPromises = imageFiles.map(async (file, index) => {
-      try {
-        await uploadPhoto(file, eventId, (progress) => {
-          setUploadProgress(prev => 
-            prev.map((item, i) => 
-              i === index ? { ...item, progress } : item
-            )
-          );
-        });
-
-        setUploadProgress(prev => 
-          prev.map((item, i) => 
-            i === index ? { ...item, status: 'completed' } : item
-          )
-        );
-      } catch (error) {
-        console.error('Upload failed:', error);
-        setUploadProgress(prev => 
-          prev.map((item, i) => 
-            i === index ? { ...item, status: 'error' } : item
-          )
-        );
-      }
+    // Analyze and create upload queue
+    const newQueue: UploadProgress[] = imageFiles.map((file, index) => {
+      const analysis = analyzeFile(file);
+      
+      return {
+        fileName: file.name,
+        progress: 0,
+        status: 'waiting' as const,
+        fileIndex: index,
+        file,
+        isCamera: analysis.isCamera,
+        canRetry: false
+      };
     });
 
-    await Promise.all(uploadPromises);
+    setUploading(true);
+    setUploadProgress(newQueue);
     
-    // Clear progress after a delay
-    setTimeout(() => {
-      setUploading(false);
-      setUploadProgress([]);
-      onUploadComplete?.();
-    }, 2000);
+    // Start sequential processing
+    setTimeout(() => processUploadQueue(), 100);
   };
+
+  const retryUpload = useCallback((fileIndex: number) => {
+    setUploadProgress(prev => 
+      prev.map((item, idx) => 
+        idx === fileIndex ? { 
+          ...item, 
+          status: 'waiting',
+          progress: 0,
+          error: undefined,
+          canRetry: false
+        } : item
+      )
+    );
+    
+    // Restart processing if not already running
+    if (!uploading) {
+      setUploading(true);
+      setTimeout(() => processUploadQueue(), 100);
+    }
+  }, [uploading, processUploadQueue]);
+
+  const removeFromQueue = useCallback((fileIndex: number) => {
+    setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
+  }, []);
 
   const handleCameraClick = () => {
     const cameraInput = document.getElementById('bottom-camera-input') as HTMLInputElement;
@@ -396,15 +557,77 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         </DialogContent>
       </Dialog>
 
-      {/* Upload Progress Dialog */}
-      <Dialog open={uploading} sx={{ zIndex: 1500 }}>
-        <DialogTitle>Uploading Photos</DialogTitle>
-        <DialogContent sx={{ minWidth: 300 }}>
+      {/* Upload Progress Dialog with Retry Functionality */}
+      <Dialog open={uploading || uploadProgress.length > 0} sx={{ zIndex: 1500 }} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box>
+            <Typography variant="h6">Uploading Photos</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {uploadProgress.filter(p => p.status === 'completed').length} of {uploadProgress.length} completed
+            </Typography>
+          </Box>
+          {!uploading && uploadProgress.every(p => p.status === 'completed' || p.status === 'error') && (
+            <IconButton onClick={() => setUploadProgress([])} size="small">
+              <Close />
+            </IconButton>
+          )}
+        </DialogTitle>
+        <DialogContent sx={{ minWidth: 400 }}>
           {uploadProgress.map((item, index) => (
-            <Box key={index} sx={{ mb: 2 }}>
-              <Typography variant="body2" sx={{ mb: 1 }}>
-                {item.fileName}
-              </Typography>
+            <Box key={index} sx={{ mb: 3, p: 2, border: '1px solid', borderColor: 'grey.200', borderRadius: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                <Box sx={{ flexGrow: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                    {item.fileName}
+                  </Typography>
+                  {item.isCamera && (
+                    <Typography variant="caption" color="primary.main">
+                      📷 Camera Photo {item.file && `(${(item.file.size / 1024 / 1024).toFixed(1)}MB)`}
+                    </Typography>
+                  )}
+                </Box>
+                
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  {item.status === 'waiting' && (
+                    <Typography variant="caption" color="text.secondary">⏳ Waiting</Typography>
+                  )}
+                  {item.status === 'compressing' && (
+                    <Typography variant="caption" color="warning.main">🗜️ Compressing</Typography>
+                  )}
+                  {(item.status === 'uploading' || item.status === 'compressing') && (
+                    <Typography variant="caption" color="primary.main">
+                      {Math.round(item.progress)}%
+                    </Typography>
+                  )}
+                  {item.status === 'completed' && (
+                    <CheckCircle sx={{ color: 'success.main', fontSize: 20 }} />
+                  )}
+                  {item.status === 'error' && (
+                    <>
+                      <ErrorIcon sx={{ color: 'error.main', fontSize: 20 }} />
+                      {item.canRetry && (
+                        <IconButton
+                          size="small"
+                          onClick={() => retryUpload(index)}
+                          sx={{ color: 'primary.main' }}
+                          title="Retry upload"
+                        >
+                          <Refresh fontSize="small" />
+                        </IconButton>
+                      )}
+                      <IconButton
+                        size="small"
+                        onClick={() => removeFromQueue(index)}
+                        sx={{ color: 'error.main' }}
+                        title="Remove from queue"
+                      >
+                        <Delete fontSize="small" />
+                      </IconButton>
+                    </>
+                  )}
+                </Box>
+              </Box>
+              
               <LinearProgress
                 variant="determinate"
                 value={item.progress}
@@ -414,17 +637,39 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
                   bgcolor: 'grey.200',
                   '& .MuiLinearProgress-bar': {
                     bgcolor: item.status === 'error' ? 'error.main' : 
-                           item.status === 'completed' ? 'success.main' : 'primary.main'
+                           item.status === 'completed' ? 'success.main' :
+                           item.status === 'compressing' ? 'warning.main' : 'primary.main'
                   }
                 }}
               />
-              <Typography variant="caption" color="text.secondary">
-                {item.status === 'uploading' && `${Math.round(item.progress)}%`}
-                {item.status === 'completed' && '✅ Uploaded'}
-                {item.status === 'error' && '❌ Failed'}
-              </Typography>
+              
+              {item.error && (
+                <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                  {item.error}
+                </Typography>
+              )}
             </Box>
           ))}
+          
+          {uploadProgress.length > 0 && !uploading && (
+            <Box sx={{ mt: 3, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="body2" sx={{ mb: 1, fontWeight: 500 }}>
+                💡 Upload Tips:
+              </Typography>
+              <Typography variant="caption" display="block">
+                • Camera photos are automatically compressed for faster upload
+              </Typography>
+              <Typography variant="caption" display="block">
+                • Files upload one at a time for maximum reliability
+              </Typography>
+              <Typography variant="caption" display="block">
+                • Click retry (🔄) for failed uploads
+              </Typography>
+              <Typography variant="caption" display="block">
+                • Screenshots upload faster than camera photos
+              </Typography>
+            </Box>
+          )}
         </DialogContent>
       </Dialog>
 

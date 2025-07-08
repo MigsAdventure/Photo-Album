@@ -4,6 +4,16 @@
 
 [functions]
   directory = "netlify/functions"
+  # Disable caching to ensure function updates deploy immediately
+  included_files = ["netlify/functions/**"]
+
+# Disable function caching for faster updates
+[[headers]]
+  for = "/.netlify/functions/*"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Pragma = "no-cache"
+    Expires = "0"
 
 [[redirects]]
   from = "/api/*"
