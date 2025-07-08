@@ -18,7 +18,7 @@ import {
   CloudUpload,
   PhotoCamera,
   CheckCircle,
-  Error,
+  Error as ErrorIcon,
   Add
 } from '@mui/icons-material';
 import { uploadPhoto } from '../services/photoService';
@@ -74,7 +74,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         const maxSize = 50 * 1024 * 1024; // 50MB
         if (file.size > maxSize) {
           console.warn(`File ${file.name} is too large: ${file.size} bytes`);
-          throw new Error(`File ${file.name} is too large (max 50MB)`);
+          const error = new Error(`File ${file.name} is too large (max 50MB)`);
+          throw error;
         }
 
         await uploadPhoto(file, weddingId, (progress) => {
@@ -272,7 +273,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
                             <CheckCircle sx={{ color: 'success.main', fontSize: 20 }} />
                           )}
                           {item.status === 'error' && (
-                            <Error sx={{ color: 'error.main', fontSize: 20 }} />
+                            <ErrorIcon sx={{ color: 'error.main', fontSize: 20 }} />
                           )}
                         </Box>
                       </Box>
