@@ -109,15 +109,25 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     setProcessingFiles(true);
 
     try {
-      // Step 1: Smart image processing with compression
-      const processedFiles = await ImageCompressionService.processBatch(
-        imageFiles,
-        (current, total) => {
-          console.log(`📸 Processing image ${current}/${total}`);
-        }
-      );
+      // Step 1: Try compression, but fallback to original files if it fails
+      let processedFiles: File[] = [];
+      
+      try {
+        console.log('🗜️ Attempting compression...');
+        processedFiles = await ImageCompressionService.processBatch(
+          imageFiles,
+          (current, total) => {
+            console.log(`📸 Processing image ${current}/${total}`);
+          }
+        );
+        console.log('✅ Compression successful');
+      } catch (compressionError) {
+        console.warn('⚠️ Compression failed, using original files:', compressionError);
+        processedFiles = imageFiles; // Use original files
+      }
 
-      console.log('✅ Image processing complete, starting uploads...');
+      console.log('📤 Starting uploads...');
+      setProcessingFiles(false);
 
       // Initialize progress tracking
       const initialProgress: UploadProgress[] = processedFiles.map(file => ({
@@ -126,30 +136,6 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         status: 'uploading'
       }));
       setUploadProgress(initialProgress);
-
-      // Step 2: Try PWA background uploads first (most reliable)
-      if (pwaService.isServiceWorkerSupported() && processedFiles.length > 5) {
-        console.log('🔄 Using PWA background upload for batch of', processedFiles.length, 'files');
-        
-        try {
-          // Queue all files for background upload
-          for (const file of processedFiles) {
-            await pwaService.queueUpload(file, weddingId);
-          }
-          
-          setUploadProgress([]);
-          setProcessingFiles(false);
-          setShowPWAInfo(true);
-          
-          return; // PWA will handle the rest
-          
-        } catch (pwaError) {
-          console.warn('⚠️ PWA upload failed, falling back to direct upload:', pwaError);
-        }
-      }
-
-      // Step 3: Fallback to direct upload (enhanced reliability)
-      console.log('📤 Using direct upload with enhanced reliability...');
       
       for (let index = 0; index < processedFiles.length; index++) {
         const file = processedFiles[index];
