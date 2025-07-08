@@ -25,7 +25,7 @@ const storage = getStorage(app);
 exports.handler = async (event, context) => {
   const requestId = Math.random().toString(36).substr(2, 9);
   
-  console.log(`=== EMAIL DOWNLOAD REQUEST [${requestId}] ===`);
+  console.log(`=== EMAIL DOWNLOAD REQUEST [${requestId}] === (v2.0)`);
   
   // Set timeout handling
   context.callbackWaitsForEmptyEventLoop = false;
