@@ -21,15 +21,7 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const db = getFirestore(app);
 
-// R2 Configuration
-const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-});
+// R2 client will be initialized inside the handler
 
 // Configure multer for file uploads
 const upload = multer({
@@ -60,16 +52,61 @@ function runMiddleware(req: any, res: any, fn: any) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  console.log('Upload API called with method:', req.method);
+  console.log('Environment check:', {
+    hasR2AccountId: !!process.env.R2_ACCOUNT_ID,
+    hasR2AccessKey: !!process.env.R2_ACCESS_KEY_ID,
+    hasR2SecretKey: !!process.env.R2_SECRET_ACCESS_KEY,
+    hasR2BucketName: !!process.env.R2_BUCKET_NAME,
+    hasFirebaseApiKey: !!process.env.REACT_APP_FIREBASE_API_KEY
+  });
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
+    // Validate environment variables
+    if (!process.env.R2_ACCOUNT_ID || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY || !process.env.R2_BUCKET_NAME) {
+      console.error('Missing R2 environment variables');
+      return res.status(500).json({ 
+        error: 'Server configuration error - missing R2 credentials',
+        details: 'R2 environment variables not properly configured'
+      });
+    }
+
+    if (!process.env.REACT_APP_FIREBASE_API_KEY || !process.env.REACT_APP_FIREBASE_PROJECT_ID) {
+      console.error('Missing Firebase environment variables');
+      return res.status(500).json({ 
+        error: 'Server configuration error - missing Firebase credentials',
+        details: 'Firebase environment variables not properly configured'
+      });
+    }
+    // Initialize R2 client inside handler
+    const r2Client = new S3Client({
+      region: 'auto',
+      endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+      },
+    });
+
+    console.log('R2 client initialized successfully');
+
     // Run multer middleware
+    console.log('Running multer middleware...');
     await runMiddleware(req, res, upload.single('photo'));
 
     const file = (req as any).file;
     const { eventId } = req.body;
+
+    console.log('File received:', { 
+      hasFile: !!file, 
+      eventId,
+      fileName: file?.originalname,
+      size: file?.size 
+    });
 
     if (!file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -83,6 +120,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const photoId = uuidv4();
     const extension = file.originalname.split('.').pop();
     const key = `events/${eventId}/photos/${photoId}.${extension}`;
+
+    console.log('Uploading to R2 with key:', key);
 
     // Upload to R2
     const uploadCommand = new PutObjectCommand({
@@ -98,6 +137,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     await r2Client.send(uploadCommand);
+    console.log('R2 upload successful');
 
     // Generate public URL
     const publicUrl = `${process.env.R2_PUBLIC_URL}/${key}`;

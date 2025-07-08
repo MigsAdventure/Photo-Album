@@ -110,11 +110,27 @@ After deployment:
 
 ## 🚨 Important Notes
 
-1. **Environment Variables**: Must be set in Vercel dashboard for production
-2. **DNS Propagation**: Custom domain may take a few minutes to work
-3. **Migration**: Existing Firebase photos will still work, new uploads go to R2
-4. **Cost Savings**: You can delete Firebase Storage after migration is complete
+1. **Development vs Production**: The app automatically detects localhost and uses fallback methods for testing
+2. **Environment Variables**: Must be set in Vercel dashboard for production
+3. **DNS Propagation**: Custom domain may take a few minutes to work
+4. **Migration**: Existing Firebase photos will still work, new uploads go to R2
+5. **Cost Savings**: You can delete Firebase Storage after migration is complete
+
+## 🔧 Development Mode Features
+
+When running on `localhost`, the app automatically falls back to:
+- **Uploads**: Firebase Storage (for testing)
+- **Single Downloads**: Open in new tab (for testing)
+- **Bulk Downloads**: Open each photo in separate tabs (for testing)
+
+Console logs will show "Development mode" vs "Production mode" so you can see which system is being used.
 
 ## 🎉 You're Ready!
 
-Your wedding photo app now has a professional download experience that rivals commercial photo sharing platforms. Guests will get seamless downloads on any device!
+Your wedding photo app now has:
+- ✅ **Professional downloads on production** (direct downloads + ZIP files)
+- ✅ **Development testing on localhost** (Firebase Storage fallback)
+- ✅ **Automatic environment detection** (no manual switching needed)
+- ✅ **Cost-effective R2 storage** (40%+ savings in production)
+
+Your app will work perfectly in both development and production environments!
