@@ -11,6 +11,30 @@ import {
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
 
+// Detect connection quality for adaptive timeouts
+const detectConnectionQuality = async (): Promise<{ type: 'fast' | 'medium' | 'slow'; speed: number }> => {
+  try {
+    const start = Date.now();
+    
+    // Ping a small image to test connection speed
+    const testUrl = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent gif
+    await fetch(testUrl, { method: 'HEAD', cache: 'no-cache' });
+    
+    const pingTime = Date.now() - start;
+    
+    if (pingTime < 100) {
+      return { type: 'fast', speed: pingTime };
+    } else if (pingTime < 500) {
+      return { type: 'medium', speed: pingTime };
+    } else {
+      return { type: 'slow', speed: pingTime };
+    }
+  } catch (error) {
+    console.warn('Connection quality detection failed, assuming medium:', error);
+    return { type: 'medium', speed: 250 };
+  }
+};
+
 export const uploadPhoto = async (
   file: File, 
   eventId: string,
@@ -102,18 +126,27 @@ export const uploadPhoto = async (
       console.log('Making fetch request to /.netlify/functions/upload');
       onProgress?.(10);
       
-      // Mobile-specific upload with enhanced error handling
-      let response: Response;
-      
-      if (isMobile) {
-        console.log('🔄 Using mobile-optimized upload strategy');
+        // Detect connection quality and adjust timeouts
+        const connectionQuality = await detectConnectionQuality();
+        console.log(`📶 Connection quality detected: ${connectionQuality.type} (${connectionQuality.speed}ms ping)`);
         
-        // For mobile: Use XMLHttpRequest instead of fetch for better compatibility
-        response = await new Promise<Response>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
+        // Mobile-specific upload with enhanced error handling
+        let response: Response;
+        
+        if (isMobile) {
+          console.log('🔄 Using mobile-optimized upload strategy');
           
-          // Set timeout - increased for large camera photos
-          xhr.timeout = 15000; // 15 seconds for mobile uploads
+          // For mobile: Use XMLHttpRequest instead of fetch for better compatibility
+          response = await new Promise<Response>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            
+            // Dynamic timeout based on connection quality and file size
+            const baseTimeout = connectionQuality.type === 'fast' ? 12000 : 
+                               connectionQuality.type === 'medium' ? 18000 : 25000;
+            const fileSizeFactor = Math.min(file.size / (1024 * 1024), 5); // Max 5x for very large files
+            xhr.timeout = baseTimeout + (fileSizeFactor * 3000); // 3 seconds per MB
+            
+            console.log(`⏱️ Mobile timeout set to ${xhr.timeout}ms based on ${connectionQuality.type} connection and ${fileSizeFactor.toFixed(1)}MB file`);
           
           xhr.onload = () => {
             console.log(`📱 XHR upload completed with status: ${xhr.status}`);

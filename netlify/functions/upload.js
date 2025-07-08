@@ -54,12 +54,23 @@ exports.handler = async (event, context) => {
     console.log(`🔍 MOBILE REQUEST DETECTED [${requestId}] - Extra debugging enabled`);
   }
 
+  // Dynamic timeout based on file size and request type
+  const contentLength = parseInt(event.headers['content-length'] || event.headers['Content-Length'] || '0');
+  const estimatedFileSizeMB = contentLength / (1024 * 1024);
+  
+  // Base timeout + file size factor, capped at 30 seconds
+  const baseTimeout = 8000; // 8 seconds base
+  const fileSizeTimeout = Math.min(estimatedFileSizeMB * 2000, 20000); // 2 seconds per MB, max 20s
+  const totalTimeout = Math.min(baseTimeout + fileSizeTimeout, 30000); // Cap at 30 seconds
+  
+  console.log(`⏱️ Backend timeout set to ${totalTimeout}ms (${estimatedFileSizeMB.toFixed(1)}MB file)`);
+  
   // Add timeout wrapper to catch silent failures
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => {
-      console.error(`❌ FUNCTION TIMEOUT [${requestId}] - Upload exceeded 12 seconds`);
-      reject(new Error('Function timeout - upload took too long'));
-    }, 12000); // 12 second timeout to support 15s frontend timeout
+      console.error(`❌ FUNCTION TIMEOUT [${requestId}] - Upload exceeded ${totalTimeout}ms`);
+      reject(new Error(`Function timeout - upload took too long (${totalTimeout}ms limit)`));
+    }, totalTimeout);
   });
   
   // Enhanced CORS headers for mobile compatibility

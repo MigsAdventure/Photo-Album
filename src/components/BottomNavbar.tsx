@@ -52,6 +52,14 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
 
   const eventUrl = `${window.location.origin}/event/${eventId}`;
 
+  // Generate file fingerprint to prevent duplicates
+  const generateFileFingerprint = useCallback(async (file: File): Promise<string> => {
+    const buffer = await file.arrayBuffer();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }, []);
+
   // Analyze file to determine if it's a camera photo vs screenshot
   const analyzeFile = useCallback((file: File): { isCamera: boolean; needsCompression: boolean } => {
     const sizeMB = file.size / 1024 / 1024;
@@ -67,6 +75,46 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     const needsCompression = isCamera && sizeMB > 8;
     
     return { isCamera, needsCompression };
+  }, []);
+
+  // Validate file before upload
+  const validateFile = useCallback(async (file: File): Promise<{ valid: boolean; error?: string }> => {
+    // Size validation
+    if (file.size > 50 * 1024 * 1024) { // 50MB limit
+      return { valid: false, error: 'File too large (max 50MB)' };
+    }
+    
+    if (file.size === 0) {
+      return { valid: false, error: 'File is empty' };
+    }
+
+    // Type validation
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
+    if (!validTypes.includes(file.type) && file.type !== '') {
+      return { valid: false, error: 'Invalid file type' };
+    }
+
+    // Content validation - try to load as image
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        if (img.width < 50 || img.height < 50) {
+          resolve({ valid: false, error: 'Image too small (minimum 50x50)' });
+        } else {
+          resolve({ valid: true });
+        }
+      };
+      
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve({ valid: false, error: 'Not a valid image file' });
+      };
+      
+      img.src = url;
+    });
   }, []);
 
   // Compress large camera photos
@@ -111,6 +159,56 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           },
           'image/jpeg',
           0.6 // More aggressive 60% quality for camera photos
+        );
+      };
+      
+      img.onerror = () => resolve(file);
+      img.src = URL.createObjectURL(file);
+    });
+  }, []);
+
+  // Less aggressive compression for retry attempts
+  const compressImageForRetry = useCallback(async (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // Less aggressive compression for retries
+        const maxWidth = 1600; // Larger than initial attempt
+        const maxHeight = 900;
+        let { width, height } = img;
+        
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        if (height > maxHeight) {
+          width = (width * maxHeight) / height;
+          height = maxHeight;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        // Draw and compress less aggressively for retries
+        ctx?.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              const compressedFile = new File([blob], file.name, {
+                type: 'image/jpeg',
+                lastModified: Date.now()
+              });
+              console.log(`🔄 Retry compression: ${(file.size / 1024 / 1024).toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
+              resolve(compressedFile);
+            } else {
+              resolve(file);
+            }
+          },
+          'image/jpeg',
+          0.7 // Less aggressive 70% quality for retries
         );
       };
       
@@ -223,10 +321,10 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       return;
     }
 
-    console.log('📤 Files selected for sequential upload:', imageFiles.length);
+    console.log('📤 Files selected for validation and upload:', imageFiles.length);
 
-    // Analyze and create upload queue
-    const newQueue: UploadProgress[] = imageFiles.map((file, index) => {
+    // Create initial queue with validation status
+    const initialQueue: UploadProgress[] = imageFiles.map((file, index) => {
       const analysis = analyzeFile(file);
       
       return {
@@ -240,35 +338,197 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       };
     });
 
-    setUploadProgress(newQueue);
+    setUploadProgress(initialQueue);
     setUploading(true);
+
+    // Validate files and detect duplicates
+    const validatedQueue: UploadProgress[] = [];
+    const seenFingerprints = new Set<string>();
+    let hasErrors = false;
+
+    for (let i = 0; i < imageFiles.length; i++) {
+      const file = imageFiles[i];
+      
+      try {
+        // Update status to show validation in progress
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'uploading', progress: 5 } : q
+          )
+        );
+
+        console.log(`🔍 Validating file ${i + 1}/${imageFiles.length}: ${file.name}`);
+
+        // Validate file
+        const validation = await validateFile(file);
+        if (!validation.valid) {
+          console.error(`❌ File validation failed: ${file.name} - ${validation.error}`);
+          setUploadProgress(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { 
+                ...q, 
+                status: 'error',
+                progress: 0,
+                error: validation.error,
+                canRetry: false
+              } : q
+            )
+          );
+          hasErrors = true;
+          continue;
+        }
+
+        // Generate fingerprint to check for duplicates
+        const fingerprint = await generateFileFingerprint(file);
+        if (seenFingerprints.has(fingerprint)) {
+          console.warn(`⚠️ Duplicate file detected: ${file.name}`);
+          setUploadProgress(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { 
+                ...q, 
+                status: 'error',
+                progress: 0,
+                error: 'Duplicate file (already selected)',
+                canRetry: false
+              } : q
+            )
+          );
+          hasErrors = true;
+          continue;
+        }
+
+        seenFingerprints.add(fingerprint);
+
+        // File is valid and unique
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'waiting', progress: 0 } : q
+          )
+        );
+
+        const analysis = analyzeFile(file);
+        validatedQueue.push({
+          fileName: file.name,
+          progress: 0,
+          status: 'waiting' as const,
+          fileIndex: i,
+          file,
+          isCamera: analysis.isCamera,
+          canRetry: false
+        });
+
+        console.log(`✅ File validated: ${file.name} (${analysis.isCamera ? 'camera' : 'screenshot'})`);
+
+      } catch (error) {
+        console.error(`❌ Validation error for ${file.name}:`, error);
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { 
+              ...q, 
+              status: 'error',
+              progress: 0,
+              error: 'Validation failed',
+              canRetry: false
+            } : q
+          )
+        );
+        hasErrors = true;
+      }
+    }
+
+    if (validatedQueue.length === 0) {
+      console.error('❌ No valid files to upload');
+      setUploading(false);
+      alert('No valid files to upload. Please check the files and try again.');
+      return;
+    }
+
+    if (hasErrors) {
+      console.warn(`⚠️ ${imageFiles.length - validatedQueue.length} files failed validation`);
+    }
+
+    console.log(`🚀 Starting upload for ${validatedQueue.length} validated files`);
     
-    // Start processing immediately
-    setTimeout(() => startUploads(newQueue), 100);
+    // Start processing validated files
+    setTimeout(() => startUploads(validatedQueue), 500);
   };
 
-  const retryUpload = useCallback((fileIndex: number) => {
-    setUploadProgress(prev => {
-      const updated = prev.map((item, idx) => 
+  // Individual file retry - ONLY retries the specific failed file
+  const retryUpload = useCallback(async (fileIndex: number) => {
+    setUploadProgress(prev => 
+      prev.map((item, idx) => 
         idx === fileIndex ? { 
           ...item, 
-          status: 'waiting' as const,
+          status: 'uploading' as const,
           progress: 0,
           error: undefined,
           canRetry: false
         } : item
+      )
+    );
+
+    // Get the specific file to retry
+    const fileToRetry = uploadProgress[fileIndex];
+    if (!fileToRetry) return;
+
+    console.log(`🔄 RETRYING INDIVIDUAL FILE: ${fileToRetry.fileName}`);
+
+    try {
+      let fileToUpload = fileToRetry.file!;
+      
+      // Compress if needed (less aggressive on retry)
+      if (fileToRetry.isCamera && fileToRetry.file!.size > 8 * 1024 * 1024) {
+        console.log(`🗜️ Compressing for retry: ${fileToRetry.fileName}`);
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === fileIndex ? { ...q, status: 'compressing', progress: 20 } : q
+          )
+        );
+        
+        // Less aggressive compression on retry (70% instead of 60%)
+        fileToUpload = await compressImageForRetry(fileToRetry.file!);
+        
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === fileIndex ? { ...q, status: 'uploading', progress: 30 } : q
+          )
+        );
+      }
+
+      // Upload just this file
+      await uploadPhoto(fileToUpload, eventId, (progress) => {
+        setUploadProgress(prev => 
+          prev.map((q, idx) => 
+            idx === fileIndex ? { ...q, progress: Math.max(progress, 30) } : q
+          )
+        );
+      });
+      
+      // Mark as completed
+      setUploadProgress(prev => 
+        prev.map((q, idx) => 
+          idx === fileIndex ? { ...q, status: 'completed', progress: 100 } : q
+        )
       );
       
-      // Start uploads for waiting files only
-      const waitingFiles = updated.filter(item => item.status === 'waiting');
-      if (waitingFiles.length > 0 && !uploading) {
-        setUploading(true);
-        setTimeout(() => startUploads(updated), 100);
-      }
+      console.log(`✅ Individual retry completed: ${fileToRetry.fileName}`);
       
-      return updated;
-    });
-  }, [uploading, startUploads]);
+    } catch (error) {
+      console.error(`❌ Individual retry failed: ${fileToRetry.fileName}`, error);
+      
+      setUploadProgress(prev => 
+        prev.map((q, idx) => 
+          idx === fileIndex ? { 
+            ...q, 
+            status: 'error',
+            progress: 0,
+            error: error instanceof Error ? error.message : 'Retry failed',
+            canRetry: true
+          } : q
+        )
+      );
+    }
+  }, [uploadProgress, eventId]);
 
   const removeFromQueue = useCallback((fileIndex: number) => {
     setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
