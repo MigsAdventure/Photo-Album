@@ -126,7 +126,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     setDownloadProgress({ current: 0, total: photos.length });
 
     try {
-      await downloadAllPhotos(photos, (current, total) => {
+      await downloadAllPhotos(eventId, (current, total) => {
         setDownloadProgress({ current, total });
       });
       

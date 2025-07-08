@@ -27,7 +27,7 @@ import {
   ArrowForwardIos
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos } from '../services/photoService';
+import { subscribeToPhotos, downloadPhoto as downloadPhotoService } from '../services/photoService';
 import { Photo } from '../types';
 
 interface EnhancedPhotoGalleryProps {
@@ -126,16 +126,19 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   };
 
   const downloadPhoto = async (photo: Photo) => {
-    console.log('Opening image for download:', photo.fileName);
-    
-    // Due to Firebase Storage CORS limitations during development,
-    // we open the image in a new tab where users can right-click to save
-    const newWindow = window.open(photo.url, '_blank');
-    if (newWindow) {
-      newWindow.focus();
-      console.log('Image opened in new tab. Right-click on the image and select "Save image as..." to download');
-    } else {
-      console.error('Failed to open new tab. Please check your popup blocker settings.');
+    try {
+      console.log('Starting professional download for photo:', photo.fileName);
+      await downloadPhotoService(photo.id);
+    } catch (error) {
+      console.error('Professional download failed:', error);
+      // Fallback to opening in new tab
+      const newWindow = window.open(photo.url, '_blank');
+      if (newWindow) {
+        newWindow.focus();
+        console.log('Fallback: Image opened in new tab. Right-click on the image and select "Save image as..." to download');
+      } else {
+        console.error('Download failed and could not open new tab.');
+      }
     }
   };
 

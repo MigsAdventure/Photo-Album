@@ -5,6 +5,8 @@ export interface Photo {
   eventId: string;
   fileName?: string;
   size?: number;
+  r2Key?: string;
+  contentType?: string;
 }
 
 export interface Event {

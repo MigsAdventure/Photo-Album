@@ -1,64 +1,48 @@
 import { 
   collection, 
-  addDoc, 
+  addDoc,
   onSnapshot, 
   query, 
   where,
   doc,
   getDoc 
 } from 'firebase/firestore';
-import { 
-  ref, 
-  uploadBytesResumable, 
-  getDownloadURL,
-  UploadTaskSnapshot 
-} from 'firebase/storage';
-import { db, storage } from '../firebase';
+import { db } from '../firebase';
 import { Photo, Event } from '../types';
-import { v4 as uuidv4 } from 'uuid';
 
 export const uploadPhoto = async (
   file: File, 
   eventId: string,
   onProgress?: (progress: number) => void
 ): Promise<string> => {
-  const photoId = uuidv4();
-  const storageRef = ref(storage, `events/${eventId}/photos/${photoId}`);
-  
-  const uploadTask = uploadBytesResumable(storageRef, file);
-  
-  return new Promise((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot: UploadTaskSnapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        onProgress?.(progress);
-      },
-      (error) => {
-        console.error('Upload error:', error);
-        reject(error);
-      },
-      async () => {
-        try {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          
-          // Save photo metadata to Firestore
-          await addDoc(collection(db, 'photos'), {
-            id: photoId,
-            url: downloadURL,
-            uploadedAt: new Date(),
-            eventId,
-            fileName: file.name,
-            size: file.size
-          });
-          
-          resolve(downloadURL);
-        } catch (error) {
-          reject(error);
-        }
-      }
-    );
-  });
+  const formData = new FormData();
+  formData.append('photo', file);
+  formData.append('eventId', eventId);
+
+  try {
+    // Upload to our API endpoint which handles R2 upload
+    const response = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Upload failed');
+    }
+
+    const result = await response.json();
+    
+    // Report 100% progress since API upload is complete
+    onProgress?.(100);
+    
+    console.log('Photo uploaded successfully:', result.fileName);
+    return result.url;
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    throw error;
+  }
 };
 
 export const subscribeToPhotos = (
@@ -119,30 +103,57 @@ export const getEvent = async (eventId: string): Promise<Event | null> => {
   return null;
 };
 
+// Professional single photo download using API
+export const downloadPhoto = async (photoId: string): Promise<void> => {
+  try {
+    console.log('Starting professional download for photo:', photoId);
+    
+    // Create download link that points to our API
+    const link = document.createElement('a');
+    link.href = `/api/download/${photoId}`;
+    link.style.display = 'none';
+    
+    // Trigger download
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    console.log('Professional download initiated for photo:', photoId);
+    
+  } catch (error) {
+    console.error('Professional download failed:', error);
+    throw error;
+  }
+};
+
+// Professional bulk download using API (creates ZIP file)
 export const downloadAllPhotos = async (
-  photos: Photo[],
+  eventId: string,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<void> => {
-  if (photos.length === 0) {
-    throw new Error('No photos to download');
-  }
-
-  console.log(`Opening ${photos.length} photos in new tabs for download...`);
-  console.log('Due to Firebase Storage CORS limitations, photos will open in new tabs.');
-  console.log('Right-click on each image and select "Save image as..." to download.');
-
-  // Open all photos in new tabs with a slight delay between each
-  for (let i = 0; i < photos.length; i++) {
-    const photo = photos[i];
+  try {
+    console.log('Starting professional bulk download for event:', eventId);
     
-    setTimeout(() => {
-      console.log(`Opening photo ${i + 1}/${photos.length}:`, photo.fileName);
-      window.open(photo.url, '_blank');
-      
-      // Report progress
-      onProgress?.(i + 1, photos.length);
-    }, i * 300); // 300ms delay between each tab opening
+    // Report progress start
+    onProgress?.(0, 1);
+    
+    // Create download link that points to our bulk API
+    const link = document.createElement('a');
+    link.href = `/api/bulk/${eventId}`;
+    link.style.display = 'none';
+    
+    // Trigger ZIP download
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Report progress complete
+    onProgress?.(1, 1);
+    
+    console.log('Professional bulk download initiated for event:', eventId);
+    
+  } catch (error) {
+    console.error('Professional bulk download failed:', error);
+    throw error;
   }
-
-  console.log('All photos will be opened in new tabs. Right-click each image to save.');
 };
