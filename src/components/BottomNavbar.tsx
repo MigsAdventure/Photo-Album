@@ -528,7 +528,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         )
       );
     }
-  }, [uploadProgress, eventId]);
+  }, [uploadProgress, eventId, compressImageForRetry]);
 
   const removeFromQueue = useCallback((fileIndex: number) => {
     setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
