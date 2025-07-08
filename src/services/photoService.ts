@@ -70,29 +70,108 @@ export const uploadPhoto = async (
     // Production: Use R2 API endpoint
     console.log('Production mode: Using R2 API for upload');
     
+    // Enhanced mobile debugging
+    const userAgent = navigator.userAgent;
+    const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|Windows Phone/i.test(userAgent);
+    const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
+    const isAndroid = /Android/i.test(userAgent);
+    
+    console.log('=== FRONTEND UPLOAD DEBUG ===');
+    console.log('User-Agent:', userAgent);
+    console.log('Is Mobile:', isMobile);
+    console.log('Is iOS:', isIOS);
+    console.log('Is Android:', isAndroid);
+    console.log('File details:', {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      lastModified: file.lastModified
+    });
+    
+    if (isMobile) {
+      console.log('🔍 MOBILE UPLOAD DETECTED - Enhanced debugging enabled');
+    }
+    
     const formData = new FormData();
     formData.append('photo', file);
     formData.append('eventId', eventId);
+    
+    console.log('FormData created with photo and eventId');
 
     try {
+      console.log('Making fetch request to /.netlify/functions/upload');
+      onProgress?.(10);
+      
       const response = await fetch('/.netlify/functions/upload', {
         method: 'POST',
         body: formData,
+        // Add mobile-specific headers
+        ...(isMobile && {
+          headers: {
+            'X-Mobile-Request': 'true',
+            'X-Device-Type': isIOS ? 'iOS' : isAndroid ? 'Android' : 'Mobile'
+          }
+        })
       });
 
+      console.log('Response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries())
+      });
+
+      onProgress?.(50);
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Upload failed');
+        const errorText = await response.text();
+        console.error('Response not ok. Raw error text:', errorText);
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          console.error('Parsed error data:', errorData);
+          throw new Error(errorData.error || `Upload failed with status ${response.status}`);
+        } catch (parseError) {
+          console.error('Failed to parse error response as JSON:', parseError);
+          throw new Error(`Upload failed with status ${response.status}: ${errorText}`);
+        }
       }
 
-      const result = await response.json();
+      const resultText = await response.text();
+      console.log('Raw response text:', resultText);
+      
+      let result;
+      try {
+        result = JSON.parse(resultText);
+        console.log('Parsed response:', result);
+      } catch (parseError) {
+        console.error('Failed to parse successful response as JSON:', parseError);
+        throw new Error('Server returned invalid response format');
+      }
       
       onProgress?.(100);
-      console.log('Production upload completed:', result.fileName);
+      console.log('Production upload completed successfully:', result.fileName);
+      
+      if (isMobile) {
+        console.log('🎉 MOBILE UPLOAD SUCCESS!');
+      }
+      
       return result.url;
 
-    } catch (error) {
-      console.error('Upload error:', error);
+    } catch (error: any) {
+      console.error('Upload error details:', {
+        message: error?.message || 'Unknown error',
+        stack: error?.stack || 'No stack trace',
+        isMobile,
+        userAgent,
+        fileSize: file.size,
+        fileType: file.type
+      });
+      
+      if (isMobile) {
+        console.error('❌ MOBILE UPLOAD FAILED');
+      }
+      
       throw error;
     }
   }

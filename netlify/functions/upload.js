@@ -20,13 +20,34 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0
 const db = getFirestore(app);
 
 exports.handler = async (event, context) => {
-  console.log('Netlify upload function called');
+  const startTime = Date.now();
+  console.log('=== UPLOAD FUNCTION START ===');
   console.log('Method:', event.httpMethod);
-  console.log('Headers:', JSON.stringify(event.headers, null, 2));
-  console.log('User-Agent:', event.headers['user-agent'] || 'Unknown');
+  console.log('Timestamp:', new Date().toISOString());
+  
+  // Enhanced mobile detection
+  const userAgent = event.headers['user-agent'] || event.headers['User-Agent'] || 'Unknown';
+  const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|Windows Phone/i.test(userAgent);
+  const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
+  const isAndroid = /Android/i.test(userAgent);
+  
+  console.log('=== DEVICE DETECTION ===');
+  console.log('User-Agent:', userAgent);
+  console.log('Is Mobile:', isMobile);
+  console.log('Is iOS:', isIOS);
+  console.log('Is Android:', isAndroid);
+  
+  console.log('=== REQUEST DETAILS ===');
+  console.log('All Headers:', JSON.stringify(event.headers, null, 2));
   console.log('Content-Type:', event.headers['content-type'] || event.headers['Content-Type']);
+  console.log('Content-Length:', event.headers['content-length'] || event.headers['Content-Length']);
+  console.log('Body type:', typeof event.body);
   console.log('Body length:', event.body ? event.body.length : 0);
   console.log('Is Base64:', event.isBase64Encoded);
+  
+  if (isMobile) {
+    console.log('🔍 MOBILE REQUEST DETECTED - Extra debugging enabled');
+  }
   
   // Enhanced CORS headers for mobile compatibility
   const headers = {
