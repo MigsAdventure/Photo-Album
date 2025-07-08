@@ -63,43 +63,47 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     }));
     setUploadProgress(initialProgress);
 
-    // Upload files one at a time for mobile compatibility
+    // Upload files one at a time for mobile compatibility with enhanced error handling
     for (let index = 0; index < imageFiles.length; index++) {
       const file = imageFiles[index];
       
       try {
-        console.log(`Starting upload ${index + 1}/${imageFiles.length}: ${file.name}`);
+        console.log(`Starting upload ${index + 1}/${imageFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
         
         // Check file size (mobile photos can be very large)
         const maxSize = 50 * 1024 * 1024; // 50MB
         if (file.size > maxSize) {
           console.warn(`File ${file.name} is too large: ${file.size} bytes`);
-          const error = new Error(`File ${file.name} is too large (max 50MB)`);
-          throw error;
+          throw new Error(`File ${file.name} is too large (max 50MB)`);
         }
 
-        // Add retry logic for mobile uploads
+        // Enhanced retry logic for mobile uploads
         let uploadSuccess = false;
         let retryCount = 0;
-        const maxRetries = 3;
+        const maxRetries = 5; // Increased retries
+        let lastError: any = null;
         
         while (!uploadSuccess && retryCount < maxRetries) {
           try {
             if (retryCount > 0) {
-              console.log(`Retry attempt ${retryCount} for ${file.name}`);
+              console.log(`Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
               // Show retry message to user
               setUploadProgress(prev => 
                 prev.map((item, i) => 
                   i === index ? { 
                     ...item, 
                     progress: 0,
-                    error: `Retrying upload... (${retryCount}/${maxRetries})`
+                    error: `Retrying... (${retryCount}/${maxRetries})`,
+                    status: 'uploading'
                   } : item
                 )
               );
-              // Wait a bit before retry
-              await new Promise<void>(resolve => setTimeout(resolve, 1000));
+              // Progressive delay: 1s, 2s, 3s, 4s
+              const delay = Math.min(retryCount * 1000, 5000);
+              await new Promise<void>(resolve => setTimeout(resolve, delay));
             }
+            
+            console.log(`Attempting upload for ${file.name} (attempt ${retryCount + 1})`);
             
             await uploadPhoto(file, weddingId, (progress) => {
               console.log(`Upload progress for ${file.name}: ${progress}%`);
@@ -108,20 +112,25 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
                   i === index ? { 
                     ...item, 
                     progress,
-                    error: undefined // Clear any retry messages
+                    error: undefined, // Clear any retry messages
+                    status: 'uploading'
                   } : item
                 )
               );
             });
             
             uploadSuccess = true;
+            console.log(`✅ Upload successful for ${file.name} after ${retryCount + 1} attempts`);
             
           } catch (error) {
+            lastError = error;
             retryCount++;
-            console.error(`Upload attempt ${retryCount} failed for ${file.name}:`, error);
+            console.error(`❌ Upload attempt ${retryCount}/${maxRetries} failed for ${file.name}:`, error);
             
+            // For the last retry, wait longer before giving up
             if (retryCount >= maxRetries) {
-              throw error; // Final failure after all retries
+              console.error(`🚨 All ${maxRetries} attempts failed for ${file.name}`, lastError);
+              throw lastError;
             }
           }
         }
@@ -129,26 +138,31 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         console.log(`Upload completed for ${file.name}`);
         setUploadProgress(prev => 
           prev.map((item, i) => 
-            i === index ? { ...item, status: 'completed' } : item
+            i === index ? { ...item, status: 'completed', progress: 100 } : item
           )
         );
         
-        // Small delay between uploads for mobile stability
+        // Longer delay between uploads for mobile stability
         if (index < imageFiles.length - 1) {
-          await new Promise<void>(resolve => setTimeout(resolve, 500));
+          console.log(`Waiting before next upload...`);
+          await new Promise<void>(resolve => setTimeout(resolve, 1500));
         }
         
       } catch (error) {
-        console.error(`Upload failed for ${file.name}:`, error);
+        console.error(`❌ Final failure for ${file.name}:`, error);
         setUploadProgress(prev => 
           prev.map((item, i) => 
             i === index ? { 
               ...item, 
               status: 'error' as const,
-              error: error instanceof Error ? error.message : 'Upload failed'
+              progress: 0,
+              error: error instanceof Error ? error.message : 'Upload failed after all retries'
             } : item
           )
         );
+        
+        // Continue with next file instead of stopping
+        console.log(`Continuing to next file despite failure of ${file.name}`);
       }
     }
     
