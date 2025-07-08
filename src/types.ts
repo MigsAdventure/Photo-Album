@@ -21,4 +21,5 @@ export interface UploadProgress {
   fileName: string;
   progress: number;
   status: 'uploading' | 'completed' | 'error';
+  error?: string;
 }

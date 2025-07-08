@@ -22,12 +22,18 @@ const db = getFirestore(app);
 exports.handler = async (event, context) => {
   console.log('Netlify upload function called');
   console.log('Method:', event.httpMethod);
+  console.log('Headers:', JSON.stringify(event.headers, null, 2));
+  console.log('User-Agent:', event.headers['user-agent'] || 'Unknown');
+  console.log('Content-Type:', event.headers['content-type'] || event.headers['Content-Type']);
+  console.log('Body length:', event.body ? event.body.length : 0);
+  console.log('Is Base64:', event.isBase64Encoded);
   
-  // CORS headers
+  // Enhanced CORS headers for mobile compatibility
   const headers = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, X-Requested-With',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
+    'Access-Control-Max-Age': '86400',
   };
 
   // Handle preflight requests
@@ -98,11 +104,19 @@ exports.handler = async (event, context) => {
     const busboy = require('busboy');
     
     return new Promise((resolve, reject) => {
-      const bb = busboy({ 
-        headers: {
-          'content-type': event.headers['content-type'] || event.headers['Content-Type']
-        }
-      });
+      try {
+        const contentType = event.headers['content-type'] || event.headers['Content-Type'] || 'multipart/form-data';
+        console.log('Setting up busboy with content-type:', contentType);
+        
+        const bb = busboy({ 
+          headers: {
+            'content-type': contentType
+          },
+          limits: {
+            fileSize: 50 * 1024 * 1024, // 50MB limit for large mobile photos
+            files: 1 // Only one file at a time
+          }
+        });
       
       let fields = {};
       let fileData = null;
@@ -114,27 +128,40 @@ exports.handler = async (event, context) => {
       });
 
       bb.on('file', (fieldname, file, info) => {
+        console.log('File received:', { fieldname, info });
         const { filename, mimeType: fileMimeType } = info;
-        fileName = filename || 'image.jpg';
+        fileName = filename || 'mobile_photo.jpg';
         mimeType = fileMimeType || 'image/jpeg';
         
+        console.log('Processing file:', { fileName, mimeType });
+        
         const chunks = [];
+        let totalSize = 0;
+        
         file.on('data', (chunk) => {
           chunks.push(chunk);
+          totalSize += chunk.length;
+          console.log('Received chunk, total size so far:', totalSize);
         });
         
         file.on('end', () => {
           fileData = Buffer.concat(chunks);
+          console.log('File processing complete, final size:', fileData.length);
+        });
+        
+        file.on('error', (error) => {
+          console.error('File stream error:', error);
         });
       });
 
       bb.on('close', async () => {
         try {
-          console.log('Form parsing completed:', { 
+          console.log('Busboy close event - Form parsing completed:', { 
             hasFile: !!fileData, 
             eventId: fields.eventId,
             fileName,
-            fileSize: fileData?.length 
+            fileSize: fileData?.length,
+            mimeType 
           });
 
           if (!fileData) {
@@ -230,10 +257,50 @@ exports.handler = async (event, context) => {
         }
       });
 
+      bb.on('error', (error) => {
+        console.error('Busboy error:', error);
+        resolve({
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ 
+            error: 'Form parsing failed', 
+            details: error.message,
+            userAgent: event.headers['user-agent'] || 'Unknown'
+          }),
+        });
+      });
+
       // Write the body data to busboy
-      const bodyBuffer = Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8');
-      bb.write(bodyBuffer);
-      bb.end();
+      try {
+        const bodyBuffer = Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8');
+        console.log('Writing body to busboy, buffer size:', bodyBuffer.length);
+        bb.write(bodyBuffer);
+        bb.end();
+      } catch (error) {
+        console.error('Error writing to busboy:', error);
+        resolve({
+          statusCode: 400,
+          headers,
+          body: JSON.stringify({ 
+            error: 'Failed to process request body',
+            details: error.message,
+            userAgent: event.headers['user-agent'] || 'Unknown'
+          }),
+        });
+      }
+
+      } catch (setupError) {
+        console.error('Busboy setup error:', setupError);
+        resolve({
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ 
+            error: 'Failed to initialize form parser',
+            details: setupError.message,
+            userAgent: event.headers['user-agent'] || 'Unknown'
+          }),
+        });
+      }
     });
 
   } catch (error) {

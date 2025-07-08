@@ -35,14 +35,25 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
   const theme = useTheme();
 
   const handleFileSelect = useCallback(async (files: FileList) => {
-    const imageFiles = Array.from(files).filter(file => 
-      file.type.startsWith('image/')
-    );
+    console.log('Files selected:', files.length);
+    
+    const imageFiles = Array.from(files).filter(file => {
+      console.log('File details:', {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified
+      });
+      return file.type.startsWith('image/') || file.type === '' || 
+             file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/);
+    });
 
     if (imageFiles.length === 0) {
       alert('Please select valid image files');
       return;
     }
+
+    console.log('Processing image files:', imageFiles.map(f => ({ name: f.name, size: f.size, type: f.type })));
 
     // Initialize progress tracking
     const initialProgress: UploadProgress[] = imageFiles.map(file => ({
@@ -52,10 +63,22 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     }));
     setUploadProgress(initialProgress);
 
-    // Upload files concurrently
-    const uploadPromises = imageFiles.map(async (file, index) => {
+    // Upload files one at a time for mobile compatibility
+    for (let index = 0; index < imageFiles.length; index++) {
+      const file = imageFiles[index];
+      
       try {
+        console.log(`Starting upload ${index + 1}/${imageFiles.length}: ${file.name}`);
+        
+        // Check file size (mobile photos can be very large)
+        const maxSize = 50 * 1024 * 1024; // 50MB
+        if (file.size > maxSize) {
+          console.warn(`File ${file.name} is too large: ${file.size} bytes`);
+          throw new Error(`File ${file.name} is too large (max 50MB)`);
+        }
+
         await uploadPhoto(file, weddingId, (progress) => {
+          console.log(`Upload progress for ${file.name}: ${progress}%`);
           setUploadProgress(prev => 
             prev.map((item, i) => 
               i === index ? { ...item, progress } : item
@@ -63,28 +86,37 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           );
         });
 
+        console.log(`Upload completed for ${file.name}`);
         setUploadProgress(prev => 
           prev.map((item, i) => 
             i === index ? { ...item, status: 'completed' } : item
           )
         );
+        
+        // Small delay between uploads for mobile stability
+        if (index < imageFiles.length - 1) {
+          await new Promise<void>(resolve => setTimeout(resolve, 500));
+        }
+        
       } catch (error) {
-        console.error('Upload failed:', error);
+        console.error(`Upload failed for ${file.name}:`, error);
         setUploadProgress(prev => 
           prev.map((item, i) => 
-            i === index ? { ...item, status: 'error' } : item
+            i === index ? { 
+              ...item, 
+              status: 'error' as const,
+              error: error instanceof Error ? error.message : 'Upload failed'
+            } : item
           )
         );
       }
-    });
-
-    await Promise.all(uploadPromises);
+    }
     
     // Clear progress after a delay
     setTimeout(() => {
       setUploadProgress([]);
       onUploadComplete?.();
-    }, 2000);
+    }, 3000);
   }, [weddingId, onUploadComplete]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -162,7 +194,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           id="photo-gallery-input"
           type="file"
           multiple
-          accept="image/*"
+          accept="image/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
@@ -170,7 +202,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         <input
           id="photo-camera-input"
           type="file"
-          accept="image/*"
+          accept="image/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
           capture="environment"
@@ -207,7 +239,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         </Box>
 
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
-          Supports: JPG, PNG, HEIC and other image formats
+          Supports: JPG, PNG, HEIC and other image formats (max 50MB per photo)
         </Typography>
       </Paper>
 
@@ -273,7 +305,19 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
 
             {uploadProgress.some(item => item.status === 'error') && (
               <Alert severity="error" sx={{ mt: 2 }}>
-                Some photos failed to upload. Please try again.
+                <Typography variant="body2" component="div">
+                  Upload errors:
+                </Typography>
+                {uploadProgress
+                  .filter(item => item.status === 'error')
+                  .map((item, idx) => (
+                    <Typography key={idx} variant="caption" component="div" sx={{ mt: 0.5 }}>
+                      • {item.fileName}: {item.error || 'Upload failed'}
+                    </Typography>
+                  ))}
+                <Typography variant="body2" sx={{ mt: 1 }}>
+                  Please try again. For mobile users: try taking smaller photos or using "Choose from Gallery" instead.
+                </Typography>
               </Alert>
             )}
           </CardContent>
