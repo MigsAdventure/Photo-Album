@@ -20,6 +20,18 @@ export interface Event {
 export interface UploadProgress {
   fileName: string;
   progress: number;
-  status: 'uploading' | 'completed' | 'error';
+  status: 'waiting' | 'compressing' | 'uploading' | 'completed' | 'error';
   error?: string;
+  fileIndex: number;
+  file?: File;
+  isCamera?: boolean;
+  canRetry?: boolean;
+}
+
+export interface FileAnalysis {
+  isCamera: boolean;
+  isScreenshot: boolean;
+  needsCompression: boolean;
+  originalSize: number;
+  estimatedCompressedSize?: number;
 }

@@ -57,9 +57,9 @@ exports.handler = async (event, context) => {
   // Add timeout wrapper to catch silent failures
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => {
-      console.error(`❌ FUNCTION TIMEOUT [${requestId}] - Upload exceeded 8 seconds`);
+      console.error(`❌ FUNCTION TIMEOUT [${requestId}] - Upload exceeded 12 seconds`);
       reject(new Error('Function timeout - upload took too long'));
-    }, 8000); // 8 second timeout to allow for graceful error handling
+    }, 12000); // 12 second timeout to support 15s frontend timeout
   });
   
   // Enhanced CORS headers for mobile compatibility
@@ -180,7 +180,7 @@ async function processUpload(event, context, requestId, headers, isMobile, isIOS
         secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
       },
       requestHandler: {
-        requestTimeout: 6000, // 6 second timeout for R2 operations
+        requestTimeout: 10000, // 10 second timeout for R2 operations
       }
     });
     console.log(`✅ R2 CLIENT INITIALIZED [${requestId}]`);

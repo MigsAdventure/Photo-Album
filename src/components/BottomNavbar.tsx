@@ -59,11 +59,14 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     }
 
     setUploading(true);
-    const initialProgress: UploadProgress[] = imageFiles.map(file => ({
-      fileName: file.name,
-      progress: 0,
-      status: 'uploading'
-    }));
+        const initialProgress: UploadProgress[] = imageFiles.map((file, index) => ({
+          fileName: file.name,
+          progress: 0,
+          status: 'uploading' as const,
+          fileIndex: index,
+          file,
+          canRetry: false
+        }));
     setUploadProgress(initialProgress);
 
     // Upload files concurrently

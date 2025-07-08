@@ -12,17 +12,22 @@ import {
   ListItem,
   ListItemText,
   useTheme,
-  alpha
+  alpha,
+  IconButton,
+  Chip,
+  Stack
 } from '@mui/material';
 import {
   CloudUpload,
   PhotoCamera,
   CheckCircle,
   Error as ErrorIcon,
-  Add
+  Add,
+  Refresh,
+  Delete
 } from '@mui/icons-material';
 import { uploadPhoto } from '../services/photoService';
-import { UploadProgress } from '../types';
+import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
   weddingId: string;
@@ -31,10 +36,42 @@ interface PhotoUploadProps {
 
 const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [currentUploadIndex, setCurrentUploadIndex] = useState(-1);
   const theme = useTheme();
 
-  // Utility function to compress images for mobile
+  // Analyze file to determine if it's a camera photo vs screenshot
+  const analyzeFile = useCallback((file: File): FileAnalysis => {
+    const sizeMB = file.size / 1024 / 1024;
+    
+    // Heuristics to detect camera photos vs screenshots
+    const isCamera = (
+      sizeMB > 3 || // Camera photos are usually >3MB
+      file.name.toLowerCase().includes('img_') || // iOS camera naming
+      file.name.toLowerCase().includes('dsc') || // Camera naming
+      (file.type === 'image/jpeg' && sizeMB > 1.5) // Large JPEG likely camera
+    );
+    
+    const isScreenshot = (
+      file.name.toLowerCase().includes('screenshot') ||
+      file.name.toLowerCase().includes('screen') ||
+      file.type === 'image/png' ||
+      sizeMB < 2
+    );
+    
+    const needsCompression = isCamera && sizeMB > 8;
+    
+    return {
+      isCamera,
+      isScreenshot,
+      needsCompression,
+      originalSize: file.size,
+      estimatedCompressedSize: needsCompression ? file.size * 0.3 : file.size
+    };
+  }, []);
+
+  // Compress large camera photos
   const compressImage = useCallback(async (file: File): Promise<File> => {
     return new Promise((resolve) => {
       const canvas = document.createElement('canvas');
@@ -42,9 +79,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
       const img = new Image();
       
       img.onload = () => {
-        // Calculate new dimensions (max 1920x1080 for mobile)
-        const maxWidth = 1920;
-        const maxHeight = 1080;
+        // More aggressive compression for camera photos
+        const maxWidth = 1280;
+        const maxHeight = 720;
         let { width, height } = img;
         
         if (width > maxWidth) {
@@ -59,7 +96,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         canvas.width = width;
         canvas.height = height;
         
-        // Draw and compress
+        // Draw and compress aggressively for camera photos
         ctx?.drawImage(img, 0, 0, width, height);
         canvas.toBlob(
           (blob) => {
@@ -68,14 +105,14 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
                 type: 'image/jpeg',
                 lastModified: Date.now()
               });
-              console.log(`📷 Image compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
+              console.log(`📷 Camera photo compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
               resolve(compressedFile);
             } else {
               resolve(file);
             }
           },
           'image/jpeg',
-          0.85 // 85% quality
+          0.6 // More aggressive 60% quality for camera photos
         );
       };
       
@@ -84,20 +121,104 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     });
   }, []);
 
+  // Sequential upload processing
+  const processUploadQueue = useCallback(async () => {
+    if (isUploading || uploadQueue.length === 0) return;
+    
+    setIsUploading(true);
+    
+    for (let i = 0; i < uploadQueue.length; i++) {
+      const item = uploadQueue[i];
+      
+      // Skip completed or errored items (unless retrying)
+      if (item.status === 'completed') continue;
+      
+      setCurrentUploadIndex(i);
+      
+      try {
+        // Update status to show this file is active
+        setUploadQueue(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'uploading', progress: 0, error: undefined } : q
+          )
+        );
+
+        let fileToUpload = item.file!;
+        
+        // Compress if needed
+        if (item.isCamera && item.file!.size > 8 * 1024 * 1024) {
+          setUploadQueue(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, status: 'compressing', progress: 20 } : q
+            )
+          );
+          
+          fileToUpload = await compressImage(item.file!);
+          
+          setUploadQueue(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, status: 'uploading', progress: 30 } : q
+            )
+          );
+        }
+
+        // Upload the file
+        await uploadPhoto(fileToUpload, weddingId, (progress) => {
+          setUploadQueue(prev => 
+            prev.map((q, idx) => 
+              idx === i ? { ...q, progress: Math.max(progress, 30) } : q
+            )
+          );
+        });
+        
+        // Mark as completed
+        setUploadQueue(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { ...q, status: 'completed', progress: 100 } : q
+          )
+        );
+        
+        console.log(`✅ Upload ${i + 1}/${uploadQueue.length} completed: ${item.fileName}`);
+        
+        // Delay between uploads for stability
+        if (i < uploadQueue.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
+      } catch (error) {
+        console.error(`❌ Upload ${i + 1}/${uploadQueue.length} failed:`, error);
+        
+        setUploadQueue(prev => 
+          prev.map((q, idx) => 
+            idx === i ? { 
+              ...q, 
+              status: 'error',
+              progress: 0,
+              error: error instanceof Error ? error.message : 'Upload failed',
+              canRetry: true
+            } : q
+          )
+        );
+      }
+    }
+    
+    setIsUploading(false);
+    setCurrentUploadIndex(-1);
+    
+    // Check if all completed
+    const allCompleted = uploadQueue.every(item => item.status === 'completed');
+    if (allCompleted) {
+      setTimeout(() => {
+        setUploadQueue([]);
+        onUploadComplete?.();
+      }, 3000);
+    }
+  }, [uploadQueue, isUploading, weddingId, onUploadComplete, compressImage]);
+
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);
     
-    // Enhanced mobile detection
-    const userAgent = navigator.userAgent;
-    const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|Windows Phone/i.test(userAgent);
-    
     const imageFiles = Array.from(files).filter(file => {
-      console.log('File details:', {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        lastModified: file.lastModified
-      });
       return file.type.startsWith('image/') || file.type === '' || 
              file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/);
     });
@@ -107,149 +228,49 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
       return;
     }
 
-    console.log('📤 Starting uploads...');
-
-    // Initialize progress tracking
-    const initialProgress: UploadProgress[] = imageFiles.map(file => ({
-      fileName: file.name,
-      progress: 0,
-      status: 'uploading'
-    }));
-    setUploadProgress(initialProgress);
-
-    // Process files (compress large mobile images)
-    const processedFiles: File[] = [];
-    for (let i = 0; i < imageFiles.length; i++) {
-      const file = imageFiles[i];
-      const sizeMB = file.size / 1024 / 1024;
+    // Analyze and create upload queue
+    const newQueue: UploadProgress[] = imageFiles.map((file, index) => {
+      const analysis = analyzeFile(file);
       
-      // Auto-compress large images on mobile
-      if (isMobile && sizeMB > 8) {
-        console.log(`📱 Large mobile image detected (${sizeMB.toFixed(2)}MB), compressing...`);
-        setUploadProgress(prev => 
-          prev.map((item, index) => 
-            index === i ? { 
-              ...item, 
-              progress: 10,
-              error: 'Compressing large image for mobile...',
-              status: 'uploading'
-            } : item
-          )
-        );
-        
-        try {
-          const compressedFile = await compressImage(file);
-          processedFiles.push(compressedFile);
-        } catch (error) {
-          console.error('Compression failed, using original:', error);
-          processedFiles.push(file);
-        }
-      } else {
-        processedFiles.push(file);
-      }
-    }
+      return {
+        fileName: file.name,
+        progress: 0,
+        status: 'waiting' as const,
+        fileIndex: index,
+        file,
+        isCamera: analysis.isCamera,
+        canRetry: false
+      };
+    });
 
-    // Upload files one at a time for better reliability
-    for (let index = 0; index < processedFiles.length; index++) {
-      const file = processedFiles[index];
-      
-      try {
-        console.log(`Starting upload ${index + 1}/${processedFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-        
-        // Check file size
-        const maxSize = 50 * 1024 * 1024; // 50MB
-        if (file.size > maxSize) {
-          throw new Error(`File ${file.name} is too large (max 50MB)`);
-        }
-
-        // Enhanced retry logic for mobile
-        let uploadSuccess = false;
-        let retryCount = 0;
-        const maxRetries = isMobile ? 2 : 3; // Fewer retries on mobile
-        let lastError: any = null;
-        
-        while (!uploadSuccess && retryCount < maxRetries) {
-          try {
-            if (retryCount > 0) {
-              console.log(`📱 Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
-              setUploadProgress(prev => 
-                prev.map((item, i) => 
-                  i === index ? { 
-                    ...item, 
-                    progress: 0,
-                    error: `Retrying... (${retryCount}/${maxRetries})`,
-                    status: 'uploading'
-                  } : item
-                )
-              );
-              
-              // Longer delay for mobile retries
-              const delay = isMobile ? (retryCount * 2000) : (retryCount * 1000);
-              await new Promise<void>(resolve => setTimeout(resolve, delay));
-            }
-            
-            await uploadPhoto(file, weddingId, (progress) => {
-              setUploadProgress(prev => 
-                prev.map((item, i) => 
-                  i === index ? { 
-                    ...item, 
-                    progress,
-                    error: undefined,
-                    status: 'uploading'
-                  } : item
-                )
-              );
-            });
-            
-            uploadSuccess = true;
-            console.log(`✅ Upload successful for ${file.name} after ${retryCount + 1} attempts`);
-            
-          } catch (error) {
-            lastError = error;
-            retryCount++;
-            console.error(`❌ Upload attempt ${retryCount}/${maxRetries} failed for ${file.name}:`, error);
-            
-            if (retryCount >= maxRetries) {
-              throw lastError;
-            }
-          }
-        }
-
-        setUploadProgress(prev => 
-          prev.map((item, i) => 
-            i === index ? { ...item, status: 'completed', progress: 100 } : item
-          )
-        );
-        
-        // Longer delay between uploads on mobile for stability
-        if (index < processedFiles.length - 1) {
-          const delay = isMobile ? 2000 : 1000;
-          await new Promise<void>(resolve => setTimeout(resolve, delay));
-        }
-        
-      } catch (error) {
-        console.error(`❌ Final failure for ${file.name}:`, error);
-        const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-        
-        setUploadProgress(prev => 
-          prev.map((item, i) => 
-            i === index ? { 
-              ...item, 
-              status: 'error' as const,
-              progress: 0,
-              error: errorMessage
-            } : item
-          )
-        );
-      }
-    }
+    setUploadQueue(newQueue);
     
-    // Clear progress after delay
-    setTimeout(() => {
-      setUploadProgress([]);
-      onUploadComplete?.();
-    }, 5000); // Longer display time for mobile users to read results
-  }, [weddingId, onUploadComplete, compressImage]);
+    // Start processing
+    setTimeout(() => processUploadQueue(), 100);
+  }, [analyzeFile, processUploadQueue]);
+
+  const retryUpload = useCallback((fileIndex: number) => {
+    setUploadQueue(prev => 
+      prev.map((item, idx) => 
+        idx === fileIndex ? { 
+          ...item, 
+          status: 'waiting',
+          progress: 0,
+          error: undefined,
+          canRetry: false
+        } : item
+      )
+    );
+    
+    // Restart processing
+    if (!isUploading) {
+      setTimeout(() => processUploadQueue(), 100);
+    }
+  }, [isUploading, processUploadQueue]);
+
+  const removeFromQueue = useCallback((fileIndex: number) => {
+    setUploadQueue(prev => prev.filter((_, idx) => idx !== fileIndex));
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -321,7 +342,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           Drag and drop photos here, or click to select from your device
         </Typography>
 
-        {/* Hidden file inputs for different scenarios */}
+        {/* Hidden file inputs */}
         <input
           id="photo-gallery-input"
           type="file"
@@ -380,99 +401,153 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         </Box>
 
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
-          Supports: JPG, PNG, HEIC and other image formats (max 50MB per photo)
+          📱 Camera photos are automatically optimized for mobile upload (max 50MB per photo)
         </Typography>
       </Paper>
 
-      {uploadProgress.length > 0 && (
+      {uploadQueue.length > 0 && (
         <Card sx={{ mt: 3 }}>
           <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-              <CloudUpload sx={{ mr: 1, color: 'primary.main' }} />
-              <Typography variant="h6" color="primary">
-                Uploading Photos...
-              </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, justifyContent: 'space-between' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <CloudUpload sx={{ mr: 1, color: 'primary.main' }} />
+                <Typography variant="h6" color="primary">
+                  Upload Queue ({uploadQueue.filter(q => q.status === 'completed').length}/{uploadQueue.length})
+                </Typography>
+              </Box>
+              {isUploading && (
+                <Typography variant="caption" color="text.secondary">
+                  Processing files one at a time...
+                </Typography>
+              )}
             </Box>
             
             <List dense>
-              {uploadProgress.map((item, index) => (
-                <ListItem key={index} sx={{ px: 0 }}>
+              {uploadQueue.map((item, index) => (
+                <ListItem 
+                  key={index} 
+                  sx={{ 
+                    px: 0, 
+                    bgcolor: currentUploadIndex === index ? alpha(theme.palette.primary.main, 0.05) : 'transparent',
+                    borderRadius: 1,
+                    mb: 1
+                  }}
+                >
                   <ListItemText
                     primary={
                       <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                        <Typography variant="body2" sx={{ flexGrow: 1 }}>
-                          {item.fileName}
-                        </Typography>
-                        <Box sx={{ ml: 2 }}>
-                          {item.status === 'uploading' && (
+                        <Box sx={{ flexGrow: 1 }}>
+                          <Typography variant="body2" sx={{ fontWeight: currentUploadIndex === index ? 'bold' : 'normal' }}>
+                            {item.fileName}
+                          </Typography>
+                          <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
+                            {item.isCamera && (
+                              <Chip 
+                                label="📷 Camera" 
+                                size="small" 
+                                color="primary" 
+                                variant="outlined"
+                              />
+                            )}
+                            {item.status === 'compressing' && (
+                              <Chip 
+                                label="🗜️ Compressing" 
+                                size="small" 
+                                color="warning"
+                              />
+                            )}
+                            {item.status === 'waiting' && (
+                              <Chip 
+                                label="⏳ Waiting" 
+                                size="small" 
+                                variant="outlined"
+                              />
+                            )}
+                          </Stack>
+                        </Box>
+                        
+                        <Box sx={{ ml: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                          {item.status === 'uploading' || item.status === 'compressing' ? (
                             <Typography variant="caption" color="primary">
                               {Math.round(item.progress)}%
                             </Typography>
-                          )}
-                          {item.status === 'completed' && (
+                          ) : item.status === 'completed' ? (
                             <CheckCircle sx={{ color: 'success.main', fontSize: 20 }} />
-                          )}
-                          {item.status === 'error' && (
-                            <ErrorIcon sx={{ color: 'error.main', fontSize: 20 }} />
-                          )}
+                          ) : item.status === 'error' ? (
+                            <>
+                              <ErrorIcon sx={{ color: 'error.main', fontSize: 20 }} />
+                              {item.canRetry && (
+                                <IconButton
+                                  size="small"
+                                  onClick={() => retryUpload(index)}
+                                  sx={{ color: 'primary.main' }}
+                                >
+                                  <Refresh fontSize="small" />
+                                </IconButton>
+                              )}
+                              <IconButton
+                                size="small"
+                                onClick={() => removeFromQueue(index)}
+                                sx={{ color: 'error.main' }}
+                              >
+                                <Delete fontSize="small" />
+                              </IconButton>
+                            </>
+                          ) : null}
                         </Box>
                       </Box>
                     }
                     secondary={
-                      <LinearProgress
-                        variant="determinate"
-                        value={item.progress}
-                        sx={{
-                          height: 4,
-                          borderRadius: 2,
-                          bgcolor: 'grey.200',
-                          '& .MuiLinearProgress-bar': {
-                            bgcolor: item.status === 'error' ? 'error.main' : 
-                                   item.status === 'completed' ? 'success.main' : 'primary.main'
-                          }
-                        }}
-                      />
+                      <Box>
+                        <LinearProgress
+                          variant="determinate"
+                          value={item.progress}
+                          sx={{
+                            height: 4,
+                            borderRadius: 2,
+                            bgcolor: 'grey.200',
+                            '& .MuiLinearProgress-bar': {
+                              bgcolor: item.status === 'error' ? 'error.main' : 
+                                     item.status === 'completed' ? 'success.main' :
+                                     item.status === 'compressing' ? 'warning.main' : 'primary.main'
+                            }
+                          }}
+                        />
+                        {item.error && (
+                          <Typography variant="caption" color="error" sx={{ mt: 0.5, display: 'block' }}>
+                            {item.error}
+                          </Typography>
+                        )}
+                      </Box>
                     }
                   />
                 </ListItem>
               ))}
             </List>
 
-            {uploadProgress.every(item => item.status === 'completed') && (
+            {uploadQueue.every(item => item.status === 'completed') && (
               <Alert severity="success" sx={{ mt: 2 }}>
-                All photos uploaded successfully! They will appear in the gallery momentarily.
+                🎉 All photos uploaded successfully! They will appear in the gallery momentarily.
               </Alert>
             )}
 
-            {uploadProgress.some(item => item.status === 'error') && (
-              <Alert severity="error" sx={{ mt: 2 }}>
-                <Typography variant="body2" component="div">
-                  Upload errors:
+            {uploadQueue.some(item => item.status === 'error') && (
+              <Alert severity="info" sx={{ mt: 2 }}>
+                <Typography variant="body2" component="div" sx={{ mb: 1 }}>
+                  💡 Camera Photo Upload Tips:
                 </Typography>
-                {uploadProgress
-                  .filter(item => item.status === 'error')
-                  .map((item, idx) => (
-                    <Typography key={idx} variant="caption" component="div" sx={{ mt: 0.5 }}>
-                      • {item.fileName}: {item.error || 'Upload failed'}
-                    </Typography>
-                  ))}
-                <Box sx={{ mt: 2 }}>
-                  <Typography variant="body2" sx={{ fontWeight: 'bold', mb: 1 }}>
-                    📱 Mobile Upload Tips:
-                  </Typography>
-                  <Typography variant="caption" component="div">
-                    • Try reducing photo quality in camera settings
-                  </Typography>
-                  <Typography variant="caption" component="div">
-                    • Use WiFi instead of cellular for large photos
-                  </Typography>
-                  <Typography variant="caption" component="div">
-                    • Upload one photo at a time if multiple fail
-                  </Typography>
-                  <Typography variant="caption" component="div">
-                    • Check your internet connection
-                  </Typography>
-                </Box>
+                <Typography variant="caption" component="div">
+                  • Large camera photos are automatically compressed and optimized
+                </Typography>
+                <Typography variant="caption" component="div">
+                  • Screenshots and smaller images upload faster than camera photos
+                </Typography>
+                <Typography variant="caption" component="div">
+                  • Use the retry button (🔄) for failed uploads
+                </Typography>
+                <Typography variant="caption" component="div">
+                  • Files upload one at a time for maximum reliability
+                </Typography>
               </Alert>
             )}
           </CardContent>

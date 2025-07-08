@@ -112,8 +112,8 @@ export const uploadPhoto = async (
         response = await new Promise<Response>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           
-          // Set timeout - mobile networks can be slower but still reasonable
-          xhr.timeout = 30000; // 30 seconds for mobile (reduced from 45)
+          // Set timeout - increased for large camera photos
+          xhr.timeout = 15000; // 15 seconds for mobile uploads
           
           xhr.onload = () => {
             console.log(`📱 XHR upload completed with status: ${xhr.status}`);
