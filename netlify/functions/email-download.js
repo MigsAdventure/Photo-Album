@@ -206,7 +206,7 @@ exports.handler = async (event, context) => {
     // Send email using professional Mailgun SMTP
     console.log(`📧 Sending professional email [${requestId}] to:`, email);
     
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       host: 'smtp.mailgun.org',
       port: 587,
       secure: false,

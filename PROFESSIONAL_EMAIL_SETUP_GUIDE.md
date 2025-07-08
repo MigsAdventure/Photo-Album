@@ -39,18 +39,23 @@ Ports: 25, 587, 465 (SSL/TLS)
 
 ### 1. Update Netlify Environment Variables
 
-In your Netlify Dashboard → Site Settings → Environment Variables, update:
+In your Netlify Dashboard → Site Settings → Environment Variables, add:
 
 ```bash
 # Professional Email Configuration
 EMAIL_USER=noreply@sharedmoments.socialboostai.com
-EMAIL_PASSWORD=your_highlevel_smtp_password
+EMAIL_PASSWORD=your_highlevel_smtp_password  # ⚠️ CHECK "Contains secret value"
 
 # Optional: Email Settings
 EMAIL_HOST=smtp.mailgun.org
 EMAIL_PORT=587
 EMAIL_FROM_NAME=SharedMoments
 ```
+
+**🔒 IMPORTANT SECURITY NOTE:**
+- For `EMAIL_PASSWORD`: **ALWAYS check "Contains secret value"** ✅
+- For `EMAIL_USER`: Can be left unchecked (not sensitive)
+- This ensures your SMTP password is encrypted and hidden from logs
 
 ### 2. Deploy Updated Code
 
