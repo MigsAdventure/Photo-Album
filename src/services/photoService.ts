@@ -102,30 +102,79 @@ export const uploadPhoto = async (
       console.log('Making fetch request to /.netlify/functions/upload');
       onProgress?.(10);
       
-      // Mobile uploads can take longer due to large file sizes and network conditions
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        if (isMobile) {
-          console.log('Mobile upload timeout extended to 30 seconds...');
-        } else {
+      // Mobile-specific upload with enhanced error handling
+      let response: Response;
+      
+      if (isMobile) {
+        console.log('🔄 Using mobile-optimized upload strategy');
+        
+        // For mobile: Use XMLHttpRequest instead of fetch for better compatibility
+        response = await new Promise<Response>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          
+          // Set timeout - mobile networks can be slower
+          xhr.timeout = 45000; // 45 seconds for mobile
+          
+          xhr.onload = () => {
+            console.log('XHR upload completed with status:', xhr.status);
+            const response = new Response(xhr.responseText, {
+              status: xhr.status,
+              statusText: xhr.statusText,
+              headers: new Headers()
+            });
+            resolve(response);
+          };
+          
+          xhr.onerror = () => {
+            console.error('XHR network error');
+            reject(new Error('Network error during mobile upload'));
+          };
+          
+          xhr.ontimeout = () => {
+            console.error('XHR timeout after 45 seconds');
+            reject(new Error('Mobile upload timed out - please try again'));
+          };
+          
+          xhr.onabort = () => {
+            console.error('XHR upload aborted');
+            reject(new Error('Mobile upload was cancelled'));
+          };
+          
+          // Progress tracking for mobile
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const progress = (event.loaded / event.total) * 90; // Reserve 10% for processing
+              onProgress?.(progress);
+            }
+          };
+          
+          xhr.open('POST', '/.netlify/functions/upload');
+          
+          // Mobile-specific headers
+          xhr.setRequestHeader('X-Mobile-Request', 'true');
+          xhr.setRequestHeader('X-Device-Type', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Mobile');
+          
+          console.log('Starting XHR mobile upload...');
+          xhr.send(formData);
+        });
+        
+      } else {
+        // Desktop: Use fetch as before
+        console.log('🖥️ Using desktop fetch strategy');
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
           controller.abort();
-        }
-      }, isMobile ? 30000 : 10000); // 30 seconds for mobile, 10 for desktop
+        }, 10000); // 10 seconds for desktop
 
-      const response = await fetch('/.netlify/functions/upload', {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-        // Add mobile-specific headers
-        ...(isMobile && {
-          headers: {
-            'X-Mobile-Request': 'true',
-            'X-Device-Type': isIOS ? 'iOS' : isAndroid ? 'Android' : 'Mobile'
-          }
-        })
-      });
+        response = await fetch('/.netlify/functions/upload', {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
+      }
 
       console.log('Response received:', {
         status: response.status,
