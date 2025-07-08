@@ -12,13 +12,15 @@ import {
   LinearProgress,
   useTheme,
   alpha,
-  useMediaQuery
+  useMediaQuery,
+  TextField,
+  Alert,
+  CircularProgress
 } from '@mui/material';
 import {
   PhotoCamera,
   PhotoLibrary,
   FileDownload,
-  Warning,
   QrCode,
   Close,
   Download,
@@ -26,9 +28,11 @@ import {
   Refresh,
   Delete,
   CheckCircle,
-  Error as ErrorIcon
+  Error as ErrorIcon,
+  Email,
+  GetApp
 } from '@mui/icons-material';
-import { downloadAllPhotos, uploadPhoto } from '../services/photoService';
+import { uploadPhoto, requestEmailDownload } from '../services/photoService';
 import { Photo, UploadProgress } from '../types';
 import QRCode from 'qrcode';
 
@@ -39,14 +43,22 @@ interface BottomNavbarProps {
 }
 
 const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadComplete }) => {
-  const [showDownloadDialog, setShowDownloadDialog] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
+  // Email download state
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSuccess, setEmailSuccess] = useState(false);
+  const [emailError, setEmailError] = useState('');
+  
+  // Upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  
+  // QR code state
   const [showQRDialog, setShowQRDialog] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const qrCanvasRef = useRef<HTMLCanvasElement>(null);
+  
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
@@ -549,29 +561,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       alert('No photos to download');
       return;
     }
-    setShowDownloadDialog(true);
-  };
-
-  const handleConfirmDownload = async () => {
-    setShowDownloadDialog(false);
-    setDownloading(true);
-    setDownloadProgress({ current: 0, total: photos.length });
-
-    try {
-      await downloadAllPhotos(eventId, (current, total) => {
-        setDownloadProgress({ current, total });
-      });
-      
-      // Show completion message
-      setTimeout(() => {
-        setDownloading(false);
-        setDownloadProgress({ current: 0, total: 0 });
-      }, 1000);
-    } catch (error) {
-      console.error('Download failed:', error);
-      setDownloading(false);
-      alert('Download failed. Please try again.');
-    }
+    setEmailDialogOpen(true);
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -781,48 +771,117 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         </Box>
       </Paper>
 
-      {/* Download Confirmation Dialog */}
-      <Dialog open={showDownloadDialog} onClose={() => setShowDownloadDialog(false)}>
+      {/* Professional Email Download Dialog */}
+      <Dialog
+        open={emailDialogOpen}
+        onClose={() => {
+          setEmailDialogOpen(false);
+          setEmail('');
+          setEmailError('');
+          setEmailSuccess(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
-          <Warning sx={{ mr: 1, color: 'warning.main' }} />
+          <Email sx={{ mr: 1, color: 'primary.main' }} />
           Download All Photos
         </DialogTitle>
+        
         <DialogContent>
-          <Typography>
-            Are you sure you want to download all <strong>{photos.length}</strong> photo{photos.length !== 1 ? 's' : ''} to your device?
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            The photos will be downloaded one by one to your default download folder.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setShowDownloadDialog(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleConfirmDownload} variant="contained">
-            Continue
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Download Progress Dialog */}
-      <Dialog open={downloading} sx={{ zIndex: 1500 }}>
-        <DialogTitle>Downloading Photos</DialogTitle>
-        <DialogContent sx={{ minWidth: 300 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
-            Downloaded {downloadProgress.current} of {downloadProgress.total} photos
-          </Typography>
-          <LinearProgress
-            variant="determinate"
-            value={(downloadProgress.current / downloadProgress.total) * 100}
-            sx={{ mt: 2, height: 8, borderRadius: 4 }}
-          />
-          {downloadProgress.current === downloadProgress.total && downloadProgress.total > 0 && (
-            <Typography variant="body2" color="success.main" sx={{ mt: 1 }}>
-              ✅ All photos downloaded successfully!
-            </Typography>
+          {emailSuccess ? (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🎉 Download link sent successfully! Check your email for the download link.
+            </Alert>
+          ) : (
+            <>
+              <Typography variant="body1" sx={{ mb: 3 }}>
+                We'll create a ZIP file with all {photos.length} photos and email you a download link.
+              </Typography>
+              
+              <Alert severity="info" sx={{ mb: 3 }}>
+                📧 The download link will expire in 48 hours for security.
+              </Alert>
+              
+              <TextField
+                autoFocus
+                margin="dense"
+                label="Your email address"
+                type="email"
+                fullWidth
+                variant="outlined"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={emailLoading}
+                error={!!emailError}
+                helperText={emailError || 'We\'ll only use this to send you the download link'}
+                placeholder="example@email.com"
+              />
+            </>
           )}
         </DialogContent>
+        
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          {emailSuccess ? (
+            <Button
+              onClick={() => {
+                setEmailDialogOpen(false);
+                setEmail('');
+                setEmailError('');
+                setEmailSuccess(false);
+              }}
+              variant="contained"
+              fullWidth
+            >
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => {
+                  setEmailDialogOpen(false);
+                  setEmail('');
+                  setEmailError('');
+                }}
+                disabled={emailLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!email) {
+                    setEmailError('Email address is required');
+                    return;
+                  }
+                  
+                  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    setEmailError('Please enter a valid email address');
+                    return;
+                  }
+                  
+                  setEmailLoading(true);
+                  setEmailError('');
+                  
+                  try {
+                    await requestEmailDownload(eventId, email);
+                    setEmailSuccess(true);
+                    console.log('✅ Email download request sent successfully');
+                  } catch (error: any) {
+                    console.error('❌ Email download request failed:', error);
+                    setEmailError(error.message || 'Failed to send download request. Please try again.');
+                  } finally {
+                    setEmailLoading(false);
+                  }
+                }}
+                variant="contained"
+                disabled={emailLoading || !email}
+                startIcon={emailLoading ? <CircularProgress size={20} /> : <GetApp />}
+              >
+                {emailLoading ? 'Preparing Download...' : 'Send Download Link'}
+              </Button>
+            </>
+          )}
+        </DialogActions>
       </Dialog>
 
       {/* Upload Progress Dialog with Retry Functionality */}

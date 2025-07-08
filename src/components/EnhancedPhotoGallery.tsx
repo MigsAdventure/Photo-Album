@@ -226,26 +226,11 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               Event Gallery
             </Typography>
           </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Chip 
-              label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
-              color="primary"
-              variant="outlined"
-            />
-            {photos.length > 0 && (
-              <Button
-                variant="contained"
-                startIcon={<GetApp />}
-                onClick={() => setEmailDialogOpen(true)}
-                sx={{ 
-                  bgcolor: 'success.main',
-                  '&:hover': { bgcolor: 'success.dark' }
-                }}
-              >
-                Download All
-              </Button>
-            )}
-          </Box>
+          <Chip 
+            label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
+            color="primary"
+            variant="outlined"
+          />
         </Box>
         <Typography variant="body1" color="text.secondary">
           Live updates from your guests - photos appear as they're uploaded!
