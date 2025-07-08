@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -12,23 +12,17 @@ import {
   ListItem,
   ListItemText,
   useTheme,
-  alpha,
-  Chip,
-  Snackbar
+  alpha
 } from '@mui/material';
 import {
   CloudUpload,
   PhotoCamera,
   CheckCircle,
   Error as ErrorIcon,
-  Add,
-  Sync,
-  CloudQueue,
-  Compress
+  Add
 } from '@mui/icons-material';
 import { uploadPhoto } from '../services/photoService';
 import { UploadProgress } from '../types';
-import pwaService, { ImageCompressionService, QueueStatus } from '../services/pwaService';
 
 interface PhotoUploadProps {
   weddingId: string;
@@ -38,56 +32,10 @@ interface PhotoUploadProps {
 const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
-  const [processingFiles, setProcessingFiles] = useState(false);
-  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
-  const [showPWAInfo, setShowPWAInfo] = useState(false);
   const theme = useTheme();
 
-  // Monitor upload queue status
-  useEffect(() => {
-    const updateQueueStatus = async () => {
-      if (pwaService.isServiceWorkerSupported()) {
-        const status = await pwaService.getQueueStatus();
-        setQueueStatus(status);
-      }
-    };
-
-    updateQueueStatus();
-    const interval = setInterval(updateQueueStatus, 2000);
-
-    // Listen for service worker events
-    const handleUploadQueued = (data: any) => {
-      console.log('📝 Upload queued:', data);
-      setShowPWAInfo(true);
-    };
-
-    const handleUploadCompleted = (data: any) => {
-      console.log('✅ Background upload completed:', data);
-      onUploadComplete?.();
-    };
-
-    const handleUploadFailed = (data: any) => {
-      console.error('❌ Background upload failed:', data);
-    };
-
-    if (pwaService.isServiceWorkerSupported()) {
-      pwaService.on('UPLOAD_QUEUED', handleUploadQueued);
-      pwaService.on('UPLOAD_COMPLETED', handleUploadCompleted);
-      pwaService.on('UPLOAD_FAILED', handleUploadFailed);
-    }
-
-    return () => {
-      clearInterval(interval);
-      if (pwaService.isServiceWorkerSupported()) {
-        pwaService.off('UPLOAD_QUEUED', handleUploadQueued);
-        pwaService.off('UPLOAD_COMPLETED', handleUploadCompleted);
-        pwaService.off('UPLOAD_FAILED', handleUploadFailed);
-      }
-    };
-  }, [onUploadComplete]);
-
   const handleFileSelect = useCallback(async (files: FileList) => {
-    console.log('🎉 Professional Upload System: Files selected:', files.length);
+    console.log('📤 Files selected:', files.length);
     
     const imageFiles = Array.from(files).filter(file => {
       console.log('File details:', {
@@ -105,139 +53,112 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
       return;
     }
 
-    console.log('🚀 Processing image files with professional compression...');
-    setProcessingFiles(true);
+    console.log('📤 Starting uploads...');
 
-    try {
-      // Step 1: Try compression, but fallback to original files if it fails
-      let processedFiles: File[] = [];
+    // Initialize progress tracking
+    const initialProgress: UploadProgress[] = imageFiles.map(file => ({
+      fileName: file.name,
+      progress: 0,
+      status: 'uploading'
+    }));
+    setUploadProgress(initialProgress);
+
+    // Upload files one at a time for better reliability
+    for (let index = 0; index < imageFiles.length; index++) {
+      const file = imageFiles[index];
       
       try {
-        console.log('🗜️ Attempting compression...');
-        processedFiles = await ImageCompressionService.processBatch(
-          imageFiles,
-          (current, total) => {
-            console.log(`📸 Processing image ${current}/${total}`);
-          }
-        );
-        console.log('✅ Compression successful');
-      } catch (compressionError) {
-        console.warn('⚠️ Compression failed, using original files:', compressionError);
-        processedFiles = imageFiles; // Use original files
-      }
-
-      console.log('📤 Starting uploads...');
-      setProcessingFiles(false);
-
-      // Initialize progress tracking
-      const initialProgress: UploadProgress[] = processedFiles.map(file => ({
-        fileName: file.name,
-        progress: 0,
-        status: 'uploading'
-      }));
-      setUploadProgress(initialProgress);
-      
-      for (let index = 0; index < processedFiles.length; index++) {
-        const file = processedFiles[index];
+        console.log(`Starting upload ${index + 1}/${imageFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
         
-        try {
-          console.log(`Starting upload ${index + 1}/${processedFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-          
-          // Check file size
-          const maxSize = 50 * 1024 * 1024; // 50MB
-          if (file.size > maxSize) {
-            throw new Error(`File ${file.name} is too large (max 50MB)`);
-          }
+        // Check file size
+        const maxSize = 50 * 1024 * 1024; // 50MB
+        if (file.size > maxSize) {
+          throw new Error(`File ${file.name} is too large (max 50MB)`);
+        }
 
-          // Enhanced retry logic
-          let uploadSuccess = false;
-          let retryCount = 0;
-          const maxRetries = 3; // Reduced since we have compression now
-          let lastError: any = null;
-          
-          while (!uploadSuccess && retryCount < maxRetries) {
-            try {
-              if (retryCount > 0) {
-                console.log(`Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
-                setUploadProgress(prev => 
-                  prev.map((item, i) => 
-                    i === index ? { 
-                      ...item, 
-                      progress: 0,
-                      error: `Retrying... (${retryCount}/${maxRetries})`,
-                      status: 'uploading'
-                    } : item
-                  )
-                );
-                
-                const delay = retryCount * 1000;
-                await new Promise<void>(resolve => setTimeout(resolve, delay));
-              }
+        // Simple retry logic
+        let uploadSuccess = false;
+        let retryCount = 0;
+        const maxRetries = 3;
+        let lastError: any = null;
+        
+        while (!uploadSuccess && retryCount < maxRetries) {
+          try {
+            if (retryCount > 0) {
+              console.log(`Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
+              setUploadProgress(prev => 
+                prev.map((item, i) => 
+                  i === index ? { 
+                    ...item, 
+                    progress: 0,
+                    error: `Retrying... (${retryCount}/${maxRetries})`,
+                    status: 'uploading'
+                  } : item
+                )
+              );
               
-              await uploadPhoto(file, weddingId, (progress) => {
-                setUploadProgress(prev => 
-                  prev.map((item, i) => 
-                    i === index ? { 
-                      ...item, 
-                      progress,
-                      error: undefined,
-                      status: 'uploading'
-                    } : item
-                  )
-                );
-              });
-              
-              uploadSuccess = true;
-              console.log(`✅ Upload successful for ${file.name} after ${retryCount + 1} attempts`);
-              
-            } catch (error) {
-              lastError = error;
-              retryCount++;
-              console.error(`❌ Upload attempt ${retryCount}/${maxRetries} failed for ${file.name}:`, error);
-              
-              if (retryCount >= maxRetries) {
-                throw lastError;
-              }
+              const delay = retryCount * 1000;
+              await new Promise<void>(resolve => setTimeout(resolve, delay));
+            }
+            
+            await uploadPhoto(file, weddingId, (progress) => {
+              setUploadProgress(prev => 
+                prev.map((item, i) => 
+                  i === index ? { 
+                    ...item, 
+                    progress,
+                    error: undefined,
+                    status: 'uploading'
+                  } : item
+                )
+              );
+            });
+            
+            uploadSuccess = true;
+            console.log(`✅ Upload successful for ${file.name} after ${retryCount + 1} attempts`);
+            
+          } catch (error) {
+            lastError = error;
+            retryCount++;
+            console.error(`❌ Upload attempt ${retryCount}/${maxRetries} failed for ${file.name}:`, error);
+            
+            if (retryCount >= maxRetries) {
+              throw lastError;
             }
           }
-
-          setUploadProgress(prev => 
-            prev.map((item, i) => 
-              i === index ? { ...item, status: 'completed', progress: 100 } : item
-            )
-          );
-          
-          // Small delay between uploads for stability
-          if (index < processedFiles.length - 1) {
-            await new Promise<void>(resolve => setTimeout(resolve, 800));
-          }
-          
-        } catch (error) {
-          console.error(`❌ Final failure for ${file.name}:`, error);
-          setUploadProgress(prev => 
-            prev.map((item, i) => 
-              i === index ? { 
-                ...item, 
-                status: 'error' as const,
-                progress: 0,
-                error: error instanceof Error ? error.message : 'Upload failed'
-              } : item
-            )
-          );
         }
+
+        setUploadProgress(prev => 
+          prev.map((item, i) => 
+            i === index ? { ...item, status: 'completed', progress: 100 } : item
+          )
+        );
+        
+        // Small delay between uploads for stability
+        if (index < imageFiles.length - 1) {
+          await new Promise<void>(resolve => setTimeout(resolve, 1000));
+        }
+        
+      } catch (error) {
+        console.error(`❌ Final failure for ${file.name}:`, error);
+        setUploadProgress(prev => 
+          prev.map((item, i) => 
+            i === index ? { 
+              ...item, 
+              status: 'error' as const,
+              progress: 0,
+              error: error instanceof Error ? error.message : 'Upload failed'
+            } : item
+          )
+        );
       }
-      
-    } catch (error) {
-      console.error('❌ Upload process failed:', error);
-    } finally {
-      setProcessingFiles(false);
-      
-      // Clear progress after delay
-      setTimeout(() => {
-        setUploadProgress([]);
-        onUploadComplete?.();
-      }, 3000);
     }
+    
+    // Clear progress after delay
+    setTimeout(() => {
+      setUploadProgress([]);
+      onUploadComplete?.();
+    }, 3000);
   }, [weddingId, onUploadComplete]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -329,6 +250,15 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           capture="environment"
         />
 
+        <input
+          id="photo-upload-input"
+          type="file"
+          multiple
+          accept="image/*,image/heic,image/heif"
+          onChange={handleFileInputChange}
+          style={{ display: 'none' }}
+        />
+
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, justifyContent: 'center' }}>
           <Button
             variant="contained"
@@ -362,110 +292,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
           Supports: JPG, PNG, HEIC and other image formats (max 50MB per photo)
         </Typography>
-        
-        {/* PWA Status Indicator */}
-        {pwaService.isServiceWorkerSupported() && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-            <Chip 
-              icon={<CloudQueue />} 
-              label="Professional Background Upload Ready" 
-              size="small" 
-              color="primary" 
-              variant="outlined"
-            />
-          </Box>
-        )}
       </Paper>
-
-      {/* Processing Status */}
-      {processingFiles && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-              <Compress sx={{ mr: 1, color: 'primary.main' }} />
-              <Typography variant="h6" color="primary">
-                Processing Images...
-              </Typography>
-            </Box>
-            <Typography variant="body2" color="text.secondary">
-              Optimizing images for faster, more reliable uploads while maintaining quality
-            </Typography>
-            <LinearProgress sx={{ mt: 2 }} />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* PWA Background Upload Status */}
-      {queueStatus && queueStatus.total > 0 && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-              <Sync sx={{ mr: 1, color: 'primary.main' }} />
-              <Typography variant="h6" color="primary">
-                Background Upload Queue
-              </Typography>
-            </Box>
-            
-            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
-              {queueStatus.uploading > 0 && (
-                <Chip 
-                  label={`${queueStatus.uploading} Uploading`} 
-                  color="primary" 
-                  size="small" 
-                />
-              )}
-              {queueStatus.queued > 0 && (
-                <Chip 
-                  label={`${queueStatus.queued} Queued`} 
-                  color="default" 
-                  size="small" 
-                />
-              )}
-              {queueStatus.completed > 0 && (
-                <Chip 
-                  label={`${queueStatus.completed} Completed`} 
-                  color="success" 
-                  size="small" 
-                />
-              )}
-              {queueStatus.retrying > 0 && (
-                <Chip 
-                  label={`${queueStatus.retrying} Retrying`} 
-                  color="warning" 
-                  size="small" 
-                />
-              )}
-              {queueStatus.failed > 0 && (
-                <Chip 
-                  label={`${queueStatus.failed} Failed`} 
-                  color="error" 
-                  size="small" 
-                />
-              )}
-            </Box>
-            
-            <Typography variant="body2" color="text.secondary">
-              Photos are uploading in the background. You can close this browser tab and uploads will continue.
-            </Typography>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* PWA Information Snackbar */}
-      <Snackbar
-        open={showPWAInfo}
-        autoHideDuration={6000}
-        onClose={() => setShowPWAInfo(false)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert 
-          onClose={() => setShowPWAInfo(false)} 
-          severity="success" 
-          sx={{ width: '100%' }}
-        >
-          Photos queued for reliable background upload! You can close the browser - uploads will continue.
-        </Alert>
-      </Snackbar>
 
       {uploadProgress.length > 0 && (
         <Card sx={{ mt: 3 }}>
