@@ -53,10 +53,10 @@ R2_BUCKET_NAME=your_bucket_name
 R2_PUBLIC_URL=https://your-bucket.your-domain.com
 ```
 
-### Email System
+### Email System (Professional Mailgun via HighLevel)
 ```bash
-EMAIL_USER=your_gmail_address@gmail.com
-EMAIL_PASSWORD=your_app_specific_password
+EMAIL_USER=noreply@sharedmoments.socialboostai.com
+EMAIL_PASSWORD=your_mailgun_smtp_password
 ```
 
 ## 📦 Dependencies
