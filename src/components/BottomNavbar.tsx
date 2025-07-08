@@ -30,7 +30,8 @@ import {
   CheckCircle,
   Error as ErrorIcon,
   Email,
-  GetApp
+  GetApp,
+  Print
 } from '@mui/icons-material';
 import { uploadPhoto, requestEmailDownload } from '../services/photoService';
 import { Photo, UploadProgress } from '../types';
@@ -1084,29 +1085,122 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           )}
         </DialogContent>
 
-        <DialogActions sx={{ p: 3, justifyContent: 'center', gap: 2 }}>
+        <DialogActions sx={{ 
+          p: 3, 
+          flexDirection: isMobile ? 'column' : 'row',
+          justifyContent: 'center', 
+          gap: isMobile ? 1 : 2,
+          '& .MuiButton-root': {
+            width: isMobile ? '100%' : 'auto',
+            minWidth: isMobile ? 'auto' : 130
+          }
+        }}>
+          {/* Primary action first on mobile */}
+          <Button 
+            onClick={() => window.open(eventUrl, '_blank')} 
+            variant="contained"
+            sx={{ 
+              order: isMobile ? 1 : 4,
+              minHeight: 48 
+            }}
+          >
+            Visit Gallery
+          </Button>
+          
+          {/* Print QR Code button */}
+          <Button 
+            onClick={() => {
+              // Create print-optimized version
+              const printWindow = window.open('', '_blank');
+              if (printWindow && qrCanvasRef.current) {
+                const qrDataUrl = qrCanvasRef.current.toDataURL();
+                const eventTitle = document.title;
+                
+                printWindow.document.write(`
+                  <!DOCTYPE html>
+                  <html>
+                    <head>
+                      <title>Event QR Code - ${eventTitle}</title>
+                      <style>
+                        @media print {
+                          body { margin: 0; padding: 20px; font-family: Arial, sans-serif; }
+                          .print-container { text-align: center; max-width: 400px; margin: 0 auto; }
+                          .qr-image { width: 200px; height: 200px; margin: 20px 0; border: 2px solid #000; }
+                          .title { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+                          .subtitle { font-size: 16px; color: #666; margin-bottom: 20px; }
+                          .url { font-size: 12px; word-break: break-all; background: #f5f5f5; padding: 10px; border-radius: 5px; margin: 20px 0; }
+                          .instructions { font-size: 14px; color: #333; margin-top: 20px; text-align: left; }
+                          .instructions ol { padding-left: 20px; }
+                          .instructions li { margin-bottom: 8px; }
+                        }
+                        @media screen {
+                          body { background: #f0f0f0; padding: 40px; }
+                          .print-container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+                        }
+                      </style>
+                    </head>
+                    <body>
+                      <div class="print-container">
+                        <div class="title">Event Photo Gallery</div>
+                        <div class="subtitle">Scan QR Code to Access Photos</div>
+                        <img src="${qrDataUrl}" alt="QR Code" class="qr-image" />
+                        <div class="url">${eventUrl}</div>
+                        <div class="instructions">
+                          <strong>Instructions for Guests:</strong>
+                          <ol>
+                            <li>Open your phone's camera app</li>
+                            <li>Point the camera at this QR code</li>
+                            <li>Tap the notification that appears</li>
+                            <li>You'll be taken directly to the photo gallery</li>
+                            <li>Or manually type the URL above into your browser</li>
+                          </ol>
+                          <p><strong>Share your photos:</strong> Upload photos directly from your phone to share with everyone!</p>
+                        </div>
+                      </div>
+                    </body>
+                  </html>
+                `);
+                printWindow.document.close();
+                
+                // Wait for images to load then print
+                setTimeout(() => {
+                  printWindow.print();
+                  printWindow.close();
+                }, 500);
+              }
+            }}
+            variant="outlined"
+            startIcon={<Print />}
+            sx={{ 
+              order: isMobile ? 2 : 1,
+              minHeight: 48 
+            }}
+          >
+            Print QR Code
+          </Button>
+          
           <Button 
             onClick={downloadQR} 
             variant="outlined"
             startIcon={<Download />}
-            sx={{ minWidth: 130 }}
+            sx={{ 
+              order: isMobile ? 3 : 2,
+              minHeight: 48 
+            }}
           >
             Download QR
           </Button>
+          
           <Button 
             onClick={copyQRLink} 
             variant="outlined"
             startIcon={<ContentCopy />}
-            sx={{ minWidth: 130 }}
+            sx={{ 
+              order: isMobile ? 4 : 3,
+              minHeight: 48 
+            }}
           >
             Copy Link
-          </Button>
-          <Button 
-            onClick={() => window.open(eventUrl, '_blank')} 
-            variant="contained"
-            sx={{ minWidth: 130 }}
-          >
-            Visit Gallery
           </Button>
         </DialogActions>
       </Dialog>
