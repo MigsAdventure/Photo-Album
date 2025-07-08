@@ -16,7 +16,12 @@ import {
   Fade,
   Zoom,
   Paper,
-  alpha
+  alpha,
+  Button,
+  TextField,
+  DialogActions,
+  Alert,
+  CircularProgress
 } from '@mui/material';
 import {
   Close,
@@ -24,10 +29,12 @@ import {
   AccessTime,
   FileDownload,
   ArrowBackIos,
-  ArrowForwardIos
+  ArrowForwardIos,
+  Email,
+  GetApp
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, downloadPhoto as downloadPhotoService } from '../services/photoService';
+import { subscribeToPhotos, downloadPhoto as downloadPhotoService, requestEmailDownload } from '../services/photoService';
 import { Photo } from '../types';
 
 interface EnhancedPhotoGalleryProps {
@@ -39,6 +46,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [loading, setLoading] = useState(true);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
   const [thumbnailsRef, setThumbnailsRef] = useState<HTMLElement | null>(null);
+  
+  // Email download state
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSuccess, setEmailSuccess] = useState(false);
+  const [emailError, setEmailError] = useState('');
+  
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
@@ -204,16 +219,33 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   return (
     <Container maxWidth="lg">
       <Box sx={{ mb: 4 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-          <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
-          <Typography variant="h4" color="primary" sx={{ flexGrow: 1 }}>
-            Event Gallery
-          </Typography>
-          <Chip 
-            label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
-            color="primary"
-            variant="outlined"
-          />
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
+            <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
+            <Typography variant="h4" color="primary">
+              Event Gallery
+            </Typography>
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Chip 
+              label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
+              color="primary"
+              variant="outlined"
+            />
+            {photos.length > 0 && (
+              <Button
+                variant="contained"
+                startIcon={<GetApp />}
+                onClick={() => setEmailDialogOpen(true)}
+                sx={{ 
+                  bgcolor: 'success.main',
+                  '&:hover': { bgcolor: 'success.dark' }
+                }}
+              >
+                Download All
+              </Button>
+            )}
+          </Box>
         </Box>
         <Typography variant="body1" color="text.secondary">
           Live updates from your guests - photos appear as they're uploaded!
@@ -473,6 +505,119 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             </Paper>
           </Box>
         )}
+      </Dialog>
+
+      {/* Email Download Dialog */}
+      <Dialog
+        open={emailDialogOpen}
+        onClose={() => {
+          setEmailDialogOpen(false);
+          setEmail('');
+          setEmailError('');
+          setEmailSuccess(false);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
+          <Email sx={{ mr: 1, color: 'primary.main' }} />
+          Download All Photos
+        </DialogTitle>
+        
+        <DialogContent>
+          {emailSuccess ? (
+            <Alert severity="success" sx={{ mb: 2 }}>
+              🎉 Download link sent successfully! Check your email for the download link.
+            </Alert>
+          ) : (
+            <>
+              <Typography variant="body1" sx={{ mb: 3 }}>
+                We'll create a ZIP file with all {photos.length} photos and email you a download link.
+              </Typography>
+              
+              <Alert severity="info" sx={{ mb: 3 }}>
+                📧 The download link will expire in 48 hours for security.
+              </Alert>
+              
+              <TextField
+                autoFocus
+                margin="dense"
+                label="Your email address"
+                type="email"
+                fullWidth
+                variant="outlined"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={emailLoading}
+                error={!!emailError}
+                helperText={emailError || 'We\'ll only use this to send you the download link'}
+                placeholder="example@email.com"
+              />
+            </>
+          )}
+        </DialogContent>
+        
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          {emailSuccess ? (
+            <Button
+              onClick={() => {
+                setEmailDialogOpen(false);
+                setEmail('');
+                setEmailError('');
+                setEmailSuccess(false);
+              }}
+              variant="contained"
+              fullWidth
+            >
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => {
+                  setEmailDialogOpen(false);
+                  setEmail('');
+                  setEmailError('');
+                }}
+                disabled={emailLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!email) {
+                    setEmailError('Email address is required');
+                    return;
+                  }
+                  
+                  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                    setEmailError('Please enter a valid email address');
+                    return;
+                  }
+                  
+                  setEmailLoading(true);
+                  setEmailError('');
+                  
+                  try {
+                    await requestEmailDownload(eventId, email);
+                    setEmailSuccess(true);
+                    console.log('✅ Email download request sent successfully');
+                  } catch (error: any) {
+                    console.error('❌ Email download request failed:', error);
+                    setEmailError(error.message || 'Failed to send download request. Please try again.');
+                  } finally {
+                    setEmailLoading(false);
+                  }
+                }}
+                variant="contained"
+                disabled={emailLoading || !email}
+                startIcon={emailLoading ? <CircularProgress size={20} /> : <GetApp />}
+              >
+                {emailLoading ? 'Preparing Download...' : 'Send Download Link'}
+              </Button>
+            </>
+          )}
+        </DialogActions>
       </Dialog>
     </Container>
   );
