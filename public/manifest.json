@@ -1,25 +1,49 @@
 {
-  "short_name": "React App",
-  "name": "Create React App Sample",
+  "name": "SharedMoments - Wedding Photo Sharing",
+  "short_name": "SharedMoments",
+  "description": "Share and view wedding photos instantly",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1976d2",
+  "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
-    },
-    {
       "src": "logo192.png",
+      "sizes": "192x192",
       "type": "image/png",
-      "sizes": "192x192"
+      "purpose": "any maskable"
     },
     {
       "src": "logo512.png",
+      "sizes": "512x512",
       "type": "image/png",
-      "sizes": "512x512"
+      "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
-  "display": "standalone",
-  "theme_color": "#000000",
-  "background_color": "#ffffff"
+  "categories": ["photo", "lifestyle", "social"],
+  "scope": "/",
+  "id": "sharedmoments-wedding-app",
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "Upload Photos",
+      "short_name": "Upload",
+      "description": "Upload wedding photos",
+      "url": "/",
+      "icons": [
+        {
+          "src": "logo192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "logo512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
 }
