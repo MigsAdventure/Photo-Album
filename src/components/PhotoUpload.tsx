@@ -34,8 +34,62 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
   const theme = useTheme();
 
+  // Utility function to compress images for mobile
+  const compressImage = useCallback(async (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // Calculate new dimensions (max 1920x1080 for mobile)
+        const maxWidth = 1920;
+        const maxHeight = 1080;
+        let { width, height } = img;
+        
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+        if (height > maxHeight) {
+          width = (width * maxHeight) / height;
+          height = maxHeight;
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        // Draw and compress
+        ctx?.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              const compressedFile = new File([blob], file.name, {
+                type: 'image/jpeg',
+                lastModified: Date.now()
+              });
+              console.log(`📷 Image compressed: ${(file.size / 1024 / 1024).toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`);
+              resolve(compressedFile);
+            } else {
+              resolve(file);
+            }
+          },
+          'image/jpeg',
+          0.85 // 85% quality
+        );
+      };
+      
+      img.onerror = () => resolve(file);
+      img.src = URL.createObjectURL(file);
+    });
+  }, []);
+
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);
+    
+    // Enhanced mobile detection
+    const userAgent = navigator.userAgent;
+    const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|Windows Phone/i.test(userAgent);
     
     const imageFiles = Array.from(files).filter(file => {
       console.log('File details:', {
@@ -63,12 +117,44 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     }));
     setUploadProgress(initialProgress);
 
+    // Process files (compress large mobile images)
+    const processedFiles: File[] = [];
+    for (let i = 0; i < imageFiles.length; i++) {
+      const file = imageFiles[i];
+      const sizeMB = file.size / 1024 / 1024;
+      
+      // Auto-compress large images on mobile
+      if (isMobile && sizeMB > 8) {
+        console.log(`📱 Large mobile image detected (${sizeMB.toFixed(2)}MB), compressing...`);
+        setUploadProgress(prev => 
+          prev.map((item, index) => 
+            index === i ? { 
+              ...item, 
+              progress: 10,
+              error: 'Compressing large image for mobile...',
+              status: 'uploading'
+            } : item
+          )
+        );
+        
+        try {
+          const compressedFile = await compressImage(file);
+          processedFiles.push(compressedFile);
+        } catch (error) {
+          console.error('Compression failed, using original:', error);
+          processedFiles.push(file);
+        }
+      } else {
+        processedFiles.push(file);
+      }
+    }
+
     // Upload files one at a time for better reliability
-    for (let index = 0; index < imageFiles.length; index++) {
-      const file = imageFiles[index];
+    for (let index = 0; index < processedFiles.length; index++) {
+      const file = processedFiles[index];
       
       try {
-        console.log(`Starting upload ${index + 1}/${imageFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+        console.log(`Starting upload ${index + 1}/${processedFiles.length}: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
         
         // Check file size
         const maxSize = 50 * 1024 * 1024; // 50MB
@@ -76,16 +162,16 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           throw new Error(`File ${file.name} is too large (max 50MB)`);
         }
 
-        // Simple retry logic
+        // Enhanced retry logic for mobile
         let uploadSuccess = false;
         let retryCount = 0;
-        const maxRetries = 3;
+        const maxRetries = isMobile ? 2 : 3; // Fewer retries on mobile
         let lastError: any = null;
         
         while (!uploadSuccess && retryCount < maxRetries) {
           try {
             if (retryCount > 0) {
-              console.log(`Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
+              console.log(`📱 Retry attempt ${retryCount}/${maxRetries} for ${file.name}`);
               setUploadProgress(prev => 
                 prev.map((item, i) => 
                   i === index ? { 
@@ -97,7 +183,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
                 )
               );
               
-              const delay = retryCount * 1000;
+              // Longer delay for mobile retries
+              const delay = isMobile ? (retryCount * 2000) : (retryCount * 1000);
               await new Promise<void>(resolve => setTimeout(resolve, delay));
             }
             
@@ -134,20 +221,23 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           )
         );
         
-        // Small delay between uploads for stability
-        if (index < imageFiles.length - 1) {
-          await new Promise<void>(resolve => setTimeout(resolve, 1000));
+        // Longer delay between uploads on mobile for stability
+        if (index < processedFiles.length - 1) {
+          const delay = isMobile ? 2000 : 1000;
+          await new Promise<void>(resolve => setTimeout(resolve, delay));
         }
         
       } catch (error) {
         console.error(`❌ Final failure for ${file.name}:`, error);
+        const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+        
         setUploadProgress(prev => 
           prev.map((item, i) => 
             i === index ? { 
               ...item, 
               status: 'error' as const,
               progress: 0,
-              error: error instanceof Error ? error.message : 'Upload failed'
+              error: errorMessage
             } : item
           )
         );
@@ -158,8 +248,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
     setTimeout(() => {
       setUploadProgress([]);
       onUploadComplete?.();
-    }, 3000);
-  }, [weddingId, onUploadComplete]);
+    }, 5000); // Longer display time for mobile users to read results
+  }, [weddingId, onUploadComplete, compressImage]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -366,9 +456,23 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
                       • {item.fileName}: {item.error || 'Upload failed'}
                     </Typography>
                   ))}
-                <Typography variant="body2" sx={{ mt: 1 }}>
-                  Please try again. For mobile users: try taking smaller photos or using "Choose from Gallery" instead.
-                </Typography>
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                    📱 Mobile Upload Tips:
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    • Try reducing photo quality in camera settings
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    • Use WiFi instead of cellular for large photos
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    • Upload one photo at a time if multiple fail
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    • Check your internet connection
+                  </Typography>
+                </Box>
               </Alert>
             )}
           </CardContent>

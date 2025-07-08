@@ -112,126 +112,195 @@ export const uploadPhoto = async (
         response = await new Promise<Response>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           
-          // Set timeout - mobile networks can be slower
-          xhr.timeout = 45000; // 45 seconds for mobile
+          // Set timeout - mobile networks can be slower but still reasonable
+          xhr.timeout = 30000; // 30 seconds for mobile (reduced from 45)
           
           xhr.onload = () => {
-            console.log('XHR upload completed with status:', xhr.status);
+            console.log(`📱 XHR upload completed with status: ${xhr.status}`);
+            
+            // Parse response headers
+            const headers = new Headers();
+            xhr.getAllResponseHeaders().split('\r\n').forEach(line => {
+              const parts = line.split(': ');
+              if (parts.length === 2) {
+                headers.set(parts[0], parts[1]);
+              }
+            });
+            
             const response = new Response(xhr.responseText, {
               status: xhr.status,
               statusText: xhr.statusText,
-              headers: new Headers()
+              headers: headers
             });
             resolve(response);
           };
           
-          xhr.onerror = () => {
-            console.error('XHR network error');
-            reject(new Error('Network error during mobile upload'));
+          xhr.onerror = (error) => {
+            console.error('❌ XHR network error:', error);
+            reject(new Error('Network error during mobile upload - check your connection'));
           };
           
           xhr.ontimeout = () => {
-            console.error('XHR timeout after 45 seconds');
-            reject(new Error('Mobile upload timed out - please try again'));
+            console.error('❌ XHR timeout after 30 seconds');
+            reject(new Error('Mobile upload timed out - the image may be too large or connection too slow'));
           };
           
           xhr.onabort = () => {
-            console.error('XHR upload aborted');
+            console.error('❌ XHR upload aborted');
             reject(new Error('Mobile upload was cancelled'));
           };
           
-          // Progress tracking for mobile
+          xhr.onloadstart = () => {
+            console.log('📱 Mobile upload started');
+            onProgress?.(5);
+          };
+          
+          // Enhanced progress tracking for mobile
           xhr.upload.onprogress = (event) => {
             if (event.lengthComputable) {
-              const progress = (event.loaded / event.total) * 90; // Reserve 10% for processing
-              onProgress?.(progress);
+              const uploadProgress = (event.loaded / event.total) * 85; // Reserve 15% for backend processing
+              console.log(`📊 Upload progress: ${Math.round(uploadProgress)}%`);
+              onProgress?.(uploadProgress);
             }
+          };
+          
+          xhr.upload.onload = () => {
+            console.log('📤 Upload data sent, waiting for server response...');
+            onProgress?.(90); // Upload sent, backend processing
+          };
+          
+          xhr.upload.onerror = (error) => {
+            console.error('❌ Upload error:', error);
+            reject(new Error('Upload failed - please try a smaller image'));
           };
           
           xhr.open('POST', '/.netlify/functions/upload');
           
-          // Mobile-specific headers
+          // Mobile-specific headers for backend tracking
           xhr.setRequestHeader('X-Mobile-Request', 'true');
           xhr.setRequestHeader('X-Device-Type', isIOS ? 'iOS' : isAndroid ? 'Android' : 'Mobile');
           
-          console.log('Starting XHR mobile upload...');
+          console.log('🚀 Starting XHR mobile upload...');
           xhr.send(formData);
         });
         
-      } else {
-        // Desktop: Use fetch as before
-        console.log('🖥️ Using desktop fetch strategy');
-        
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          controller.abort();
-        }, 10000); // 10 seconds for desktop
+    } else {
+      // Desktop: Use fetch as before
+      console.log('🖥️ Using desktop fetch strategy');
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 10000); // 10 seconds for desktop
 
-        response = await fetch('/.netlify/functions/upload', {
-          method: 'POST',
-          body: formData,
-          signal: controller.signal
-        });
+      response = await fetch('/.netlify/functions/upload', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+        headers: {
+          'X-Device-Type': 'Desktop'
+        }
+      });
 
-        clearTimeout(timeoutId);
-      }
+      clearTimeout(timeoutId);
+    }
 
-      console.log('Response received:', {
+      console.log('📥 Response received:', {
         status: response.status,
         statusText: response.statusText,
         ok: response.ok,
-        headers: Object.fromEntries(response.headers.entries())
+        requestId: response.headers.get('X-Request-ID') || 'unknown',
+        contentLength: response.headers.get('Content-Length')
       });
 
-      onProgress?.(50);
+      onProgress?.(95);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('Response not ok. Raw error text:', errorText);
+        console.error('❌ Response not ok. Raw error text:', errorText);
+        
+        let errorMessage = `Upload failed with status ${response.status}`;
+        let requestId = 'unknown';
         
         try {
           const errorData = JSON.parse(errorText);
-          console.error('Parsed error data:', errorData);
-          throw new Error(errorData.error || `Upload failed with status ${response.status}`);
+          console.error('❌ Parsed error data:', errorData);
+          errorMessage = errorData.error || errorMessage;
+          requestId = errorData.requestId || requestId;
+          
+          // Provide specific error messages for mobile users
+          if (isMobile) {
+            if (errorData.error?.includes('timeout')) {
+              errorMessage = 'Upload timed out. Try using a smaller image or better connection.';
+            } else if (errorData.error?.includes('parsing')) {
+              errorMessage = 'Image format issue. Try taking a new photo or using JPEG format.';
+            } else if (errorData.error?.includes('size')) {
+              errorMessage = 'Image too large. Try reducing image quality in camera settings.';
+            }
+          }
+          
         } catch (parseError) {
-          console.error('Failed to parse error response as JSON:', parseError);
-          throw new Error(`Upload failed with status ${response.status}: ${errorText}`);
+          console.error('❌ Failed to parse error response as JSON:', parseError);
         }
+        
+        const enhancedError = new Error(errorMessage);
+        (enhancedError as any).requestId = requestId;
+        throw enhancedError;
       }
 
       const resultText = await response.text();
-      console.log('Raw response text:', resultText);
+      console.log('✅ Raw response text:', resultText.substring(0, 200) + (resultText.length > 200 ? '...' : ''));
       
       let result;
       try {
         result = JSON.parse(resultText);
-        console.log('Parsed response:', result);
+        console.log('✅ Parsed response:', {
+          success: result.success,
+          photoId: result.photoId,
+          fileName: result.fileName,
+          size: result.size,
+          requestId: result.requestId
+        });
       } catch (parseError) {
-        console.error('Failed to parse successful response as JSON:', parseError);
+        console.error('❌ Failed to parse successful response as JSON:', parseError);
         throw new Error('Server returned invalid response format');
       }
       
       onProgress?.(100);
-      console.log('Production upload completed successfully:', result.fileName);
+      console.log('🎉 Production upload completed successfully:', result.fileName);
       
       if (isMobile) {
-        console.log('🎉 MOBILE UPLOAD SUCCESS!');
+        console.log('📱✅ MOBILE UPLOAD SUCCESS! Request ID:', result.requestId);
       }
       
       return result.url;
 
     } catch (error: any) {
-      console.error('Upload error details:', {
+      const errorDetails = {
         message: error?.message || 'Unknown error',
-        stack: error?.stack || 'No stack trace',
+        requestId: error?.requestId || 'unknown',
         isMobile,
-        userAgent,
+        userAgent: userAgent.substring(0, 100),
         fileSize: file.size,
-        fileType: file.type
-      });
+        fileType: file.type,
+        fileName: file.name
+      };
+      
+      console.error('❌ Upload error details:', errorDetails);
       
       if (isMobile) {
-        console.error('❌ MOBILE UPLOAD FAILED');
+        console.error('📱❌ MOBILE UPLOAD FAILED - Request ID:', errorDetails.requestId);
+      }
+      
+      // Enhance error message for mobile users
+      if (isMobile && error.message) {
+        if (error.message.includes('timeout')) {
+          error.message = 'Upload timed out. This often happens with large photos on mobile. Try reducing image quality in your camera settings.';
+        } else if (error.message.includes('Network error')) {
+          error.message = 'Network connection issue. Check your WiFi/cellular connection and try again.';
+        } else if (error.message.includes('too large')) {
+          error.message = 'Photo is too large. Try using lower resolution in camera settings or compress the image.';
+        }
       }
       
       throw error;
