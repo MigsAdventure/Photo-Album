@@ -370,12 +370,27 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           style={{ display: 'none' }}
         />
 
-        <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, justifyContent: 'center' }}>
+        <Stack 
+          direction={{ xs: 'column', sm: 'row' }} 
+          spacing={2} 
+          sx={{ 
+            justifyContent: 'center',
+            alignItems: 'center',
+            width: '100%',
+            maxWidth: '100%'
+          }}
+        >
           <Button
             variant="contained"
             size="large"
             startIcon={<PhotoCamera />}
-            sx={{ px: 4, py: 1.5 }}
+            sx={{ 
+              px: { xs: 2, sm: 4 }, 
+              py: 1.5,
+              width: { xs: '100%', sm: 'auto' },
+              minWidth: { sm: '180px' },
+              maxWidth: '100%'
+            }}
             onClick={(e) => {
               e.stopPropagation();
               const cameraInput = document.getElementById('photo-camera-input') as HTMLInputElement;
@@ -389,7 +404,13 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
             variant="outlined"
             size="large"
             startIcon={<Add />}
-            sx={{ px: 4, py: 1.5 }}
+            sx={{ 
+              px: { xs: 2, sm: 4 }, 
+              py: 1.5,
+              width: { xs: '100%', sm: 'auto' },
+              minWidth: { sm: '180px' },
+              maxWidth: '100%'
+            }}
             onClick={(e) => {
               e.stopPropagation();
               const galleryInput = document.getElementById('photo-gallery-input') as HTMLInputElement;
@@ -398,7 +419,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
           >
             Choose from Gallery
           </Button>
-        </Box>
+        </Stack>
 
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
           📱 Camera photos are automatically optimized for mobile upload (max 50MB per photo)
