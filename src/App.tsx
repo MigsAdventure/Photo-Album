@@ -71,15 +71,27 @@ const theme = createTheme({
 const AdminDashboard: React.FC = () => {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState('');
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [event, setEvent] = useState<Event | null>(null);
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailError, setEmailError] = useState('');
   const navigate = useNavigate();
 
   const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title || !date) return;
 
+    // Validate email format if provided
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      alert('Please enter a valid email address');
+      return;
+    }
+
     setLoading(true);
+    setEmailError('');
+    setEmailSent(false);
+    
     try {
       const eventId = await createEvent(title, date);
       const newEvent: Event = {
@@ -90,6 +102,40 @@ const AdminDashboard: React.FC = () => {
         isActive: true
       };
       setEvent(newEvent);
+
+      // Send email notification if email provided
+      if (email.trim()) {
+        try {
+          console.log('📧 Sending event creation email notification...');
+          const eventUrl = `${window.location.origin}/event/${eventId}`;
+          
+          const response = await fetch('/.netlify/functions/event-created-notification', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              eventId,
+              eventTitle: title,
+              eventDate: date,
+              email: email.trim(),
+              eventUrl
+            }),
+          });
+
+          if (response.ok) {
+            setEmailSent(true);
+            console.log('✅ Event creation email sent successfully');
+          } else {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to send email');
+          }
+        } catch (emailError) {
+          console.error('❌ Failed to send event creation email:', emailError);
+          setEmailError(emailError instanceof Error ? emailError.message : 'Failed to send email notification');
+          // Don't prevent event creation if email fails
+        }
+      }
     } catch (error) {
       console.error('Failed to create event:', error);
       alert('Failed to create event. Please try again.');
@@ -111,6 +157,26 @@ const AdminDashboard: React.FC = () => {
           <Typography variant="h1" gutterBottom color="primary">
             Event Created Successfully! 🎉
           </Typography>
+          
+          {/* Email Status Indicators */}
+          {email && (
+            <Box sx={{ mt: 2, mb: 3 }}>
+              {emailSent && (
+                <Alert severity="success" sx={{ mb: 2 }}>
+                  📧 Event details sent to {email}! Check your inbox for the URL and QR code.
+                </Alert>
+              )}
+              {emailError && (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  ⚠️ Email notification failed: {emailError}
+                  <br />
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    Don't worry! Your event was created successfully. Save this page or use the QR code below.
+                  </Typography>
+                </Alert>
+              )}
+            </Box>
+          )}
         </Box>
         
         <QRCodeDisplay eventId={event.id} title={event.title} />
@@ -162,6 +228,17 @@ const AdminDashboard: React.FC = () => {
             onChange={(e) => setDate(e.target.value)}
             required
             InputLabelProps={{ shrink: true }}
+            sx={{ mb: 3 }}
+          />
+
+          <TextField
+            fullWidth
+            label="Your Email Address (Optional)"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="e.g., organizer@example.com"
+            helperText="We'll send you the event URL and QR code for easy access"
             sx={{ mb: 3 }}
           />
 
