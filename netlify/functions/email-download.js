@@ -251,8 +251,8 @@ exports.handler = async (event, context) => {
                   <span style="color: #495057; font-weight: 600;">${(zipBuffer.length / 1024 / 1024).toFixed(2)}MB ZIP archive</span>
                 </div>
                 <div style="display: flex; justify-content: space-between; padding: 8px 0;">
-                  <span style="color: #6c757d; font-weight: 500;">Link expires:</span>
-                  <span style="color: #dc3545; font-weight: 600;">48 hours from now</span>
+                  <span style="color: #6c757d; font-weight: 500;">Available until:</span>
+                  <span style="color: #28a745; font-weight: 600;">1 year from event date</span>
                 </div>
               </div>
             </div>
@@ -283,9 +283,9 @@ exports.handler = async (event, context) => {
               <div style="display: flex; align-items: flex-start;">
                 <span style="font-size: 24px; margin-right: 12px;">🔒</span>
                 <div>
-                  <h4 style="margin: 0 0 8px 0; color: #2e7d32; font-size: 16px;">Secure Download</h4>
+                  <h4 style="margin: 0 0 8px 0; color: #2e7d32; font-size: 16px;">Long-Term Access</h4>
                   <p style="margin: 0; color: #388e3c; line-height: 1.5; font-size: 14px;">
-                    This download link is secure and will expire in 48 hours. If you need the photos again, simply request a new download from the event page.
+                    Your photos are securely stored and available for download for one full year from the event date. You can request new download links anytime from the event page.
                   </p>
                 </div>
               </div>

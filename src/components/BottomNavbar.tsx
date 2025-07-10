@@ -801,7 +801,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
               </Typography>
               
               <Alert severity="info" sx={{ mb: 3 }}>
-                📧 The download link will expire in 48 hours for security.
+                📧 Photos are available for download for one full year from the event date.
               </Alert>
               
               <TextField
