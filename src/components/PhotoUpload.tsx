@@ -223,18 +223,21 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);
     
-    const imageFiles = Array.from(files).filter(file => {
-      return file.type.startsWith('image/') || file.type === '' || 
-             file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/);
+    const mediaFiles = Array.from(files).filter(file => {
+      // Accept both images and videos
+      return file.type.startsWith('image/') || 
+             file.type.startsWith('video/') ||
+             file.type === '' || 
+             file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|mov|webm|avi)$/);
     });
 
-    if (imageFiles.length === 0) {
-      alert('Please select valid image files');
+    if (mediaFiles.length === 0) {
+      alert('Please select valid image or video files');
       return;
     }
 
     // Analyze and create upload queue
-    const newQueue: UploadProgress[] = imageFiles.map((file, index) => {
+    const newQueue: UploadProgress[] = mediaFiles.map((file, index) => {
       const analysis = analyzeFile(file);
       
       return {
@@ -244,7 +247,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         fileIndex: index,
         file,
         isCamera: analysis.isCamera,
-        canRetry: false
+        canRetry: false,
+        mediaType: analysis.mediaType,
+        duration: analysis.duration
       };
     });
 
@@ -345,11 +350,11 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         />
         
         <Typography variant="h5" gutterBottom color="primary">
-          Upload Photos
+          Upload Photos & Videos
         </Typography>
         
         <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-          Drag and drop photos here, or click to select from your device
+          Drag and drop photos or videos here, or click to select from your device
         </Typography>
 
         {/* Hidden file inputs */}
@@ -357,7 +362,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           id="photo-gallery-input"
           type="file"
           multiple
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,image/heic,image/heif,video/mp4,video/quicktime,video/webm"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
@@ -365,7 +370,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         <input
           id="photo-camera-input"
           type="file"
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,image/heic,image/heif,video/mp4,video/quicktime"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
           capture="environment"
@@ -375,7 +380,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           id="photo-upload-input"
           type="file"
           multiple
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,image/heic,image/heif,video/mp4,video/quicktime,video/webm"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
