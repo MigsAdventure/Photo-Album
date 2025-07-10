@@ -443,12 +443,15 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           mt: 3,
           width: '100%',
           maxWidth: 'calc(100vw - 32px)',
-          overflow: 'hidden'
+          overflow: 'hidden',
+          boxSizing: 'border-box'
         }}>
           <CardContent sx={{
             width: '100%',
             overflow: 'hidden',
-            minWidth: 0
+            minWidth: 0,
+            boxSizing: 'border-box',
+            maxWidth: '100%'
           }}>
             <Box sx={{ 
               display: 'flex', 
@@ -502,49 +505,45 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                     bgcolor: currentUploadIndex === index ? alpha(theme.palette.primary.main, 0.05) : 'transparent',
                     borderRadius: 1,
                     mb: 1,
+                    display: 'table',
+                    tableLayout: 'fixed',
                     width: '100%',
-                    maxWidth: '100%',
-                    minWidth: 0,
                     overflow: 'hidden'
                   }}
                 >
                   <ListItemText
                     sx={{ 
+                      display: 'table-cell',
                       width: '100%',
-                      maxWidth: '100%',
-                      minWidth: 0,
                       overflow: 'hidden'
                     }}
                     primary={
                       <Box sx={{ 
-                        width: '100%', 
-                        overflow: 'hidden',
-                        maxWidth: '100%',
-                        minWidth: 0
+                        display: 'table',
+                        tableLayout: 'fixed',
+                        width: '100%',
+                        overflow: 'hidden'
                       }}>
                         <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'flex-start', 
-                          mb: 1,
-                          flexDirection: { xs: 'column', sm: 'row' },
-                          gap: { xs: 0.5, sm: 0 }
+                          display: 'table-row',
+                          width: '100%'
                         }}>
                           <Box sx={{ 
-                            flexGrow: 1, 
-                            minWidth: 0,
-                            width: { xs: '100%', sm: 'auto' }
+                            display: 'table-cell',
+                            width: { xs: '100%', sm: 'calc(100% - 80px)' },
+                            overflow: 'hidden',
+                            pr: { xs: 0, sm: 1 }
                           }}>
                             <Typography 
                               variant="body2" 
                               sx={{ 
                                 fontWeight: currentUploadIndex === index ? 'bold' : 'normal',
                                 fontSize: { xs: '0.8rem', sm: '0.875rem' },
-                                wordBreak: 'break-word',
-                                overflowWrap: 'break-word',
-                                hyphens: 'auto',
-                                maxWidth: '100%',
+                                wordBreak: 'break-all',
+                                overflow: 'hidden',
                                 display: 'block',
-                                lineHeight: 1.2
+                                lineHeight: 1.2,
+                                maxWidth: '100%'
                               }}
                               title={item.fileName}
                             >
@@ -588,53 +587,58 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                           </Box>
                           
                           <Box sx={{ 
-                            ml: { xs: 0, sm: 2 }, 
-                            mt: { xs: 0.5, sm: 0 },
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: 0.5,
-                            flexShrink: 0,
-                            alignSelf: { xs: 'flex-end', sm: 'flex-start' }
+                            display: 'table-cell',
+                            width: { xs: '0px', sm: '80px' },
+                            textAlign: 'right',
+                            verticalAlign: 'top',
+                            pl: { xs: 0, sm: 1 }
                           }}>
-                            {item.status === 'uploading' || item.status === 'compressing' ? (
-                              <Typography 
-                                variant="caption" 
-                                color="primary"
-                                sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}
-                              >
-                                {Math.round(item.progress)}%
-                              </Typography>
-                            ) : item.status === 'completed' ? (
-                              <CheckCircle sx={{ color: 'success.main', fontSize: 18 }} />
-                            ) : item.status === 'error' ? (
-                              <>
-                                <ErrorIcon sx={{ color: 'error.main', fontSize: 18 }} />
-                                {item.canRetry && (
+                            <Box sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 0.5,
+                              justifyContent: 'flex-end'
+                            }}>
+                              {item.status === 'uploading' || item.status === 'compressing' ? (
+                                <Typography 
+                                  variant="caption" 
+                                  color="primary"
+                                  sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}
+                                >
+                                  {Math.round(item.progress)}%
+                                </Typography>
+                              ) : item.status === 'completed' ? (
+                                <CheckCircle sx={{ color: 'success.main', fontSize: 18 }} />
+                              ) : item.status === 'error' ? (
+                                <>
+                                  <ErrorIcon sx={{ color: 'error.main', fontSize: 18 }} />
+                                  {item.canRetry && (
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => retryUpload(index)}
+                                      sx={{ 
+                                        color: 'primary.main',
+                                        p: 0.25,
+                                        minWidth: 'auto'
+                                      }}
+                                    >
+                                      <Refresh fontSize="small" />
+                                    </IconButton>
+                                  )}
                                   <IconButton
                                     size="small"
-                                    onClick={() => retryUpload(index)}
+                                    onClick={() => removeFromQueue(index)}
                                     sx={{ 
-                                      color: 'primary.main',
+                                      color: 'error.main',
                                       p: 0.25,
                                       minWidth: 'auto'
                                     }}
                                   >
-                                    <Refresh fontSize="small" />
+                                    <Delete fontSize="small" />
                                   </IconButton>
-                                )}
-                                <IconButton
-                                  size="small"
-                                  onClick={() => removeFromQueue(index)}
-                                  sx={{ 
-                                    color: 'error.main',
-                                    p: 0.25,
-                                    minWidth: 'auto'
-                                  }}
-                                >
-                                  <Delete fontSize="small" />
-                                </IconButton>
-                              </>
-                            ) : null}
+                                </>
+                              ) : null}
+                            </Box>
                           </Box>
                         </Box>
                       </Box>
