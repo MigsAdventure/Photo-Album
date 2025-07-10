@@ -6,10 +6,56 @@ import {
   where,
   doc,
   getDoc,
-  getDocs 
+  getDocs,
+  setDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
+
+// Helper function to create URL-safe slug from event title
+const createSlug = (text: string): string => {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '') // Remove special characters except spaces and hyphens
+    .replace(/\s+/g, '-') // Replace spaces with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
+    .substring(0, 50); // Limit length to 50 characters
+};
+
+// Helper function to generate random hash
+const generateRandomHash = (): string => {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 8; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+// Helper function to format date as YYYY-MM-DD (timezone-safe)
+const formatDateForId = (dateString: string): string => {
+  // Handle date string directly to avoid timezone issues
+  if (dateString.includes('-')) {
+    // Already in YYYY-MM-DD format, use as-is
+    return dateString.split('T')[0]; // Remove time part if present
+  }
+  
+  // Parse and format if needed
+  const date = new Date(dateString + 'T00:00:00'); // Add time to avoid timezone shift
+  const year = date.getFullYear();
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const day = date.getDate().toString().padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Generate custom event ID with format: YYYY-MM-DD_event-name-slug_random-hash
+const generateEventId = (title: string, date: string): string => {
+  const formattedDate = formatDateForId(date);
+  const slug = createSlug(title);
+  const hash = generateRandomHash();
+  return `${formattedDate}_${slug}_${hash}`;
+};
 
 export const uploadPhoto = async (
   file: File, 
@@ -99,13 +145,23 @@ export const subscribeToPhotos = (
 };
 
 export const createEvent = async (title: string, date: string): Promise<string> => {
-  const docRef = await addDoc(collection(db, 'events'), {
+  // Generate custom event ID using event date, title, and random hash
+  const customEventId = generateEventId(title, date);
+  
+  console.log('📅 Creating event with custom ID:', customEventId);
+  console.log('🎯 Event details:', { title, date });
+  
+  // Use setDoc with custom ID instead of addDoc with auto-generated ID
+  const docRef = doc(db, 'events', customEventId);
+  await setDoc(docRef, {
     title,
     date,
     createdAt: new Date(),
     isActive: true
   });
-  return docRef.id;
+  
+  console.log('✅ Event created successfully with ID:', customEventId);
+  return customEventId;
 };
 
 export const getEvent = async (eventId: string): Promise<Event | null> => {
