@@ -37,7 +37,7 @@ import {
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, downloadPhoto as downloadPhotoService, requestEmailDownload } from '../services/photoService';
-import { Photo, Media } from '../types';
+import { Media } from '../types';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;

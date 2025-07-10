@@ -110,7 +110,7 @@ export const generateVideoThumbnail = (file: File, timeSeconds: number = 1): Pro
 
 // Compress video if needed (using MediaRecorder API)
 export const compressVideo = (file: File, options: Partial<VideoProcessingOptions> = {}): Promise<File> => {
-  const config = { ...DEFAULT_VIDEO_CONFIG, ...options };
+  // const config = { ...DEFAULT_VIDEO_CONFIG, ...options };
   
   return new Promise((resolve, reject) => {
     // For now, return original file since video compression is complex
