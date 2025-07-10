@@ -305,7 +305,12 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   };
 
   return (
-    <Box sx={{ mb: 4 }}>
+    <Box sx={{ 
+      mb: 4,
+      width: '100%',
+      overflow: 'hidden',
+      maxWidth: '100vw'
+    }}>
       <Paper
         elevation={isDragging ? 4 : 1}
         sx={{
@@ -377,7 +382,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             justifyContent: 'center',
             alignItems: 'center',
             width: '100%',
-            maxWidth: '100%'
+            maxWidth: '100%',
+            overflow: 'hidden'
           }}
         >
           <Button
@@ -385,11 +391,14 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             size="large"
             startIcon={<PhotoCamera />}
             sx={{ 
-              px: { xs: 2, sm: 4 }, 
+              px: { xs: 2, sm: 3 }, 
               py: 1.5,
               width: { xs: '100%', sm: 'auto' },
-              minWidth: { sm: '180px' },
-              maxWidth: '100%'
+              maxWidth: { xs: '100%', sm: '200px' },
+              fontSize: { xs: '0.9rem', sm: '1rem' },
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis'
             }}
             onClick={(e) => {
               e.stopPropagation();
@@ -405,11 +414,14 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             size="large"
             startIcon={<Add />}
             sx={{ 
-              px: { xs: 2, sm: 4 }, 
+              px: { xs: 2, sm: 3 }, 
               py: 1.5,
               width: { xs: '100%', sm: 'auto' },
-              minWidth: { sm: '180px' },
-              maxWidth: '100%'
+              maxWidth: { xs: '100%', sm: '200px' },
+              fontSize: { xs: '0.9rem', sm: '1rem' },
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis'
             }}
             onClick={(e) => {
               e.stopPropagation();
@@ -429,15 +441,40 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
       {uploadQueue.length > 0 && (
         <Card sx={{ mt: 3 }}>
           <CardContent>
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2, justifyContent: 'space-between' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                <CloudUpload sx={{ mr: 1, color: 'primary.main' }} />
-                <Typography variant="h6" color="primary">
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              mb: 2, 
+              justifyContent: 'space-between',
+              flexWrap: { xs: 'wrap', sm: 'nowrap' },
+              gap: 1
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0, flexShrink: 1 }}>
+                <CloudUpload sx={{ mr: 1, color: 'primary.main', flexShrink: 0 }} />
+                <Typography 
+                  variant="h6" 
+                  color="primary"
+                  sx={{ 
+                    fontSize: { xs: '1rem', sm: '1.25rem' },
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
+                >
                   Upload Queue ({uploadQueue.filter(q => q.status === 'completed').length}/{uploadQueue.length})
                 </Typography>
               </Box>
               {isUploading && (
-                <Typography variant="caption" color="text.secondary">
+                <Typography 
+                  variant="caption" 
+                  color="text.secondary"
+                  sx={{ 
+                    whiteSpace: { xs: 'normal', sm: 'nowrap' },
+                    fontSize: { xs: '0.7rem', sm: '0.75rem' },
+                    textAlign: { xs: 'center', sm: 'right' },
+                    width: { xs: '100%', sm: 'auto' }
+                  }}
+                >
                   Processing files one at a time...
                 </Typography>
               )}
@@ -456,65 +493,118 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                 >
                   <ListItemText
                     primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                        <Box sx={{ flexGrow: 1 }}>
-                          <Typography variant="body2" sx={{ fontWeight: currentUploadIndex === index ? 'bold' : 'normal' }}>
-                            {item.fileName}
-                          </Typography>
-                          <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
-                            {item.isCamera && (
-                              <Chip 
-                                label="📷 Camera" 
-                                size="small" 
-                                color="primary" 
-                                variant="outlined"
-                              />
-                            )}
-                            {item.status === 'compressing' && (
-                              <Chip 
-                                label="🗜️ Compressing" 
-                                size="small" 
-                                color="warning"
-                              />
-                            )}
-                            {item.status === 'waiting' && (
-                              <Chip 
-                                label="⏳ Waiting" 
-                                size="small" 
-                                variant="outlined"
-                              />
-                            )}
-                          </Stack>
-                        </Box>
-                        
-                        <Box sx={{ ml: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                          {item.status === 'uploading' || item.status === 'compressing' ? (
-                            <Typography variant="caption" color="primary">
-                              {Math.round(item.progress)}%
+                      <Box sx={{ width: '100%', overflow: 'hidden' }}>
+                        <Box sx={{ 
+                          display: 'flex', 
+                          alignItems: 'flex-start', 
+                          mb: 1,
+                          flexDirection: { xs: 'column', sm: 'row' },
+                          gap: { xs: 0.5, sm: 0 }
+                        }}>
+                          <Box sx={{ 
+                            flexGrow: 1, 
+                            minWidth: 0,
+                            width: { xs: '100%', sm: 'auto' }
+                          }}>
+                            <Typography 
+                              variant="body2" 
+                              sx={{ 
+                                fontWeight: currentUploadIndex === index ? 'bold' : 'normal',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                fontSize: { xs: '0.8rem', sm: '0.875rem' }
+                              }}
+                              title={item.fileName}
+                            >
+                              {item.fileName}
                             </Typography>
-                          ) : item.status === 'completed' ? (
-                            <CheckCircle sx={{ color: 'success.main', fontSize: 20 }} />
-                          ) : item.status === 'error' ? (
-                            <>
-                              <ErrorIcon sx={{ color: 'error.main', fontSize: 20 }} />
-                              {item.canRetry && (
+                            <Stack 
+                              direction="row" 
+                              spacing={0.5} 
+                              sx={{ 
+                                mt: 0.5,
+                                flexWrap: 'wrap',
+                                gap: 0.5
+                              }}
+                            >
+                              {item.isCamera && (
+                                <Chip 
+                                  label="📷 Camera" 
+                                  size="small" 
+                                  color="primary" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              )}
+                              {item.status === 'compressing' && (
+                                <Chip 
+                                  label="🗜️ Compressing" 
+                                  size="small" 
+                                  color="warning"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              )}
+                              {item.status === 'waiting' && (
+                                <Chip 
+                                  label="⏳ Waiting" 
+                                  size="small" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              )}
+                            </Stack>
+                          </Box>
+                          
+                          <Box sx={{ 
+                            ml: { xs: 0, sm: 2 }, 
+                            mt: { xs: 0.5, sm: 0 },
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: 0.5,
+                            flexShrink: 0,
+                            alignSelf: { xs: 'flex-end', sm: 'flex-start' }
+                          }}>
+                            {item.status === 'uploading' || item.status === 'compressing' ? (
+                              <Typography 
+                                variant="caption" 
+                                color="primary"
+                                sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}
+                              >
+                                {Math.round(item.progress)}%
+                              </Typography>
+                            ) : item.status === 'completed' ? (
+                              <CheckCircle sx={{ color: 'success.main', fontSize: 18 }} />
+                            ) : item.status === 'error' ? (
+                              <>
+                                <ErrorIcon sx={{ color: 'error.main', fontSize: 18 }} />
+                                {item.canRetry && (
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => retryUpload(index)}
+                                    sx={{ 
+                                      color: 'primary.main',
+                                      p: 0.25,
+                                      minWidth: 'auto'
+                                    }}
+                                  >
+                                    <Refresh fontSize="small" />
+                                  </IconButton>
+                                )}
                                 <IconButton
                                   size="small"
-                                  onClick={() => retryUpload(index)}
-                                  sx={{ color: 'primary.main' }}
+                                  onClick={() => removeFromQueue(index)}
+                                  sx={{ 
+                                    color: 'error.main',
+                                    p: 0.25,
+                                    minWidth: 'auto'
+                                  }}
                                 >
-                                  <Refresh fontSize="small" />
+                                  <Delete fontSize="small" />
                                 </IconButton>
-                              )}
-                              <IconButton
-                                size="small"
-                                onClick={() => removeFromQueue(index)}
-                                sx={{ color: 'error.main' }}
-                              >
-                                <Delete fontSize="small" />
-                              </IconButton>
-                            </>
-                          ) : null}
+                              </>
+                            ) : null}
+                          </Box>
                         </Box>
                       </Box>
                     }
