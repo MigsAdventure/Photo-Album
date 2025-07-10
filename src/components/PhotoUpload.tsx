@@ -178,6 +178,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           )
         );
         
+        // DEBUG: Breakpoint for horizontal scrolling investigation
+        debugger; // REMOVE THIS AFTER FIXING HORIZONTAL SCROLL
+        
         console.log(`✅ Upload ${i + 1}/${uploadQueue.length} completed: ${item.fileName}`);
         
         // Delay between uploads for stability
