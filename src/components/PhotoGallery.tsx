@@ -65,7 +65,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ eventId }) => {
   const downloadPhoto = (photo: Photo) => {
     const link = document.createElement('a');
     link.href = photo.url;
-    link.download = photo.fileName || 'wedding-photo.jpg';
+    link.download = photo.fileName || 'event-photo.jpg';
     link.target = '_blank';
     link.click();
   };
@@ -176,7 +176,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ eventId }) => {
                 component="img"
                 height={200}
                 image={photo.url}
-                alt={photo.fileName || 'Wedding photo'}
+                alt={photo.fileName || 'Event photo'}
                 sx={{ 
                   objectFit: 'cover',
                   transition: 'transform 0.3s ease',
@@ -225,7 +225,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ eventId }) => {
             }}>
               <Box sx={{ flexGrow: 1 }}>
                 <Typography variant="h6">
-                  {selectedPhoto.fileName || 'Wedding Photo'}
+                  {selectedPhoto.fileName || 'Event Photo'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   Uploaded {formatDate(selectedPhoto.uploadedAt)}
@@ -246,7 +246,7 @@ const PhotoGallery: React.FC<PhotoGalleryProps> = ({ eventId }) => {
               <Box
                 component="img"
                 src={selectedPhoto.url}
-                alt={selectedPhoto.fileName || 'Wedding photo'}
+                alt={selectedPhoto.fileName || 'Event photo'}
                 sx={{
                   width: '100%',
                   maxWidth: '100%',

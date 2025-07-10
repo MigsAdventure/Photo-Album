@@ -265,7 +265,7 @@ const AdminDashboard: React.FC = () => {
                 { icon: <QrCode />, text: 'QR code for easy guest access' },
                 { icon: <CloudUpload />, text: 'Real-time photo uploads' },
                 { icon: <PhoneAndroid />, text: 'Perfect for any celebration' },
-                { icon: <CheckCircle />, text: 'Weddings, birthdays, corporate events & more' }
+                { icon: <CheckCircle />, text: 'Birthdays, parties, corporate events & more' }
               ].map((feature, index) => (
                 <ListItem key={index} sx={{ pl: 0 }}>
                   <ListItemIcon sx={{ minWidth: 36 }}>
@@ -277,6 +277,28 @@ const AdminDashboard: React.FC = () => {
             </List>
           </CardContent>
         </Card>
+
+        {/* Social Boost AI Branding */}
+        <Box textAlign="center" sx={{ mt: 3 }}>
+          <Typography 
+            variant="body2" 
+            component="a"
+            href="https://socialboostai.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            sx={{ 
+              color: 'text.secondary',
+              textDecoration: 'none',
+              transition: 'all 0.3s ease',
+              '&:hover': {
+                color: 'primary.main',
+                textDecoration: 'underline'
+              }
+            }}
+          >
+            Powered by Social Boost AI
+          </Typography>
+        </Box>
       </Paper>
     </Container>
   );

@@ -30,11 +30,11 @@ import { uploadPhoto } from '../services/photoService';
 import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
-  weddingId: string;
+  eventId: string;
   onUploadComplete?: () => void;
 }
 
-const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }) => {
+const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -163,7 +163,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         }
 
         // Upload the file
-        await uploadPhoto(fileToUpload, weddingId, (progress) => {
+        await uploadPhoto(fileToUpload, eventId, (progress) => {
           setUploadQueue(prev => 
             prev.map((q, idx) => 
               idx === i ? { ...q, progress: Math.max(progress, 30) } : q
@@ -213,7 +213,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ weddingId, onUploadComplete }
         onUploadComplete?.();
       }, 3000);
     }
-  }, [uploadQueue, isUploading, weddingId, onUploadComplete, compressImage]);
+  }, [uploadQueue, isUploading, eventId, onUploadComplete, compressImage]);
 
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);

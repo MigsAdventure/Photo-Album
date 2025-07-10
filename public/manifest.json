@@ -1,7 +1,7 @@
 {
-  "name": "SharedMoments - Wedding Photo Sharing",
-  "short_name": "SharedMoments",
-  "description": "Share and view wedding photos instantly",
+  "name": "SharedMoments - Event Photo Sharing",
+  "short_name": "SharedMoments", 
+  "description": "Share and view event photos instantly",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -23,13 +23,13 @@
   ],
   "categories": ["photo", "lifestyle", "social"],
   "scope": "/",
-  "id": "sharedmoments-wedding-app",
+  "id": "sharedmoments-event-app",
   "prefer_related_applications": false,
   "shortcuts": [
     {
       "name": "Upload Photos",
       "short_name": "Upload",
-      "description": "Upload wedding photos",
+      "description": "Upload event photos",
       "url": "/",
       "icons": [
         {
