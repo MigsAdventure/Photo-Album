@@ -64,7 +64,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
       sizeMB < 2
     );
     
-    const needsCompression = (isCamera && sizeMB > 8) || (isVideo && sizeMB > 100);
+    const needsCompression = (isCamera && sizeMB > 8) || (isVideo && sizeMB > 200);
     
     return {
       isCamera,
@@ -504,8 +504,9 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             
             <List dense sx={{ 
               width: '100%',
-              overflow: 'hidden',
-              minWidth: 0
+              minWidth: 0,
+              maxHeight: '400px',
+              overflow: 'auto'
             }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 
@@ -515,141 +516,118 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                     bgcolor: currentUploadIndex === index ? alpha(theme.palette.primary.main, 0.05) : 'transparent',
                     borderRadius: 1,
                     mb: 1,
-                    display: 'table',
-                    tableLayout: 'fixed',
-                    width: '100%',
-                    overflow: 'hidden'
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'stretch'
                   }}
                 >
                   <ListItemText
-                    sx={{ 
-                      display: 'table-cell',
-                      width: '100%',
-                      overflow: 'hidden'
-                    }}
                     primary={
                       <Box sx={{ 
-                        display: 'table',
-                        tableLayout: 'fixed',
-                        width: '100%',
-                        overflow: 'hidden'
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        justifyContent: 'space-between',
+                        gap: 1,
+                        width: '100%'
                       }}>
                         <Box sx={{ 
-                          display: 'table-row',
-                          width: '100%'
+                          flex: 1,
+                          minWidth: 0
                         }}>
-                          <Box sx={{ 
-                            display: 'table-cell',
-                            width: { xs: '100%', sm: 'calc(100% - 80px)' },
-                            overflow: 'hidden',
-                            pr: { xs: 0, sm: 1 }
-                          }}>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              fontWeight: currentUploadIndex === index ? 'bold' : 'normal',
+                              fontSize: { xs: '0.8rem', sm: '0.875rem' },
+                              wordBreak: 'break-word',
+                              lineHeight: 1.2
+                            }}
+                            title={item.fileName}
+                          >
+                            {item.fileName}
+                          </Typography>
+                          <Stack 
+                            direction="row" 
+                            spacing={0.5} 
+                            sx={{ 
+                              mt: 0.5,
+                              flexWrap: 'wrap',
+                              gap: 0.5
+                            }}
+                          >
+                            {item.isCamera && (
+                              <Chip 
+                                label="📷 Camera" 
+                                size="small" 
+                                color="primary" 
+                                variant="outlined"
+                                sx={{ fontSize: '0.65rem', height: '20px' }}
+                              />
+                            )}
+                            {item.status === 'compressing' && (
+                              <Chip 
+                                label="🗜️ Compressing" 
+                                size="small" 
+                                color="warning"
+                                sx={{ fontSize: '0.65rem', height: '20px' }}
+                              />
+                            )}
+                            {item.status === 'waiting' && (
+                              <Chip 
+                                label="⏳ Waiting" 
+                                size="small" 
+                                variant="outlined"
+                                sx={{ fontSize: '0.65rem', height: '20px' }}
+                              />
+                            )}
+                          </Stack>
+                        </Box>
+                        
+                        <Box sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          flexShrink: 0
+                        }}>
+                          {item.status === 'uploading' || item.status === 'compressing' ? (
                             <Typography 
-                              variant="body2" 
-                              sx={{ 
-                                fontWeight: currentUploadIndex === index ? 'bold' : 'normal',
-                                fontSize: { xs: '0.8rem', sm: '0.875rem' },
-                                wordBreak: 'break-all',
-                                overflow: 'hidden',
-                                display: 'block',
-                                lineHeight: 1.2,
-                                maxWidth: '100%'
-                              }}
-                              title={item.fileName}
+                              variant="caption" 
+                              color="primary"
+                              sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}
                             >
-                              {item.fileName}
+                              {Math.round(item.progress)}%
                             </Typography>
-                            <Stack 
-                              direction="row" 
-                              spacing={0.5} 
-                              sx={{ 
-                                mt: 0.5,
-                                flexWrap: 'wrap',
-                                gap: 0.5
-                              }}
-                            >
-                              {item.isCamera && (
-                                <Chip 
-                                  label="📷 Camera" 
-                                  size="small" 
-                                  color="primary" 
-                                  variant="outlined"
-                                  sx={{ fontSize: '0.65rem', height: '20px' }}
-                                />
-                              )}
-                              {item.status === 'compressing' && (
-                                <Chip 
-                                  label="🗜️ Compressing" 
-                                  size="small" 
-                                  color="warning"
-                                  sx={{ fontSize: '0.65rem', height: '20px' }}
-                                />
-                              )}
-                              {item.status === 'waiting' && (
-                                <Chip 
-                                  label="⏳ Waiting" 
-                                  size="small" 
-                                  variant="outlined"
-                                  sx={{ fontSize: '0.65rem', height: '20px' }}
-                                />
-                              )}
-                            </Stack>
-                          </Box>
-                          
-                          <Box sx={{ 
-                            display: 'table-cell',
-                            width: { xs: '0px', sm: '80px' },
-                            textAlign: 'right',
-                            verticalAlign: 'top',
-                            pl: { xs: 0, sm: 1 }
-                          }}>
-                            <Box sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 0.5,
-                              justifyContent: 'flex-end'
-                            }}>
-                              {item.status === 'uploading' || item.status === 'compressing' ? (
-                                <Typography 
-                                  variant="caption" 
-                                  color="primary"
-                                  sx={{ fontSize: '0.7rem', fontWeight: 'bold' }}
+                          ) : item.status === 'completed' ? (
+                            <CheckCircle sx={{ color: 'success.main', fontSize: 18 }} />
+                          ) : item.status === 'error' ? (
+                            <>
+                              <ErrorIcon sx={{ color: 'error.main', fontSize: 18 }} />
+                              {item.canRetry && (
+                                <IconButton
+                                  size="small"
+                                  onClick={() => retryUpload(index)}
+                                  sx={{ 
+                                    color: 'primary.main',
+                                    p: 0.25,
+                                    minWidth: 'auto'
+                                  }}
                                 >
-                                  {Math.round(item.progress)}%
-                                </Typography>
-                              ) : item.status === 'completed' ? (
-                                <CheckCircle sx={{ color: 'success.main', fontSize: 18 }} />
-                              ) : item.status === 'error' ? (
-                                <>
-                                  <ErrorIcon sx={{ color: 'error.main', fontSize: 18 }} />
-                                  {item.canRetry && (
-                                    <IconButton
-                                      size="small"
-                                      onClick={() => retryUpload(index)}
-                                      sx={{ 
-                                        color: 'primary.main',
-                                        p: 0.25,
-                                        minWidth: 'auto'
-                                      }}
-                                    >
-                                      <Refresh fontSize="small" />
-                                    </IconButton>
-                                  )}
-                                  <IconButton
-                                    size="small"
-                                    onClick={() => removeFromQueue(index)}
-                                    sx={{ 
-                                      color: 'error.main',
-                                      p: 0.25,
-                                      minWidth: 'auto'
-                                    }}
-                                  >
-                                    <Delete fontSize="small" />
-                                  </IconButton>
-                                </>
-                              ) : null}
-                            </Box>
-                          </Box>
+                                  <Refresh fontSize="small" />
+                                </IconButton>
+                              )}
+                              <IconButton
+                                size="small"
+                                onClick={() => removeFromQueue(index)}
+                                sx={{ 
+                                  color: 'error.main',
+                                  p: 0.25,
+                                  minWidth: 'auto'
+                                }}
+                              >
+                                <Delete fontSize="small" />
+                              </IconButton>
+                            </>
+                          ) : null}
                         </Box>
                       </Box>
                     }
@@ -699,7 +677,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                   • Screenshots and smaller files upload faster than camera media
                 </Typography>
                 <Typography variant="caption" component="div">
-                  • Videos are limited to 10 minutes and 100MB for optimal performance
+                  • Videos are limited to 10 minutes and 1GB for optimal performance
                 </Typography>
                 <Typography variant="caption" component="div">
                   • Use the retry button (🔄) for failed uploads
