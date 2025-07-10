@@ -26,7 +26,7 @@ import {
   Refresh,
   Delete
 } from '@mui/icons-material';
-import { uploadPhoto } from '../services/photoService';
+import { uploadPhotoWithFallback } from '../services/mobileUploadService';
 import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
@@ -162,8 +162,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           );
         }
 
-        // Upload the file
-        await uploadPhoto(fileToUpload, eventId, (progress) => {
+        // Upload the file using mobile-optimized service
+        await uploadPhotoWithFallback(fileToUpload, eventId, (progress: number) => {
           setUploadQueue(prev => 
             prev.map((q, idx) => 
               idx === i ? { ...q, progress: Math.max(progress, 30) } : q
