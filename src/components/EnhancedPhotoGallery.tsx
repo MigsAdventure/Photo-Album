@@ -31,21 +31,39 @@ import {
   ArrowBackIos,
   ArrowForwardIos,
   Email,
-  GetApp
+  GetApp,
+  PlayArrow,
+  Videocam
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, downloadPhoto as downloadPhotoService, requestEmailDownload } from '../services/photoService';
-import { Photo } from '../types';
+import { Photo, Media } from '../types';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;
 }
 
 const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) => {
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [photos, setPhotos] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
   const [thumbnailsRef, setThumbnailsRef] = useState<HTMLElement | null>(null);
+
+  // Utility function to detect if media is a video
+  const isVideo = useCallback((media: Media): boolean => {
+    // Check if mediaType is explicitly set to 'video'
+    if (media.mediaType === 'video') return true;
+    
+    // Fallback: check content type or file extension
+    const contentType = media.contentType || '';
+    const fileName = media.fileName || '';
+    
+    const videoContentTypes = ['video/mp4', 'video/mpeg', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'application/mp4'];
+    const videoExtensions = ['.mp4', '.mov', '.avi', '.webm'];
+    
+    return videoContentTypes.some(type => contentType.includes(type)) ||
+           videoExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  }, []);
   
   // Email download state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -140,17 +158,19 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
   };
 
-  const downloadPhoto = async (photo: Photo) => {
+  const downloadMedia = async (media: Media) => {
     try {
-      console.log('Starting professional download for photo:', photo.fileName);
-      await downloadPhotoService(photo.id);
+      console.log('Starting professional download for media:', media.fileName);
+      // For now, use the photo download service for both photos and videos
+      // TODO: Create a dedicated media download service
+      await downloadPhotoService(media.id);
     } catch (error) {
       console.error('Professional download failed:', error);
       // Fallback to opening in new tab
-      const newWindow = window.open(photo.url, '_blank');
+      const newWindow = window.open(media.url, '_blank');
       if (newWindow) {
         newWindow.focus();
-        console.log('Fallback: Image opened in new tab. Right-click on the image and select "Save image as..." to download');
+        console.log('Fallback: Media opened in new tab. Right-click and select "Save as..." to download');
       } else {
         console.error('Download failed and could not open new tab.');
       }
@@ -206,10 +226,10 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             }} 
           />
           <Typography variant="h5" gutterBottom color="text.secondary">
-            No photos yet
+            No media yet
           </Typography>
           <Typography variant="body1" color="text.secondary">
-            Photos will appear here as guests upload them!
+            Photos and videos will appear here as guests upload them!
           </Typography>
         </Card>
       </Container>
@@ -263,19 +283,72 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               }}
               onClick={() => openModal(index)}
             >
-              <CardMedia
-                component="img"
-                height={200}
-                image={photo.url}
-                alt={photo.fileName || 'Event photo'}
-                sx={{ 
-                  objectFit: 'cover',
-                  transition: 'transform 0.3s ease',
-                  '&:hover': {
-                    transform: 'scale(1.05)'
-                  }
-                }}
-              />
+              {isVideo(photo) ? (
+                // Video thumbnail with play button overlay
+                <Box sx={{ position: 'relative', height: 200 }}>
+                  <video
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover'
+                    }}
+                    muted
+                    preload="metadata"
+                  >
+                    <source src={photo.url + '#t=1'} />
+                  </video>
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      bgcolor: alpha('#000000', 0.7),
+                      borderRadius: '50%',
+                      width: 60,
+                      height: 60,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'all 0.3s ease',
+                      '&:hover': {
+                        bgcolor: alpha('#000000', 0.9),
+                        transform: 'translate(-50%, -50%) scale(1.1)'
+                      }
+                    }}
+                  >
+                    <PlayArrow sx={{ fontSize: 30, color: 'white', ml: 0.5 }} />
+                  </Box>
+                  <Chip
+                    icon={<Videocam />}
+                    label="Video"
+                    size="small"
+                    sx={{
+                      position: 'absolute',
+                      top: 8,
+                      right: 8,
+                      bgcolor: alpha('#000000', 0.7),
+                      color: 'white',
+                      '& .MuiChip-icon': { color: 'white' }
+                    }}
+                  />
+                </Box>
+              ) : (
+                // Regular image
+                <CardMedia
+                  component="img"
+                  height={200}
+                  image={photo.url}
+                  alt={photo.fileName || 'Event photo'}
+                  sx={{ 
+                    objectFit: 'cover',
+                    transition: 'transform 0.3s ease',
+                    '&:hover': {
+                      transform: 'scale(1.05)'
+                    }
+                  }}
+                />
+              )}
               <Box 
                 sx={{
                   position: 'absolute',
@@ -340,7 +413,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 </Typography>
               </Box>
               <IconButton
-                onClick={() => downloadPhoto(currentPhoto)}
+                onClick={() => downloadMedia(currentPhoto)}
                 sx={{ mr: 1, color: 'white' }}
                 title="Download"
               >
@@ -385,19 +458,37 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 </IconButton>
               )}
 
-              {/* Photo */}
-              <Box
-                component="img"
-                src={currentPhoto.url}
-                alt={currentPhoto.fileName || 'Event photo'}
-                sx={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                  userSelect: 'none',
-                  pointerEvents: 'none'
-                }}
-              />
+              {/* Photo or Video Display */}
+              {isVideo(currentPhoto) ? (
+                <Box
+                  component="video"
+                  controls
+                  autoPlay={false}
+                  muted
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    userSelect: 'none'
+                  }}
+                >
+                  <source src={currentPhoto.url} type={currentPhoto.contentType || 'video/mp4'} />
+                  Your browser does not support the video tag.
+                </Box>
+              ) : (
+                <Box
+                  component="img"
+                  src={currentPhoto.url}
+                  alt={currentPhoto.fileName || 'Event photo'}
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    userSelect: 'none',
+                    pointerEvents: 'none'
+                  }}
+                />
+              )}
 
               {/* Next Button */}
               {selectedPhotoIndex! < photos.length - 1 && (

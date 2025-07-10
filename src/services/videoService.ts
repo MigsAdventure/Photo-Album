@@ -11,22 +11,35 @@ export const DEFAULT_VIDEO_CONFIG: VideoProcessingOptions = {
 
 // Video file validation
 export const validateVideoFile = (file: File): { isValid: boolean; error?: string; duration?: number } => {
-  // Check file type
-  if (!file.type.startsWith('video/')) {
-    return { isValid: false, error: 'File must be a video' };
+  // Supported formats - MP4 files can have various MIME types
+  const supportedFormats = [
+    'video/mp4',
+    'video/mpeg',        // Common for MP4 files - like your "MPEG-4 movie" 
+    'video/quicktime',   // MOV files
+    'video/webm',
+    'video/x-msvideo',   // AVI files
+    'application/mp4',   // Alternative MP4 MIME type
+    'video/3gpp',
+    'video/x-ms-wmv'
+  ];
+  
+  // Check MIME type first, then fallback to file extension
+  const hasValidMimeType = supportedFormats.includes(file.type);
+  const hasValidExtension = file.name.toLowerCase().match(/\.(mp4|mov|webm|avi|3gp|wmv)$/);
+  
+  // If neither MIME type nor extension is valid, reject
+  if (!hasValidMimeType && !hasValidExtension) {
+    console.log('❌ Invalid video file:', { type: file.type, name: file.name });
+    return { isValid: false, error: `Unsupported video format (${file.type}). Please use MP4, WebM, MOV, or AVI` };
   }
+  
+  console.log('✅ Valid video file detected:', { type: file.type, name: file.name, hasValidMimeType, hasValidExtension });
 
   // Check file size (100MB limit)
   const maxSizeMB = 100;
   const fileSizeMB = file.size / (1024 * 1024);
   if (fileSizeMB > maxSizeMB) {
     return { isValid: false, error: `Video file too large. Maximum size is ${maxSizeMB}MB` };
-  }
-
-  // Supported formats
-  const supportedFormats = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo'];
-  if (!supportedFormats.includes(file.type)) {
-    return { isValid: false, error: 'Unsupported video format. Please use MP4, WebM, or MOV' };
   }
 
   return { isValid: true };

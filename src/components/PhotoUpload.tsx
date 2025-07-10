@@ -26,7 +26,7 @@ import {
   Refresh,
   Delete
 } from '@mui/icons-material';
-import { uploadPhoto } from '../services/photoService';
+import { uploadMedia, analyzeMediaFile } from '../services/mediaUploadService';
 import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
@@ -167,8 +167,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           );
         }
 
-        // Upload the file
-        await uploadPhoto(fileToUpload, eventId, (progress) => {
+        // Upload the file using unified media service
+        await uploadMedia(fileToUpload, eventId, (progress: number) => {
           setUploadQueue(prev => 
             prev.map((q, idx) => 
               idx === i ? { ...q, progress: Math.max(progress, 30) } : q
@@ -683,20 +683,23 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
 
             {uploadQueue.every(item => item.status === 'completed') && (
               <Alert severity="success" sx={{ mt: 2 }}>
-                🎉 All photos uploaded successfully! They will appear in the gallery momentarily.
+                🎉 All media uploaded successfully! They will appear in the gallery momentarily.
               </Alert>
             )}
 
             {uploadQueue.some(item => item.status === 'error') && (
               <Alert severity="info" sx={{ mt: 2 }}>
                 <Typography variant="body2" component="div" sx={{ mb: 1 }}>
-                  💡 Camera Photo Upload Tips:
+                  💡 Media Upload Tips:
                 </Typography>
                 <Typography variant="caption" component="div">
-                  • Large camera photos are automatically compressed and optimized
+                  • Large camera photos and videos are automatically compressed and optimized
                 </Typography>
                 <Typography variant="caption" component="div">
-                  • Screenshots and smaller images upload faster than camera photos
+                  • Screenshots and smaller files upload faster than camera media
+                </Typography>
+                <Typography variant="caption" component="div">
+                  • Videos are limited to 10 minutes and 100MB for optimal performance
                 </Typography>
                 <Typography variant="caption" component="div">
                   • Use the retry button (🔄) for failed uploads
