@@ -439,8 +439,17 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
       </Paper>
 
       {uploadQueue.length > 0 && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
+        <Card sx={{ 
+          mt: 3,
+          width: '100%',
+          maxWidth: 'calc(100vw - 32px)',
+          overflow: 'hidden'
+        }}>
+          <CardContent sx={{
+            width: '100%',
+            overflow: 'hidden',
+            minWidth: 0
+          }}>
             <Box sx={{ 
               display: 'flex', 
               alignItems: 'center', 
@@ -480,7 +489,11 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
               )}
             </Box>
             
-            <List dense>
+            <List dense sx={{ 
+              width: '100%',
+              overflow: 'hidden',
+              minWidth: 0
+            }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 
                   key={index} 
@@ -488,12 +501,27 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                     px: 0, 
                     bgcolor: currentUploadIndex === index ? alpha(theme.palette.primary.main, 0.05) : 'transparent',
                     borderRadius: 1,
-                    mb: 1
+                    mb: 1,
+                    width: '100%',
+                    maxWidth: '100%',
+                    minWidth: 0,
+                    overflow: 'hidden'
                   }}
                 >
                   <ListItemText
+                    sx={{ 
+                      width: '100%',
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      overflow: 'hidden'
+                    }}
                     primary={
-                      <Box sx={{ width: '100%', overflow: 'hidden' }}>
+                      <Box sx={{ 
+                        width: '100%', 
+                        overflow: 'hidden',
+                        maxWidth: '100%',
+                        minWidth: 0
+                      }}>
                         <Box sx={{ 
                           display: 'flex', 
                           alignItems: 'flex-start', 
@@ -510,10 +538,13 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                               variant="body2" 
                               sx={{ 
                                 fontWeight: currentUploadIndex === index ? 'bold' : 'normal',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                                fontSize: { xs: '0.8rem', sm: '0.875rem' }
+                                fontSize: { xs: '0.8rem', sm: '0.875rem' },
+                                wordBreak: 'break-word',
+                                overflowWrap: 'break-word',
+                                hyphens: 'auto',
+                                maxWidth: '100%',
+                                display: 'block',
+                                lineHeight: 1.2
                               }}
                               title={item.fileName}
                             >
