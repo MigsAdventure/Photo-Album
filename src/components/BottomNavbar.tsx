@@ -886,7 +886,19 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       </Dialog>
 
       {/* Upload Progress Dialog with Retry Functionality */}
-      <Dialog open={uploading || uploadProgress.length > 0} sx={{ zIndex: 1500 }} maxWidth="sm" fullWidth>
+      <Dialog 
+        open={uploading || uploadProgress.length > 0} 
+        sx={{ zIndex: 1500 }} 
+        maxWidth="sm" 
+        fullWidth
+        PaperProps={{
+          sx: {
+            margin: { xs: 1, sm: 3 },
+            maxWidth: { xs: 'calc(100vw - 16px)', sm: '600px' },
+            width: '100%'
+          }
+        }}
+      >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box>
             <Typography variant="h6">Uploading Photos</Typography>
@@ -900,7 +912,11 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
             </IconButton>
           )}
         </DialogTitle>
-        <DialogContent sx={{ minWidth: 400 }}>
+        <DialogContent sx={{ 
+          width: '100%',
+          overflow: 'hidden',
+          padding: { xs: 1, sm: 3 }
+        }}>
           {uploadProgress.map((item, index) => (
             <Box key={index} sx={{ mb: 3, p: 2, border: '1px solid', borderColor: 'grey.200', borderRadius: 1 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
