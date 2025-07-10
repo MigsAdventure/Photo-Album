@@ -45,29 +45,34 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const analyzeFile = useCallback((file: File): FileAnalysis => {
     const sizeMB = file.size / 1024 / 1024;
     
-    // Heuristics to detect camera photos vs screenshots
-    const isCamera = (
+    // Determine media type
+    const isVideo = file.type.startsWith('video/');
+    const mediaType: 'photo' | 'video' = isVideo ? 'video' : 'photo';
+    
+    // Heuristics to detect camera photos vs screenshots (for photos only)
+    const isCamera = !isVideo && (
       sizeMB > 3 || // Camera photos are usually >3MB
       file.name.toLowerCase().includes('img_') || // iOS camera naming
       file.name.toLowerCase().includes('dsc') || // Camera naming
       (file.type === 'image/jpeg' && sizeMB > 1.5) // Large JPEG likely camera
     );
     
-    const isScreenshot = (
+    const isScreenshot = !isVideo && (
       file.name.toLowerCase().includes('screenshot') ||
       file.name.toLowerCase().includes('screen') ||
       file.type === 'image/png' ||
       sizeMB < 2
     );
     
-    const needsCompression = isCamera && sizeMB > 8;
+    const needsCompression = (isCamera && sizeMB > 8) || (isVideo && sizeMB > 100);
     
     return {
       isCamera,
       isScreenshot,
       needsCompression,
       originalSize: file.size,
-      estimatedCompressedSize: needsCompression ? file.size * 0.3 : file.size
+      estimatedCompressedSize: needsCompression ? file.size * 0.3 : file.size,
+      mediaType
     };
   }, []);
 

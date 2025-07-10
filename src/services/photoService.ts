@@ -100,7 +100,8 @@ export const uploadPhoto = async (
             fileName: file.name,
             size: file.size,
             contentType: file.type,
-            storagePath: `events/${eventId}/photos/${photoId}.${extension}`
+            storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
+            mediaType: 'photo' as const // Add mediaType for backward compatibility
           });
           
           console.log('✅ Firebase upload completed:', file.name);
@@ -133,7 +134,8 @@ export const subscribeToPhotos = (
         uploadedAt: data.uploadedAt.toDate(),
         eventId: data.eventId,
         fileName: data.fileName,
-        size: data.size
+        size: data.size,
+        mediaType: data.mediaType || 'photo' as const // Default to 'photo' for backward compatibility
       });
     });
     

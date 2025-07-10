@@ -1,4 +1,5 @@
-export interface Photo {
+// Base interface for all media (photos and videos)
+export interface Media {
   id: string;
   url: string;
   uploadedAt: Date;
@@ -7,6 +8,25 @@ export interface Photo {
   size?: number;
   r2Key?: string;
   contentType?: string;
+  mediaType: 'photo' | 'video';
+  
+  // Video-specific properties
+  duration?: number; // in seconds
+  thumbnail?: string; // video preview image URL
+  width?: number;
+  height?: number;
+}
+
+// Legacy Photo interface - extends Media for backward compatibility
+export interface Photo extends Media {
+  mediaType: 'photo';
+}
+
+// New Video interface
+export interface Video extends Media {
+  mediaType: 'video';
+  duration: number;
+  thumbnail?: string;
 }
 
 export interface Event {
@@ -26,6 +46,8 @@ export interface UploadProgress {
   file?: File;
   isCamera?: boolean;
   canRetry?: boolean;
+  mediaType?: 'photo' | 'video'; // Track what type of media is being uploaded
+  duration?: number; // For video validation
 }
 
 export interface FileAnalysis {
@@ -34,4 +56,27 @@ export interface FileAnalysis {
   needsCompression: boolean;
   originalSize: number;
   estimatedCompressedSize?: number;
+  mediaType: 'photo' | 'video';
+  duration?: number; // For videos
+  isValidDuration?: boolean; // For 10-minute limit validation
+}
+
+// Video processing utilities
+export interface VideoProcessingOptions {
+  maxDuration: number; // 600 seconds (10 minutes)
+  maxWidth: number;
+  maxHeight: number;
+  quality: number; // 0.1 to 1.0
+  format: 'webm' | 'mp4';
+}
+
+// Enhanced media upload configuration
+export interface MediaUploadConfig {
+  enablePhotos: boolean;
+  enableVideos: boolean;
+  maxPhotoSize: number; // bytes
+  maxVideoSize: number; // bytes  
+  maxVideoDuration: number; // seconds
+  videoQuality: number;
+  photoQuality: number;
 }
