@@ -546,41 +546,49 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                           >
                             {item.fileName}
                           </Typography>
-                          <Stack 
-                            direction="row" 
-                            spacing={0.5} 
-                            sx={{ 
-                              mt: 0.5,
-                              flexWrap: 'wrap',
-                              gap: 0.5
-                            }}
-                          >
-                            {item.isCamera && (
-                              <Chip 
-                                label="📷 Camera" 
-                                size="small" 
-                                color="primary" 
-                                variant="outlined"
-                                sx={{ fontSize: '0.65rem', height: '20px' }}
-                              />
-                            )}
-                            {item.status === 'compressing' && (
-                              <Chip 
-                                label="🗜️ Compressing" 
-                                size="small" 
-                                color="warning"
-                                sx={{ fontSize: '0.65rem', height: '20px' }}
-                              />
-                            )}
-                            {item.status === 'waiting' && (
-                              <Chip 
-                                label="⏳ Waiting" 
-                                size="small" 
-                                variant="outlined"
-                                sx={{ fontSize: '0.65rem', height: '20px' }}
-                              />
-                            )}
-                          </Stack>
+                            <Stack 
+                              direction="row" 
+                              spacing={0.5} 
+                              sx={{ 
+                                mt: 0.5,
+                                flexWrap: 'wrap',
+                                gap: 0.5
+                              }}
+                            >
+                              {item.mediaType === 'video' ? (
+                                <Chip 
+                                  label="🎥 Video" 
+                                  size="small" 
+                                  color="secondary" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              ) : item.isCamera ? (
+                                <Chip 
+                                  label="📷 Camera" 
+                                  size="small" 
+                                  color="primary" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              ) : null}
+                              {item.status === 'compressing' && (
+                                <Chip 
+                                  label="🗜️ Compressing" 
+                                  size="small" 
+                                  color="warning"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              )}
+                              {item.status === 'waiting' && (
+                                <Chip 
+                                  label="⏳ Waiting" 
+                                  size="small" 
+                                  variant="outlined"
+                                  sx={{ fontSize: '0.65rem', height: '20px' }}
+                                />
+                              )}
+                            </Stack>
                         </Box>
                         
                         <Box sx={{

@@ -286,17 +286,29 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               {isVideo(photo) ? (
                 // Video thumbnail with play button overlay
                 <Box sx={{ position: 'relative', height: 200 }}>
-                  <video
-                    style={{
+                  <Box
+                    component="img"
+                    src={photo.url + '#t=1'}
+                    alt={photo.fileName || 'Video thumbnail'}
+                    sx={{
                       width: '100%',
                       height: '100%',
-                      objectFit: 'cover'
+                      objectFit: 'cover',
+                      backgroundColor: 'grey.900'
                     }}
-                    muted
-                    preload="metadata"
-                  >
-                    <source src={photo.url + '#t=1'} />
-                  </video>
+                    onError={(e) => {
+                      // Fallback: show a dark background with video icon
+                      const target = e.target as HTMLImageElement;
+                      target.style.display = 'none';
+                      const parent = target.parentElement;
+                      if (parent) {
+                        parent.style.backgroundColor = '#424242';
+                        parent.style.display = 'flex';
+                        parent.style.alignItems = 'center';
+                        parent.style.justifyContent = 'center';
+                      }
+                    }}
+                  />
                   <Box
                     sx={{
                       position: 'absolute',
