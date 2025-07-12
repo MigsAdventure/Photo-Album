@@ -1,4 +1,4 @@
-import { GHLOrder, GHLPaymentData } from '../types';
+import { GHLOrder } from '../types';
 
 // GoHighLevel API configuration
 const GHL_API_BASE = 'https://rest.gohighlevel.com/v1';
