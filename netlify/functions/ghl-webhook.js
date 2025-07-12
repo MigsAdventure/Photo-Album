@@ -17,9 +17,11 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    console.log('📨 GHL Webhook received:', event.body);
+    console.log('📨 GHL Webhook received - Raw body:', event.body);
+    console.log('📨 GHL Webhook headers:', JSON.stringify(event.headers, null, 2));
     
     const webhookData = JSON.parse(event.body);
+    console.log('📨 Parsed webhook data:', JSON.stringify(webhookData, null, 2));
     
     // Verify webhook is from GoHighLevel (basic validation)
     if (!webhookData.type || !webhookData.data) {
