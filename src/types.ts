@@ -35,6 +35,19 @@ export interface Event {
   date: string;
   createdAt: Date;
   isActive: boolean;
+  organizerEmail: string; // Required for freemium model
+  planType: 'free' | 'premium';
+  photoLimit: number;
+  photoCount: number;
+  paymentId?: string; // GHL transaction ID
+  customBranding?: EventBranding;
+}
+
+export interface EventBranding {
+  logoUrl?: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  organizerName?: string;
 }
 
 export interface UploadProgress {
@@ -79,4 +92,32 @@ export interface MediaUploadConfig {
   maxVideoDuration: number; // seconds
   videoQuality: number;
   photoQuality: number;
+}
+
+// GoHighLevel integration types
+export interface GHLOrder {
+  contactId: string;
+  locationId: string;
+  amount: number;
+  currency: string;
+  eventId: string;
+  eventTitle: string;
+  organizerEmail: string;
+}
+
+export interface GHLPaymentData {
+  orderId: string;
+  transactionId: string;
+  amount: number;
+  status: 'completed' | 'failed' | 'pending';
+  eventId: string;
+  contactId: string;
+}
+
+export interface UpgradeModalProps {
+  open: boolean;
+  onClose: () => void;
+  eventId: string;
+  currentPhotoCount: number;
+  onUpgradeSuccess: () => void;
 }

@@ -93,13 +93,17 @@ const AdminDashboard: React.FC = () => {
     setEmailSent(false);
     
     try {
-      const eventId = await createEvent(title, date);
+      const eventId = await createEvent(title, date, email);
       const newEvent: Event = {
         id: eventId,
         title,
         date,
         createdAt: new Date(),
-        isActive: true
+        isActive: true,
+        organizerEmail: email,
+        planType: 'free',
+        photoLimit: 20,
+        photoCount: 0
       };
       setEvent(newEvent);
 

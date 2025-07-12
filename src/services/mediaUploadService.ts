@@ -1,5 +1,5 @@
 // Unified media upload service that handles both photos and videos
-import { uploadPhoto } from './photoService';
+import { uploadPhoto, incrementPhotoCount } from './photoService';
 import { analyzeVideoFile, validateVideoFile, generateVideoThumbnail, compressVideo } from './videoService';
 import { FileAnalysis } from '../types';
 
@@ -189,6 +189,9 @@ export const uploadMedia = async (
         onProgress?.(adjustedProgress);
       });
 
+      // Increment photo count for freemium tracking
+      await incrementPhotoCount(eventId);
+
       const duration = Date.now() - startTime;
       console.log(`🎥✅ Video upload completed in ${duration}ms:`, result);
       return result;
@@ -215,6 +218,9 @@ export const uploadMedia = async (
         const adjustedProgress = analysis.needsCompression ? 20 + (progress * 0.8) : progress;
         onProgress?.(adjustedProgress);
       });
+
+      // Increment photo count for freemium tracking
+      await incrementPhotoCount(eventId);
 
       const duration = Date.now() - startTime;
       console.log(`📷✅ Image upload completed in ${duration}ms:`, result);

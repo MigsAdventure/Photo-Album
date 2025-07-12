@@ -34,8 +34,9 @@ import {
   Print
 } from '@mui/icons-material';
 import { uploadMedia, validateMediaFile } from '../services/mediaUploadService';
-import { requestEmailDownload } from '../services/photoService';
-import { Photo, UploadProgress } from '../types';
+import { requestEmailDownload, getEvent, canUploadPhoto } from '../services/photoService';
+import { Photo, UploadProgress, Event } from '../types';
+import UpgradeModal from './UpgradeModal';
 import QRCode from 'qrcode';
 
 interface BottomNavbarProps {
@@ -61,10 +62,41 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   const [copySuccess, setCopySuccess] = useState(false);
   const qrCanvasRef = useRef<HTMLCanvasElement>(null);
   
+  // Freemium state
+  const [event, setEvent] = useState<Event | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
   const eventUrl = `${window.location.origin}/event/${eventId}`;
+
+  // Load event data for freemium checking
+  useEffect(() => {
+    const loadEvent = async () => {
+      try {
+        const eventData = await getEvent(eventId);
+        setEvent(eventData);
+      } catch (error) {
+        console.error('Failed to load event for freemium check:', error);
+      }
+    };
+    
+    loadEvent();
+  }, [eventId]);
+
+  // Check if upload is allowed (freemium limits)
+  const checkUploadAllowed = async (): Promise<boolean> => {
+    if (!event) return false;
+    
+    const canUpload = await canUploadPhoto(eventId);
+    if (!canUpload) {
+      setShowUpgradeModal(true);
+      return false;
+    }
+    
+    return true;
+  };
 
   // Generate file fingerprint to prevent duplicates
   const generateFileFingerprint = useCallback(async (file: File): Promise<string> => {
@@ -298,6 +330,12 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   }, [eventId, onUploadComplete, compressImage]);
 
   const handleFileSelect = async (files: FileList) => {
+    // Check freemium limits before processing files
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits
+    }
+
     const mediaFiles = Array.from(files).filter(file => 
       file.type.startsWith('image/') || file.type.startsWith('video/') || file.type === '' || 
       file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|mov|avi|webm)$/)
@@ -1322,6 +1360,21 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Upgrade Modal for Freemium Limits */}
+      {event && (
+        <UpgradeModal
+          open={showUpgradeModal}
+          onClose={() => setShowUpgradeModal(false)}
+          eventId={eventId}
+          currentPhotoCount={event.photoCount || 0}
+          onUpgradeSuccess={() => {
+            setShowUpgradeModal(false);
+            // Reload event data to get updated limits
+            getEvent(eventId).then(setEvent);
+          }}
+        />
+      )}
     </>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -15,7 +15,8 @@ import {
   alpha,
   IconButton,
   Chip,
-  Stack
+  Stack,
+  Badge
 } from '@mui/material';
 import {
   CloudUpload,
@@ -24,10 +25,14 @@ import {
   Error as ErrorIcon,
   Add,
   Refresh,
-  Delete
+  Delete,
+  Star,
+  Lock
 } from '@mui/icons-material';
 import { uploadMedia, analyzeMediaFile } from '../services/mediaUploadService';
-import { UploadProgress, FileAnalysis } from '../types';
+import { UploadProgress, FileAnalysis, Event } from '../types';
+import { getEvent, canUploadPhoto, incrementPhotoCount } from '../services/photoService';
+import UpgradeModal from './UpgradeModal';
 
 interface PhotoUploadProps {
   eventId: string;
@@ -39,7 +44,30 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const [uploadQueue, setUploadQueue] = useState<UploadProgress[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [currentUploadIndex, setCurrentUploadIndex] = useState(-1);
+  
+  // Freemium state
+  const [event, setEvent] = useState<Event | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [limitReached, setLimitReached] = useState(false);
+  
   const theme = useTheme();
+
+  // Load event details for freemium checking
+  useEffect(() => {
+    const loadEvent = async () => {
+      try {
+        const eventData = await getEvent(eventId);
+        setEvent(eventData);
+        if (eventData && eventData.planType === 'free') {
+          setLimitReached(eventData.photoCount >= eventData.photoLimit);
+        }
+      } catch (error) {
+        console.error('Failed to load event for freemium check:', error);
+      }
+    };
+
+    loadEvent();
+  }, [eventId]);
 
   // Analyze file to determine if it's a camera photo vs screenshot
   const analyzeFile = useCallback((file: File): FileAnalysis => {
@@ -185,6 +213,23 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         
         console.log(`✅ Upload ${i + 1}/${uploadQueue.length} completed: ${item.fileName}`);
         
+        // Reload event data to check if photo limit reached
+        try {
+          const eventData = await getEvent(eventId);
+          setEvent(eventData);
+          if (eventData && eventData.planType === 'free') {
+            const limitReached = eventData.photoCount >= eventData.photoLimit;
+            setLimitReached(limitReached);
+            
+            // Show upgrade modal if limit reached
+            if (limitReached && !showUpgradeModal) {
+              setShowUpgradeModal(true);
+            }
+          }
+        } catch (error) {
+          console.error('Failed to reload event data after upload:', error);
+        }
+        
         // Delay between uploads for stability
         if (i < uploadQueue.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 2000));
@@ -223,6 +268,20 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);
     
+    // Check freemium limit before allowing file selection
+    if (event && event.planType === 'free') {
+      const remainingUploads = event.photoLimit - event.photoCount;
+      if (remainingUploads <= 0) {
+        setShowUpgradeModal(true);
+        return;
+      }
+      
+      if (files.length > remainingUploads) {
+        alert(`You can only upload ${remainingUploads} more photos with the free plan. Upgrade to premium for unlimited uploads!`);
+        return;
+      }
+    }
+    
     const mediaFiles = Array.from(files).filter(file => {
       // Accept both images and videos
       return file.type.startsWith('image/') || 
@@ -257,7 +316,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
     
     // Start processing
     setTimeout(() => processUploadQueue(), 100);
-  }, [analyzeFile, processUploadQueue]);
+  }, [analyzeFile, processUploadQueue, event]);
 
   const retryUpload = useCallback((fileIndex: number) => {
     setUploadQueue(prev => 
@@ -443,10 +502,75 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           </Button>
         </Stack>
 
+        {/* Freemium photo limit indicator */}
+        {event && event.planType === 'free' && (
+          <Alert 
+            severity={limitReached ? "warning" : "info"} 
+            sx={{ mt: 2 }}
+            action={
+              limitReached ? (
+                <Button 
+                  color="inherit" 
+                  size="small" 
+                  startIcon={<Star />}
+                  onClick={() => setShowUpgradeModal(true)}
+                >
+                  Upgrade
+                </Button>
+              ) : null
+            }
+          >
+            <Typography variant="body2">
+              {limitReached ? (
+                <>
+                  <Lock sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle' }} />
+                  <strong>Photo limit reached!</strong> You've used {event.photoCount}/{event.photoLimit} photos. 
+                  Upgrade to premium for unlimited uploads!
+                </>
+              ) : (
+                <>
+                  📷 Free Plan: {event.photoCount}/{event.photoLimit} photos used. 
+                  {event.photoLimit - event.photoCount} uploads remaining.
+                </>
+              )}
+            </Typography>
+          </Alert>
+        )}
+
+        {event && event.planType === 'premium' && (
+          <Alert severity="success" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              <Star sx={{ fontSize: 16, mr: 0.5, verticalAlign: 'middle', color: 'gold' }} />
+              <strong>Premium Event:</strong> Unlimited photo & video uploads with custom branding!
+            </Typography>
+          </Alert>
+        )}
+
         <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
-          📱 Camera photos are automatically optimized for mobile upload (max 50MB per photo)
+          📱 Camera photos are automatically optimized for mobile upload (max 1GB per video)
         </Typography>
       </Paper>
+
+      {/* Upgrade Modal */}
+      <UpgradeModal
+        open={showUpgradeModal}
+        onClose={() => setShowUpgradeModal(false)}
+        eventId={eventId}
+        currentPhotoCount={event?.photoCount || 0}
+        onUpgradeSuccess={() => {
+          // Reload event data to reflect premium status
+          const loadEvent = async () => {
+            try {
+              const eventData = await getEvent(eventId);
+              setEvent(eventData);
+              setLimitReached(false);
+            } catch (error) {
+              console.error('Failed to reload event after upgrade:', error);
+            }
+          };
+          loadEvent();
+        }}
+      />
 
       {uploadQueue.length > 0 && (
         <Card sx={{ 
