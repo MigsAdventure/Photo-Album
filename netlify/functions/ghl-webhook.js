@@ -23,25 +23,11 @@ exports.handler = async (event, context) => {
     const webhookData = JSON.parse(event.body);
     console.log('📨 Parsed webhook data:', JSON.stringify(webhookData, null, 2));
     
-    // Verify webhook is from GoHighLevel (basic validation)
-    if (!webhookData.type || !webhookData.data) {
-      console.log('❌ Invalid webhook format');
-      return {
-        statusCode: 400,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-        body: JSON.stringify({ error: 'Invalid webhook format' }),
-      };
-    }
-
-    // Handle order completion (payment successful)
-    if (webhookData.type === 'order.completed') {
-      console.log('💰 Processing order completion webhook');
+    // Handle your actual GoHighLevel payload format
+    if (webhookData.action === 'upgrade_confirmed') {
+      console.log('💰 Processing upgrade confirmation webhook');
       
-      const { orderId, contactId, customFields, amount } = webhookData.data;
-      const eventId = customFields?.event_id;
+      const { eventId, paymentId, paymentAmount, contactId } = webhookData;
       
       if (!eventId) {
         console.log('❌ No event ID found in webhook');
@@ -79,10 +65,10 @@ exports.handler = async (event, context) => {
       const updateData = {
         fields: {
           planType: { stringValue: 'premium' },
-          paymentId: { stringValue: orderId },
+          paymentId: { stringValue: paymentId },
           photoLimit: { integerValue: -1 }, // Unlimited
           upgradedAt: { timestampValue: new Date().toISOString() },
-          paymentAmount: { integerValue: amount || 29 }
+          paymentAmount: { integerValue: paymentAmount || 29 }
         }
       };
 
@@ -119,7 +105,7 @@ exports.handler = async (event, context) => {
           success: true, 
           message: 'Event upgraded to premium',
           eventId,
-          orderId 
+          paymentId 
         }),
       };
     }
