@@ -127,7 +127,7 @@ const PaymentSuccess: React.FC = () => {
     };
 
     loadEventData();
-  }, [eventId]);
+  }, [eventId, searchParams]);
 
   const handleReturnToGallery = () => {
     if (eventId) {
