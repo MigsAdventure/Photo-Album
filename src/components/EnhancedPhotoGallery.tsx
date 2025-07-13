@@ -359,7 +359,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 <Box sx={{ position: 'relative', height: 200 }}>
                   <Box
                     component="img"
-                    src={photo.url + '#t=1'}
+                    src={photo.url + '#t=3'}
                     alt={photo.fileName || 'Video thumbnail'}
                     sx={{
                       width: '100%',
@@ -648,7 +648,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       <>
                         <Box
                           component="img"
-                          src={photo.url + '#t=1'}
+                          src={photo.url + '#t=3'}
                           alt={`Video thumbnail ${index + 1}`}
                           sx={{
                             width: '100%',
