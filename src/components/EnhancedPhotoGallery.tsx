@@ -355,38 +355,35 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               onClick={() => openModal(index)}
             >
               {isVideo(photo) ? (
-                // Video thumbnail with play button overlay
-                <Box sx={{ position: 'relative', height: 200 }}>
-                  <Box
-                    component="img"
-                    src={photo.url + '#t=3'}
-                    alt={photo.fileName || 'Video thumbnail'}
-                    sx={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      backgroundColor: 'grey.900'
-                    }}
-                    onError={(e) => {
-                      // Fallback: show a dark background with video icon
-                      const target = e.target as HTMLImageElement;
-                      target.style.display = 'none';
-                      const parent = target.parentElement;
-                      if (parent) {
-                        parent.style.backgroundColor = '#424242';
-                        parent.style.display = 'flex';
-                        parent.style.alignItems = 'center';
-                        parent.style.justifyContent = 'center';
-                      }
-                    }}
-                  />
+                // Video thumbnail with clean design
+                <Box 
+                  sx={{ 
+                    position: 'relative', 
+                    height: 200,
+                    bgcolor: 'grey.900',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'linear-gradient(135deg, #434343 0%, #000000 100%)'
+                  }}
+                >
+                  {/* Video Icon */}
+                  <Videocam sx={{ fontSize: 60, color: 'grey.300', mb: 1 }} />
+                  
+                  {/* Video Label */}
+                  <Typography variant="body2" sx={{ color: 'grey.300', fontWeight: 500 }}>
+                    Video
+                  </Typography>
+                  
+                  {/* Play Button Overlay */}
                   <Box
                     sx={{
                       position: 'absolute',
                       top: '50%',
                       left: '50%',
                       transform: 'translate(-50%, -50%)',
-                      bgcolor: alpha('#000000', 0.7),
+                      bgcolor: alpha('#ffffff', 0.9),
                       borderRadius: '50%',
                       width: 60,
                       height: 60,
@@ -395,13 +392,15 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       justifyContent: 'center',
                       transition: 'all 0.3s ease',
                       '&:hover': {
-                        bgcolor: alpha('#000000', 0.9),
+                        bgcolor: '#ffffff',
                         transform: 'translate(-50%, -50%) scale(1.1)'
                       }
                     }}
                   >
-                    <PlayArrow sx={{ fontSize: 30, color: 'white', ml: 0.5 }} />
+                    <PlayArrow sx={{ fontSize: 30, color: 'black', ml: 0.5 }} />
                   </Box>
+                  
+                  {/* Video Label Chip */}
                   <Chip
                     icon={<Videocam />}
                     label="Video"
@@ -410,11 +409,32 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       position: 'absolute',
                       top: 8,
                       right: 8,
-                      bgcolor: alpha('#000000', 0.7),
+                      bgcolor: alpha('#000000', 0.8),
                       color: 'white',
                       '& .MuiChip-icon': { color: 'white' }
                     }}
                   />
+                  
+                  {/* File name at bottom */}
+                  {photo.fileName && (
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        bottom: 8,
+                        left: 8,
+                        right: 8,
+                        bgcolor: alpha('#000000', 0.8),
+                        color: 'white',
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 1
+                      }}
+                    >
+                      <Typography variant="caption" noWrap>
+                        {photo.fileName}
+                      </Typography>
+                    </Box>
+                  )}
                 </Box>
               ) : (
                 // Regular image
@@ -644,31 +664,20 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     }}
                   >
                     {isVideo(photo) ? (
-                      // Video thumbnail with play icon overlay
-                      <>
-                        <Box
-                          component="img"
-                          src={photo.url + '#t=3'}
-                          alt={`Video thumbnail ${index + 1}`}
-                          sx={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover',
-                            backgroundColor: 'grey.800'
-                          }}
-                          onError={(e) => {
-                            // Fallback: show dark background with video icon
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
-                            const parent = target.parentElement;
-                            if (parent && parent.parentElement) {
-                              parent.parentElement.style.backgroundColor = '#424242';
-                              parent.parentElement.style.display = 'flex';
-                              parent.parentElement.style.alignItems = 'center';
-                              parent.parentElement.style.justifyContent = 'center';
-                            }
-                          }}
-                        />
+                      // Video thumbnail with icon
+                      <Box
+                        sx={{
+                          width: '100%',
+                          height: '100%',
+                          bgcolor: 'grey.800',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          position: 'relative',
+                          background: 'linear-gradient(135deg, #424242 0%, #212121 100%)'
+                        }}
+                      >
+                        <Videocam sx={{ fontSize: 24, color: 'grey.400' }} />
                         {/* Small play icon overlay for video thumbnails */}
                         <Box
                           sx={{
@@ -676,7 +685,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                             top: '50%',
                             left: '50%',
                             transform: 'translate(-50%, -50%)',
-                            bgcolor: alpha('#000000', 0.7),
+                            bgcolor: alpha('#ffffff', 0.9),
                             borderRadius: '50%',
                             width: 20,
                             height: 20,
@@ -686,9 +695,9 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                             pointerEvents: 'none'
                           }}
                         >
-                          <PlayArrow sx={{ fontSize: 12, color: 'white', ml: 0.2 }} />
+                          <PlayArrow sx={{ fontSize: 10, color: 'black', ml: 0.2 }} />
                         </Box>
-                      </>
+                      </Box>
                     ) : (
                       // Regular photo thumbnail
                       <Box
