@@ -564,10 +564,13 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   }}
                 >
                   <Box
+                    key={currentPhoto.id} // Force new video element for each video
                     component="video"
+                    src={currentPhoto.url} // Use src directly instead of source element
                     controls
                     autoPlay={false}
                     muted
+                    preload="metadata"
                     sx={{
                       maxWidth: '100%',
                       maxHeight: '100%',
@@ -590,10 +593,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       // Prevent touch end from interfering with swipe
                       e.stopPropagation();
                     }}
-                  >
-                    <source src={currentPhoto.url} type={currentPhoto.contentType || 'video/mp4'} />
-                    Your browser does not support the video tag.
-                  </Box>
+                  />
                 </Box>
               ) : (
                 <Box
