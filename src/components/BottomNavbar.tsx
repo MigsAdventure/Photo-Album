@@ -1380,10 +1380,27 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           onClose={() => setShowUpgradeModal(false)}
           eventId={eventId}
           currentPhotoCount={event.photoCount || 0}
-          onUpgradeSuccess={() => {
+          onUpgradeSuccess={async () => {
             setShowUpgradeModal(false);
-            // Reload event data to get updated limits
-            getEvent(eventId).then(setEvent);
+            console.log('🔄 BottomNavbar: Upgrade successful, refreshing event data...');
+            
+            try {
+              // Wait a moment for server to process upgrade
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Force refresh event data
+              const updatedEvent = await getEvent(eventId);
+              if (updatedEvent) {
+                setEvent(updatedEvent);
+                console.log('✅ BottomNavbar: Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
+              } else {
+                console.warn('⚠️ BottomNavbar: Failed to get updated event data');
+              }
+            } catch (error) {
+              console.error('❌ BottomNavbar: Error refreshing event data:', error);
+              // Fallback: reload the page to ensure fresh data
+              window.location.reload();
+            }
           }}
         />
       )}

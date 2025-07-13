@@ -780,10 +780,27 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           onClose={() => setShowUpgradeModal(false)}
           eventId={event.id}
           currentPhotoCount={event.photoCount || 0}
-          onUpgradeSuccess={() => {
+          onUpgradeSuccess={async () => {
             setShowUpgradeModal(false);
-            // Reload event data to get updated limits
-            getEvent(event.id).then(setEvent);
+            console.log('🔄 Upgrade successful, refreshing event data...');
+            
+            try {
+              // Wait a moment for server to process upgrade
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Force refresh event data
+              const updatedEvent = await getEvent(event.id);
+              if (updatedEvent) {
+                setEvent(updatedEvent);
+                console.log('✅ Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
+              } else {
+                console.warn('⚠️ Failed to get updated event data');
+              }
+            } catch (error) {
+              console.error('❌ Error refreshing event data:', error);
+              // Fallback: reload the page to ensure fresh data
+              window.location.reload();
+            }
           }}
         />
       )}
