@@ -68,9 +68,24 @@ const PaymentSuccess: React.FC = () => {
 
   useEffect(() => {
     const loadEventData = async () => {
+      console.log('🔍 PaymentSuccess: Starting event lookup process...');
+      console.log('📍 Current URL:', window.location.href);
+      console.log('📍 Search params:', window.location.search);
+      
       if (!eventId) {
         console.error('❌ PaymentSuccess: No event_id found in URL or localStorage');
-        setError('Event ID not found. Please return to your event gallery.');
+        
+        // Add debugging info about what we tried
+        const urlEventId = searchParams.get('event_id');
+        console.log('🔗 URL event_id value:', urlEventId);
+        
+        const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
+        console.log('📦 localStorage pendingUpgrade:', pendingUpgradeData);
+        
+        setError(`Event ID not found. Debug info:
+        - URL event_id: ${urlEventId}
+        - localStorage data: ${pendingUpgradeData ? 'Found' : 'Not found'}
+        Please return to your event gallery.`);
         setLoading(false);
         return;
       }
@@ -78,19 +93,34 @@ const PaymentSuccess: React.FC = () => {
       console.log('🔍 PaymentSuccess: Loading event data for ID:', eventId);
 
       try {
+        // Add test function call for debugging
+        try {
+          console.log('🧪 Testing event lookup via debug function...');
+          const debugResponse = await fetch(`/.netlify/functions/test-event-lookup?eventId=${eventId}`);
+          const debugData = await debugResponse.json();
+          console.log('🧪 Debug lookup result:', debugData);
+        } catch (debugError) {
+          console.log('⚠️ Debug function failed (this is ok):', debugError instanceof Error ? debugError.message : String(debugError));
+        }
+
         const eventData = await getEvent(eventId);
-        console.log('📊 PaymentSuccess: Event data loaded:', eventData);
+        console.log('📊 PaymentSuccess: Event data from getEvent():', eventData);
         
         if (eventData) {
           setEvent(eventData);
           console.log('✅ PaymentSuccess: Event loaded successfully:', eventData.title);
         } else {
           console.error('❌ PaymentSuccess: Event not found for ID:', eventId);
-          setError(`Event not found (ID: ${eventId})`);
+          setError(`Event not found in database. 
+          Event ID: ${eventId}
+          This event may have been deleted or the ID is incorrect.
+          Please check with the event organizer.`);
         }
       } catch (error) {
         console.error('❌ PaymentSuccess: Failed to load event:', error);
-        setError('Failed to load event data: ' + String(error));
+        setError(`Failed to load event data: ${error instanceof Error ? error.message : String(error)}
+        Event ID: ${eventId}
+        Error details: ${String(error)}`);
       } finally {
         setLoading(false);
       }
