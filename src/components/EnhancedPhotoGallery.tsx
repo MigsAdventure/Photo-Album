@@ -554,19 +554,46 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               {/* Photo or Video Display */}
               {isVideo(currentPhoto) ? (
                 <Box
-                  component="video"
-                  controls
-                  autoPlay={false}
-                  muted
                   sx={{
+                    position: 'relative',
                     maxWidth: '100%',
                     maxHeight: '100%',
-                    objectFit: 'contain',
-                    userSelect: 'none'
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
                   }}
                 >
-                  <source src={currentPhoto.url} type={currentPhoto.contentType || 'video/mp4'} />
-                  Your browser does not support the video tag.
+                  <Box
+                    component="video"
+                    controls
+                    autoPlay={false}
+                    muted
+                    sx={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain',
+                      userSelect: 'none',
+                      // Prevent video controls from interfering with navigation on touch devices
+                      '&:focus': {
+                        outline: 'none'
+                      }
+                    }}
+                    onTouchStart={(e) => {
+                      // Allow video controls to work but prevent event bubbling during swipe
+                      e.stopPropagation();
+                    }}
+                    onTouchMove={(e) => {
+                      // Allow normal touch interactions within video player
+                      e.stopPropagation();
+                    }}
+                    onTouchEnd={(e) => {
+                      // Prevent touch end from interfering with swipe
+                      e.stopPropagation();
+                    }}
+                  >
+                    <source src={currentPhoto.url} type={currentPhoto.contentType || 'video/mp4'} />
+                    Your browser does not support the video tag.
+                  </Box>
                 </Box>
               ) : (
                 <Box

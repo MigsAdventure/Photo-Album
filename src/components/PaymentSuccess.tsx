@@ -35,21 +35,28 @@ const PaymentSuccess: React.FC = () => {
   useEffect(() => {
     const loadEventData = async () => {
       if (!eventId) {
+        console.error('❌ PaymentSuccess: No event_id in URL parameters');
         setError('Event ID not found in URL');
         setLoading(false);
         return;
       }
 
+      console.log('🔍 PaymentSuccess: Loading event data for ID:', eventId);
+
       try {
         const eventData = await getEvent(eventId);
+        console.log('📊 PaymentSuccess: Event data loaded:', eventData);
+        
         if (eventData) {
           setEvent(eventData);
+          console.log('✅ PaymentSuccess: Event loaded successfully:', eventData.title);
         } else {
-          setError('Event not found');
+          console.error('❌ PaymentSuccess: Event not found for ID:', eventId);
+          setError(`Event not found (ID: ${eventId})`);
         }
       } catch (error) {
-        console.error('Failed to load event:', error);
-        setError('Failed to load event data');
+        console.error('❌ PaymentSuccess: Failed to load event:', error);
+        setError(`Failed to load event data: ${error instanceof Error ? error.message : 'Unknown error'}`);
       } finally {
         setLoading(false);
       }
@@ -90,10 +97,16 @@ const PaymentSuccess: React.FC = () => {
         </Alert>
         <Button
           variant="outlined"
-          onClick={() => navigate('/')}
+          onClick={() => {
+            if (eventId) {
+              navigate(`/event/${eventId}`);
+            } else {
+              navigate('/');
+            }
+          }}
           fullWidth
         >
-          Go to Home
+          {eventId ? 'Go to Event Gallery' : 'Go to Home'}
         </Button>
       </Container>
     );
