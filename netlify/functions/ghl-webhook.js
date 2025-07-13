@@ -61,16 +61,23 @@ exports.handler = async (event, context) => {
         };
       }
 
+      // Get current event data first
+      const eventData = await getResponse.json();
+      console.log('📊 Current event data:', JSON.stringify(eventData, null, 2));
+
       // Update the event to premium using REST API
       const updateData = {
         fields: {
           planType: { stringValue: 'premium' },
-          paymentId: { stringValue: paymentId },
+          paymentId: { stringValue: paymentId || 'manual_test' },
           photoLimit: { integerValue: -1 }, // Unlimited
           upgradedAt: { timestampValue: new Date().toISOString() },
           paymentAmount: { integerValue: paymentAmount || 29 }
         }
       };
+
+      console.log('🔄 Attempting Firebase update with data:', JSON.stringify(updateData, null, 2));
+      console.log('🔗 Firebase URL:', `${firestoreUrl}?updateMask.fieldPaths=planType&updateMask.fieldPaths=paymentId&updateMask.fieldPaths=photoLimit&updateMask.fieldPaths=upgradedAt&updateMask.fieldPaths=paymentAmount&key=${FIREBASE_API_KEY ? 'API_KEY_PRESENT' : 'API_KEY_MISSING'}`);
 
       const updateResponse = await fetch(`${firestoreUrl}?updateMask.fieldPaths=planType&updateMask.fieldPaths=paymentId&updateMask.fieldPaths=photoLimit&updateMask.fieldPaths=upgradedAt&updateMask.fieldPaths=paymentAmount&key=${FIREBASE_API_KEY}`, {
         method: 'PATCH',
@@ -80,16 +87,28 @@ exports.handler = async (event, context) => {
         body: JSON.stringify(updateData)
       });
 
+      console.log('📡 Firebase response status:', updateResponse.status);
+      
       if (!updateResponse.ok) {
         const errorText = await updateResponse.text();
-        console.error('❌ Failed to update event:', errorText);
+        console.error('❌ Failed to update event - Status:', updateResponse.status);
+        console.error('❌ Failed to update event - Error:', errorText);
+        console.error('❌ Firebase Project ID:', FIREBASE_PROJECT_ID);
+        console.error('❌ Firebase API Key present:', !!FIREBASE_API_KEY);
+        
         return {
           statusCode: 500,
           headers: {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type',
           },
-          body: JSON.stringify({ error: 'Failed to upgrade event' }),
+          body: JSON.stringify({ 
+            error: 'Failed to upgrade event',
+            details: errorText,
+            status: updateResponse.status,
+            eventId: eventId,
+            firebaseProject: FIREBASE_PROJECT_ID
+          }),
         };
       }
 
