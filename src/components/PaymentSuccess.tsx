@@ -47,8 +47,11 @@ const PaymentSuccess: React.FC = () => {
         
         if (isRecent && upgradeData.eventId) {
           console.log('✅ PaymentSuccess: Got event_id from localStorage:', upgradeData.eventId);
-          // Clear localStorage after successful use
-          localStorage.removeItem('pendingUpgrade');
+          // Don't clear immediately - set a 5-minute cleanup timer instead
+          setTimeout(() => {
+            console.log('🧹 PaymentSuccess: Cleaning up localStorage after 5 minutes');
+            localStorage.removeItem('pendingUpgrade');
+          }, 5 * 60 * 1000); // 5 minutes
           return upgradeData.eventId;
         } else if (!isRecent) {
           console.log('⚠️ PaymentSuccess: localStorage data expired, clearing...');

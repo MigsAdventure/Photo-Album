@@ -51,18 +51,20 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
       console.log('🔄 UpgradeModal: Storing event data in localStorage before payment redirect');
       
-      // Store event data in localStorage as backup for payment confirmation
+      // Always store fresh event data in localStorage (overwrite any existing data)
       const upgradeData = {
         eventId,
         eventTitle: event.title,
         organizerEmail: event.organizerEmail,
         organizerName: event.organizerEmail.split('@')[0],
-        timestamp: Date.now(),
+        timestamp: Date.now(), // Fresh timestamp for each upgrade attempt
         paymentAmount: 29
       };
       
+      // Always set localStorage, even if it already exists (handle multiple upgrade attempts)
       localStorage.setItem('pendingUpgrade', JSON.stringify(upgradeData));
-      console.log('✅ UpgradeModal: Event data stored in localStorage:', upgradeData);
+      console.log('✅ UpgradeModal: Fresh event data stored in localStorage:', upgradeData);
+      console.log('📝 UpgradeModal: This will be available for 5 minutes after payment success');
 
       // Create payment URL with event data
       const paymentBaseUrl = 'https://socialboostai.com/premium-upgrade-page';
