@@ -20,8 +20,14 @@ exports.handler = async (event, context) => {
     console.log('📨 GHL Webhook received - Raw body:', event.body);
     console.log('📨 GHL Webhook headers:', JSON.stringify(event.headers, null, 2));
     
+    // Log ALL incoming data for debugging real GHL payloads
+    console.log('🔍 FULL EVENT OBJECT:', JSON.stringify(event, null, 2));
+    
     const webhookData = JSON.parse(event.body);
     console.log('📨 Parsed webhook data:', JSON.stringify(webhookData, null, 2));
+    
+    // Check all possible webhook data fields
+    console.log('🔍 Available fields in webhook:', Object.keys(webhookData));
     
     // Handle your actual GoHighLevel payload format
     if (webhookData.action === 'upgrade_confirmed') {
