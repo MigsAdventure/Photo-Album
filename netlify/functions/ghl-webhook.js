@@ -129,6 +129,73 @@ exports.handler = async (event, context) => {
       };
     }
 
+    // Handle reset to free for testing
+    if (webhookData.action === 'reset_to_free') {
+      console.log('🔄 Processing reset to free webhook');
+      
+      const { eventId } = webhookData;
+      
+      if (!eventId) {
+        console.log('❌ No event ID found in reset webhook');
+        return {
+          statusCode: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type',
+          },
+          body: JSON.stringify({ error: 'Event ID required' }),
+        };
+      }
+
+      // Use Firebase REST API to reset the event
+      const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/events/${eventId}`;
+      
+      // Update the event back to free using REST API
+      const updateData = {
+        fields: {
+          planType: { stringValue: 'free' },
+          photoLimit: { integerValue: 2 }, // Back to 2 photo limit
+          resetAt: { timestampValue: new Date().toISOString() }
+        }
+      };
+
+      const updateResponse = await fetch(`${firestoreUrl}?updateMask.fieldPaths=planType&updateMask.fieldPaths=photoLimit&updateMask.fieldPaths=resetAt&key=${FIREBASE_API_KEY}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateData)
+      });
+
+      if (!updateResponse.ok) {
+        const errorText = await updateResponse.text();
+        console.error('❌ Failed to reset event:', errorText);
+        return {
+          statusCode: 500,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Content-Type',
+          },
+          body: JSON.stringify({ error: 'Failed to reset event' }),
+        };
+      }
+
+      console.log('✅ Event reset to free:', eventId);
+
+      return {
+        statusCode: 200,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+        body: JSON.stringify({ 
+          success: true, 
+          message: 'Event reset to free',
+          eventId
+        }),
+      };
+    }
+
     // Handle other webhook types (for future expansion)
     console.log(`🔄 Unhandled webhook type: ${webhookData.type}`);
     
