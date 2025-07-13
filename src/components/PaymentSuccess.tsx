@@ -29,14 +29,48 @@ const PaymentSuccess: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const eventId = searchParams.get('event_id');
+  // Try URL parameter first, then localStorage as fallback
+  const getEventId = (): string | null => {
+    const urlEventId = searchParams.get('event_id');
+    if (urlEventId && urlEventId !== '{event_id}') {
+      console.log('✅ PaymentSuccess: Got event_id from URL:', urlEventId);
+      return urlEventId;
+    }
+    
+    console.log('⚠️ PaymentSuccess: No valid event_id in URL, checking localStorage...');
+    
+    try {
+      const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
+      if (pendingUpgradeData) {
+        const upgradeData = JSON.parse(pendingUpgradeData);
+        const isRecent = upgradeData.timestamp && (Date.now() - upgradeData.timestamp < 3600000); // 1 hour
+        
+        if (isRecent && upgradeData.eventId) {
+          console.log('✅ PaymentSuccess: Got event_id from localStorage:', upgradeData.eventId);
+          // Clear localStorage after successful use
+          localStorage.removeItem('pendingUpgrade');
+          return upgradeData.eventId;
+        } else if (!isRecent) {
+          console.log('⚠️ PaymentSuccess: localStorage data expired, clearing...');
+          localStorage.removeItem('pendingUpgrade');
+        }
+      }
+    } catch (error) {
+      console.error('❌ PaymentSuccess: Error reading localStorage:', error);
+      localStorage.removeItem('pendingUpgrade');
+    }
+    
+    return null;
+  };
+
+  const eventId = getEventId();
   const orderId = searchParams.get('order_id');
 
   useEffect(() => {
     const loadEventData = async () => {
       if (!eventId) {
-        console.error('❌ PaymentSuccess: No event_id in URL parameters');
-        setError('Event ID not found in URL');
+        console.error('❌ PaymentSuccess: No event_id found in URL or localStorage');
+        setError('Event ID not found. Please return to your event gallery.');
         setLoading(false);
         return;
       }
@@ -56,7 +90,7 @@ const PaymentSuccess: React.FC = () => {
         }
       } catch (error) {
         console.error('❌ PaymentSuccess: Failed to load event:', error);
-        setError(`Failed to load event data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        setError('Failed to load event data: ' + String(error));
       } finally {
         setLoading(false);
       }

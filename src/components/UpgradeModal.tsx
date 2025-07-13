@@ -49,6 +49,21 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
         throw new Error('Event not found');
       }
 
+      console.log('🔄 UpgradeModal: Storing event data in localStorage before payment redirect');
+      
+      // Store event data in localStorage as backup for payment confirmation
+      const upgradeData = {
+        eventId,
+        eventTitle: event.title,
+        organizerEmail: event.organizerEmail,
+        organizerName: event.organizerEmail.split('@')[0],
+        timestamp: Date.now(),
+        paymentAmount: 29
+      };
+      
+      localStorage.setItem('pendingUpgrade', JSON.stringify(upgradeData));
+      console.log('✅ UpgradeModal: Event data stored in localStorage:', upgradeData);
+
       // Create payment URL with event data
       const paymentBaseUrl = 'https://socialboostai.com/premium-upgrade-page';
       const params = new URLSearchParams({
@@ -61,11 +76,13 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
       const paymentLink = `${paymentBaseUrl}?${params.toString()}`;
       
+      console.log('🔗 UpgradeModal: Redirecting to payment page:', paymentLink);
+      
       // Redirect to payment page in same tab
       window.location.href = paymentLink;
 
     } catch (error) {
-      console.error('Upgrade failed:', error);
+      console.error('❌ UpgradeModal: Upgrade failed:', error);
       setError(error instanceof Error ? error.message : 'Upgrade failed');
       setLoading(false);
     }

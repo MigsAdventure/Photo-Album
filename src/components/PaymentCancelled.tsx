@@ -26,13 +26,46 @@ const PaymentCancelled: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const eventId = searchParams.get('event_id');
+  // Try URL parameter first, then localStorage as fallback
+  const getEventId = (): string | null => {
+    const urlEventId = searchParams.get('event_id');
+    if (urlEventId && urlEventId !== '{event_id}') {
+      console.log('✅ PaymentCancelled: Got event_id from URL:', urlEventId);
+      return urlEventId;
+    }
+    
+    console.log('⚠️ PaymentCancelled: No valid event_id in URL, checking localStorage...');
+    
+    try {
+      const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
+      if (pendingUpgradeData) {
+        const upgradeData = JSON.parse(pendingUpgradeData);
+        const isRecent = upgradeData.timestamp && (Date.now() - upgradeData.timestamp < 3600000); // 1 hour
+        
+        if (isRecent && upgradeData.eventId) {
+          console.log('✅ PaymentCancelled: Got event_id from localStorage:', upgradeData.eventId);
+          // Don't clear localStorage here since user cancelled - they might try again
+          return upgradeData.eventId;
+        } else if (!isRecent) {
+          console.log('⚠️ PaymentCancelled: localStorage data expired, clearing...');
+          localStorage.removeItem('pendingUpgrade');
+        }
+      }
+    } catch (error) {
+      console.error('❌ PaymentCancelled: Error reading localStorage:', error);
+      localStorage.removeItem('pendingUpgrade');
+    }
+    
+    return null;
+  };
+
+  const eventId = getEventId();
 
   useEffect(() => {
     const loadEventData = async () => {
       if (!eventId) {
-        console.error('❌ PaymentCancelled: No event_id in URL parameters');
-        setError('Event ID not found in URL');
+        console.error('❌ PaymentCancelled: No event_id found in URL or localStorage');
+        setError('Event ID not found. Please return to your event gallery.');
         setLoading(false);
         return;
       }
