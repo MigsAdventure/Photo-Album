@@ -209,36 +209,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     );
   }
 
-  if (photos.length === 0) {
-    return (
-      <Container maxWidth="sm">
-        <Card 
-          sx={{ 
-            textAlign: 'center', 
-            py: 8, 
-            bgcolor: 'grey.50',
-            border: '2px dashed',
-            borderColor: 'grey.300'
-          }}
-        >
-          <PhotoLibrary 
-            sx={{ 
-              fontSize: 80, 
-              color: 'grey.400', 
-              mb: 2 
-            }} 
-          />
-          <Typography variant="h5" gutterBottom color="text.secondary">
-            No media yet
-          </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Photos and videos will appear here as guests upload them!
-          </Typography>
-        </Card>
-      </Container>
-    );
-  }
-
   return (
     <Container maxWidth="lg">
       <Box sx={{ mb: 4 }}>
@@ -328,19 +298,48 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           )}
         </Box>
       </Box>
-      
-      <Box 
-        sx={{ 
-          display: 'grid',
-          gridTemplateColumns: {
-            xs: 'repeat(2, 1fr)',
-            sm: 'repeat(3, 1fr)',
-            md: 'repeat(4, 1fr)',
-            lg: 'repeat(5, 1fr)'
-          },
-          gap: 2
-        }}
-      >
+
+      {/* No Media Message */}
+      {photos.length === 0 ? (
+        <Container maxWidth="sm" sx={{ px: 0 }}>
+          <Card 
+            sx={{ 
+              textAlign: 'center', 
+              py: 8, 
+              bgcolor: 'grey.50',
+              border: '2px dashed',
+              borderColor: 'grey.300'
+            }}
+          >
+            <PhotoLibrary 
+              sx={{ 
+                fontSize: 80, 
+                color: 'grey.400', 
+                mb: 2 
+              }} 
+            />
+            <Typography variant="h5" gutterBottom color="text.secondary">
+              No media yet
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              Photos and videos will appear here as guests upload them!
+            </Typography>
+          </Card>
+        </Container>
+      ) : (
+        /* Photo Grid */
+        <Box 
+          sx={{ 
+            display: 'grid',
+            gridTemplateColumns: {
+              xs: 'repeat(2, 1fr)',
+              sm: 'repeat(3, 1fr)',
+              md: 'repeat(4, 1fr)',
+              lg: 'repeat(5, 1fr)'
+            },
+            gap: 2
+          }}
+        >
         {photos.map((photo, index) => (
           <Zoom in timeout={300 + index * 50} key={photo.id}>
             <Card 
@@ -357,30 +356,11 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             >
               {isVideo(photo) ? (
                 // Video thumbnail with play button overlay
-                <Box sx={{ position: 'relative', height: 200 }}>
-                  <Box
-                    component="img"
-                    src={photo.url + '#t=1'}
-                    alt={photo.fileName || 'Video thumbnail'}
-                    sx={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      backgroundColor: 'grey.900'
-                    }}
-                    onError={(e) => {
-                      // Fallback: show a dark background with video icon
-                      const target = e.target as HTMLImageElement;
-                      target.style.display = 'none';
-                      const parent = target.parentElement;
-                      if (parent) {
-                        parent.style.backgroundColor = '#424242';
-                        parent.style.display = 'flex';
-                        parent.style.alignItems = 'center';
-                        parent.style.justifyContent = 'center';
-                      }
-                    }}
-                  />
+                <Box sx={{ position: 'relative', height: 200, bgcolor: 'grey.900', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {/* Video Icon Background */}
+                  <Videocam sx={{ fontSize: 80, color: 'grey.400' }} />
+                  
+                  {/* Play Button Overlay */}
                   <Box
                     sx={{
                       position: 'absolute',
@@ -403,6 +383,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   >
                     <PlayArrow sx={{ fontSize: 30, color: 'white', ml: 0.5 }} />
                   </Box>
+                  
+                  {/* Video Label */}
                   <Chip
                     icon={<Videocam />}
                     label="Video"
@@ -416,6 +398,27 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       '& .MuiChip-icon': { color: 'white' }
                     }}
                   />
+                  
+                  {/* File name at bottom */}
+                  {photo.fileName && (
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        bottom: 8,
+                        left: 8,
+                        right: 8,
+                        bgcolor: alpha('#000000', 0.7),
+                        color: 'white',
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 1
+                      }}
+                    >
+                      <Typography variant="caption" noWrap>
+                        {photo.fileName}
+                      </Typography>
+                    </Box>
+                  )}
                 </Box>
               ) : (
                 // Regular image
@@ -454,7 +457,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             </Card>
           </Zoom>
         ))}
-      </Box>
+        </Box>
+      )}
 
       {/* Android-Style Photo Viewer */}
       <Dialog

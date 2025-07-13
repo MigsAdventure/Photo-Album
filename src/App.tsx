@@ -237,12 +237,13 @@ const AdminDashboard: React.FC = () => {
 
           <TextField
             fullWidth
-            label="Your Email Address (Optional)"
+            label="Your Email Address"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="e.g., organizer@example.com"
             helperText="We'll send you the event URL and QR code for easy access"
+            required
             sx={{ mb: 3 }}
           />
 
