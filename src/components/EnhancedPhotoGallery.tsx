@@ -355,26 +355,43 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               onClick={() => openModal(index)}
             >
               {isVideo(photo) ? (
-                // Video thumbnail with clean design
-                <Box 
-                  sx={{ 
-                    position: 'relative', 
-                    height: 200,
-                    bgcolor: 'grey.900',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: 'linear-gradient(135deg, #434343 0%, #000000 100%)'
-                  }}
-                >
-                  {/* Video Icon */}
-                  <Videocam sx={{ fontSize: 60, color: 'grey.300', mb: 1 }} />
-                  
-                  {/* Video Label */}
-                  <Typography variant="body2" sx={{ color: 'grey.300', fontWeight: 500 }}>
-                    Video
-                  </Typography>
+                // Video thumbnail with actual frame
+                <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
+                  <Box
+                    component="video"
+                    src={photo.url}
+                    muted
+                    preload="metadata"
+                    sx={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      backgroundColor: 'grey.900'
+                    }}
+                    onLoadedMetadata={(e) => {
+                      const video = e.target as HTMLVideoElement;
+                      // Seek to 3 seconds for thumbnail
+                      video.currentTime = Math.min(3, video.duration * 0.1);
+                    }}
+                    onError={(e) => {
+                      // Fallback: show video icon if frame extraction fails
+                      const video = e.target as HTMLVideoElement;
+                      const parent = video.parentElement;
+                      if (parent) {
+                        video.style.display = 'none';
+                        parent.style.background = 'linear-gradient(135deg, #434343 0%, #000000 100%)';
+                        parent.style.display = 'flex';
+                        parent.style.alignItems = 'center';
+                        parent.style.justifyContent = 'center';
+                        
+                        // Add fallback icon
+                        const icon = document.createElement('div');
+                        icon.innerHTML = '🎬';
+                        icon.style.fontSize = '60px';
+                        parent.appendChild(icon);
+                      }
+                    }}
+                  />
                   
                   {/* Play Button Overlay */}
                   <Box
@@ -383,7 +400,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       top: '50%',
                       left: '50%',
                       transform: 'translate(-50%, -50%)',
-                      bgcolor: alpha('#ffffff', 0.9),
+                      bgcolor: alpha('#000000', 0.7),
                       borderRadius: '50%',
                       width: 60,
                       height: 60,
@@ -392,12 +409,12 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       justifyContent: 'center',
                       transition: 'all 0.3s ease',
                       '&:hover': {
-                        bgcolor: '#ffffff',
+                        bgcolor: alpha('#000000', 0.9),
                         transform: 'translate(-50%, -50%) scale(1.1)'
                       }
                     }}
                   >
-                    <PlayArrow sx={{ fontSize: 30, color: 'black', ml: 0.5 }} />
+                    <PlayArrow sx={{ fontSize: 30, color: 'white', ml: 0.5 }} />
                   </Box>
                   
                   {/* Video Label Chip */}
@@ -409,32 +426,11 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       position: 'absolute',
                       top: 8,
                       right: 8,
-                      bgcolor: alpha('#000000', 0.8),
+                      bgcolor: alpha('#000000', 0.7),
                       color: 'white',
                       '& .MuiChip-icon': { color: 'white' }
                     }}
                   />
-                  
-                  {/* File name at bottom */}
-                  {photo.fileName && (
-                    <Box
-                      sx={{
-                        position: 'absolute',
-                        bottom: 8,
-                        left: 8,
-                        right: 8,
-                        bgcolor: alpha('#000000', 0.8),
-                        color: 'white',
-                        px: 1,
-                        py: 0.5,
-                        borderRadius: 1
-                      }}
-                    >
-                      <Typography variant="caption" noWrap>
-                        {photo.fileName}
-                      </Typography>
-                    </Box>
-                  )}
                 </Box>
               ) : (
                 // Regular image
@@ -664,20 +660,43 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     }}
                   >
                     {isVideo(photo) ? (
-                      // Video thumbnail with icon
-                      <Box
-                        sx={{
-                          width: '100%',
-                          height: '100%',
-                          bgcolor: 'grey.800',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          position: 'relative',
-                          background: 'linear-gradient(135deg, #424242 0%, #212121 100%)'
-                        }}
-                      >
-                        <Videocam sx={{ fontSize: 24, color: 'grey.400' }} />
+                      // Video thumbnail with actual frame
+                      <Box sx={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+                        <Box
+                          component="video"
+                          src={photo.url}
+                          muted
+                          preload="metadata"
+                          sx={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            backgroundColor: 'grey.800'
+                          }}
+                          onLoadedMetadata={(e) => {
+                            const video = e.target as HTMLVideoElement;
+                            // Seek to 3 seconds for thumbnail
+                            video.currentTime = Math.min(3, video.duration * 0.1);
+                          }}
+                          onError={(e) => {
+                            // Fallback: show video icon if frame extraction fails
+                            const video = e.target as HTMLVideoElement;
+                            const parent = video.parentElement;
+                            if (parent) {
+                              video.style.display = 'none';
+                              parent.style.background = 'linear-gradient(135deg, #424242 0%, #212121 100%)';
+                              parent.style.display = 'flex';
+                              parent.style.alignItems = 'center';
+                              parent.style.justifyContent = 'center';
+                              
+                              // Add fallback icon
+                              const icon = document.createElement('div');
+                              icon.innerHTML = '🎬';
+                              icon.style.fontSize = '20px';
+                              parent.appendChild(icon);
+                            }
+                          }}
+                        />
                         {/* Small play icon overlay for video thumbnails */}
                         <Box
                           sx={{
@@ -685,7 +704,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                             top: '50%',
                             left: '50%',
                             transform: 'translate(-50%, -50%)',
-                            bgcolor: alpha('#ffffff', 0.9),
+                            bgcolor: alpha('#000000', 0.7),
                             borderRadius: '50%',
                             width: 20,
                             height: 20,
@@ -695,7 +714,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                             pointerEvents: 'none'
                           }}
                         >
-                          <PlayArrow sx={{ fontSize: 10, color: 'black', ml: 0.2 }} />
+                          <PlayArrow sx={{ fontSize: 10, color: 'white', ml: 0.2 }} />
                         </Box>
                       </Box>
                     ) : (
