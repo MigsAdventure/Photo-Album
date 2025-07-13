@@ -39,6 +39,7 @@ import {
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent } from '../services/photoService';
 import { Media, Event } from '../types';
+import UpgradeModal from './UpgradeModal';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;
@@ -51,6 +52,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [thumbnailsRef, setThumbnailsRef] = useState<HTMLElement | null>(null);
   const [event, setEvent] = useState<Event | null>(null);
   const [eventLoading, setEventLoading] = useState(true);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // Utility function to detect if media is a video
   const isVideo = useCallback((media: Media): boolean => {
@@ -288,6 +290,27 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   })
                 }}
               />
+            )}
+            
+            {/* Upgrade Button for Free Users */}
+            {!eventLoading && event && event.planType === 'free' && (
+              <Button
+                variant="contained"
+                color="primary"
+                size="small"
+                onClick={() => setShowUpgradeModal(true)}
+                startIcon={<Star />}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 'bold',
+                  background: 'linear-gradient(45deg, #d81b60, #8e24aa)',
+                  '&:hover': {
+                    background: 'linear-gradient(45deg, #c2185b, #7b1fa2)',
+                  }
+                }}
+              >
+                Upgrade
+              </Button>
             )}
           </Box>
         </Box>
@@ -749,6 +772,21 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           )}
         </DialogActions>
       </Dialog>
+
+      {/* Upgrade Modal for Free Users */}
+      {event && (
+        <UpgradeModal
+          open={showUpgradeModal}
+          onClose={() => setShowUpgradeModal(false)}
+          eventId={event.id}
+          currentPhotoCount={event.photoCount || 0}
+          onUpgradeSuccess={() => {
+            setShowUpgradeModal(false);
+            // Reload event data to get updated limits
+            getEvent(event.id).then(setEvent);
+          }}
+        />
+      )}
     </Container>
   );
 };

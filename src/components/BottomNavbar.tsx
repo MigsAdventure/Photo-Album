@@ -559,12 +559,24 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
   }, []);
 
-  const handleCameraClick = () => {
+  const handleCameraClick = async () => {
+    // Check freemium limits BEFORE opening file picker
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits - modal already shown
+    }
+    
     const cameraInput = document.getElementById('bottom-camera-input') as HTMLInputElement;
     cameraInput?.click();
   };
 
-  const handleGalleryClick = () => {
+  const handleGalleryClick = async () => {
+    // Check freemium limits BEFORE opening file picker
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits - modal already shown
+    }
+    
     const galleryInput = document.getElementById('bottom-gallery-input') as HTMLInputElement;
     galleryInput?.click();
   };
