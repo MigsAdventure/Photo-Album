@@ -102,7 +102,7 @@ const AdminDashboard: React.FC = () => {
         isActive: true,
         organizerEmail: email,
         planType: 'free',
-        photoLimit: 20,
+        photoLimit: 2,
         photoCount: 0
       };
       setEvent(newEvent);

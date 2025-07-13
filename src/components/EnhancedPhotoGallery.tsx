@@ -27,17 +27,18 @@ import {
   Close,
   PhotoLibrary,
   AccessTime,
-  FileDownload,
   ArrowBackIos,
   ArrowForwardIos,
   Email,
   GetApp,
   PlayArrow,
-  Videocam
+  Videocam,
+  Star,
+  Security
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, downloadPhoto as downloadPhotoService, requestEmailDownload } from '../services/photoService';
-import { Media } from '../types';
+import { subscribeToPhotos, requestEmailDownload, getEvent } from '../services/photoService';
+import { Media, Event } from '../types';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;
@@ -48,6 +49,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [loading, setLoading] = useState(true);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
   const [thumbnailsRef, setThumbnailsRef] = useState<HTMLElement | null>(null);
+  const [event, setEvent] = useState<Event | null>(null);
+  const [eventLoading, setEventLoading] = useState(true);
 
   // Utility function to detect if media is a video
   const isVideo = useCallback((media: Media): boolean => {
@@ -82,6 +85,22 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
 
     return () => unsubscribe();
+  }, [eventId]);
+
+  // Load event data for plan information
+  useEffect(() => {
+    const loadEvent = async () => {
+      try {
+        const eventData = await getEvent(eventId);
+        setEvent(eventData);
+      } catch (error) {
+        console.error('Failed to load event data:', error);
+      } finally {
+        setEventLoading(false);
+      }
+    };
+    
+    loadEvent();
   }, [eventId]);
 
   const openModal = (photoIndex: number) => {
@@ -158,24 +177,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
   };
 
-  const downloadMedia = async (media: Media) => {
-    try {
-      console.log('Starting professional download for media:', media.fileName);
-      // For now, use the photo download service for both photos and videos
-      // TODO: Create a dedicated media download service
-      await downloadPhotoService(media.id);
-    } catch (error) {
-      console.error('Professional download failed:', error);
-      // Fallback to opening in new tab
-      const newWindow = window.open(media.url, '_blank');
-      if (newWindow) {
-        newWindow.focus();
-        console.log('Fallback: Media opened in new tab. Right-click and select "Save as..." to download');
-      } else {
-        console.error('Download failed and could not open new tab.');
-      }
-    }
-  };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
 
@@ -246,15 +247,63 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               Event Gallery
             </Typography>
           </Box>
-          <Chip 
-            label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
-            color="primary"
-            variant="outlined"
-          />
+          
+          {/* Plan Status and Photo Limit */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            {/* Photo Count/Limit Display */}
+            {!eventLoading && event && (
+              <Chip 
+                label={
+                  event.planType === 'premium' 
+                    ? `${photos.length} photos • Unlimited`
+                    : `${photos.length}/${event.photoLimit} photos`
+                }
+                color={
+                  event.planType === 'premium' 
+                    ? 'success'
+                    : photos.length >= event.photoLimit 
+                      ? 'error' 
+                      : 'primary'
+                }
+                variant="outlined"
+                sx={{ fontWeight: 'bold' }}
+              />
+            )}
+            
+            {/* Plan Status Indicator */}
+            {!eventLoading && event && (
+              <Chip
+                icon={event.planType === 'premium' ? <Star /> : <Security />}
+                label={event.planType === 'premium' ? 'Premium Plan' : 'Free Trial'}
+                color={event.planType === 'premium' ? 'warning' : 'default'}
+                variant={event.planType === 'premium' ? 'filled' : 'outlined'}
+                sx={{
+                  fontWeight: 'bold',
+                  ...(event.planType === 'premium' && {
+                    background: 'linear-gradient(45deg, #ffd700, #ffed4e)',
+                    color: '#000',
+                    '& .MuiChip-icon': {
+                      color: '#000'
+                    }
+                  })
+                }}
+              />
+            )}
+          </Box>
         </Box>
-        <Typography variant="body1" color="text.secondary">
-          Live updates from your guests - photos appear as they're uploaded!
-        </Typography>
+        
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+          <Typography variant="body1" color="text.secondary">
+            Live updates from your guests - photos appear as they're uploaded!
+          </Typography>
+          
+          {/* Limit Warning for Free Users */}
+          {!eventLoading && event && event.planType === 'free' && photos.length >= event.photoLimit && (
+            <Typography variant="body2" color="error" sx={{ fontWeight: 'bold' }}>
+              Upload limit reached • Upgrade for unlimited photos
+            </Typography>
+          )}
+        </Box>
       </Box>
       
       <Box 
@@ -424,13 +473,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   {formatDate(currentPhoto.uploadedAt)}
                 </Typography>
               </Box>
-              <IconButton
-                onClick={() => downloadMedia(currentPhoto)}
-                sx={{ mr: 1, color: 'white' }}
-                title="Download"
-              >
-                <FileDownload />
-              </IconButton>
               <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
                 <Close />
               </IconButton>

@@ -1,5 +1,5 @@
 // Unified media upload service that handles both photos and videos
-import { uploadPhoto, incrementPhotoCount } from './photoService';
+import { uploadPhoto, incrementPhotoCount, canUploadPhoto, getEvent } from './photoService';
 import { analyzeVideoFile, validateVideoFile, generateVideoThumbnail, compressVideo } from './videoService';
 import { FileAnalysis } from '../types';
 
@@ -143,6 +143,16 @@ export const uploadMedia = async (
   });
 
   try {
+    // CRITICAL: Check freemium limits BEFORE starting upload
+    console.log('🔒 Checking upload permissions for event:', eventId);
+    const canUpload = await canUploadPhoto(eventId);
+    if (!canUpload) {
+      const event = await getEvent(eventId);
+      const currentCount = event?.photoCount || 0;
+      const limit = event?.photoLimit || 2;
+      throw new Error(`Upload limit reached! You have uploaded ${currentCount}/${limit} photos. Upgrade to premium for unlimited uploads.`);
+    }
+    
     // Validate file type
     if (!isVideoFile(file) && !isImageFile(file)) {
       throw new Error('Unsupported file type. Please select a photo or video file.');
