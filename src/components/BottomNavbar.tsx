@@ -33,8 +33,10 @@ import {
   GetApp,
   Print
 } from '@mui/icons-material';
-import { uploadPhoto, requestEmailDownload } from '../services/photoService';
-import { Photo, UploadProgress } from '../types';
+import { uploadMedia, validateMediaFile } from '../services/mediaUploadService';
+import { requestEmailDownload, getEvent, canUploadPhoto } from '../services/photoService';
+import { Photo, UploadProgress, Event } from '../types';
+import UpgradeModal from './UpgradeModal';
 import QRCode from 'qrcode';
 
 interface BottomNavbarProps {
@@ -60,10 +62,41 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   const [copySuccess, setCopySuccess] = useState(false);
   const qrCanvasRef = useRef<HTMLCanvasElement>(null);
   
+  // Freemium state
+  const [event, setEvent] = useState<Event | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
   const eventUrl = `${window.location.origin}/event/${eventId}`;
+
+  // Load event data for freemium checking
+  useEffect(() => {
+    const loadEvent = async () => {
+      try {
+        const eventData = await getEvent(eventId);
+        setEvent(eventData);
+      } catch (error) {
+        console.error('Failed to load event for freemium check:', error);
+      }
+    };
+    
+    loadEvent();
+  }, [eventId]);
+
+  // Check if upload is allowed (freemium limits)
+  const checkUploadAllowed = async (): Promise<boolean> => {
+    if (!event) return false;
+    
+    const canUpload = await canUploadPhoto(eventId);
+    if (!canUpload) {
+      setShowUpgradeModal(true);
+      return false;
+    }
+    
+    return true;
+  };
 
   // Generate file fingerprint to prevent duplicates
   const generateFileFingerprint = useCallback(async (file: File): Promise<string> => {
@@ -90,44 +123,17 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     return { isCamera, needsCompression };
   }, []);
 
-  // Validate file before upload
+  // Validate file before upload using the new media validation
   const validateFile = useCallback(async (file: File): Promise<{ valid: boolean; error?: string }> => {
-    // Size validation
-    if (file.size > 50 * 1024 * 1024) { // 50MB limit
-      return { valid: false, error: 'File too large (max 50MB)' };
-    }
-    
-    if (file.size === 0) {
-      return { valid: false, error: 'File is empty' };
-    }
-
-    // Type validation
-    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif'];
-    if (!validTypes.includes(file.type) && file.type !== '') {
-      return { valid: false, error: 'Invalid file type' };
-    }
-
-    // Content validation - try to load as image
-    return new Promise((resolve) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        if (img.width < 50 || img.height < 50) {
-          resolve({ valid: false, error: 'Image too small (minimum 50x50)' });
-        } else {
-          resolve({ valid: true });
-        }
+    try {
+      const validation = await validateMediaFile(file);
+      return { valid: validation.isValid, error: validation.error };
+    } catch (error) {
+      return { 
+        valid: false, 
+        error: error instanceof Error ? error.message : 'Validation failed' 
       };
-      
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        resolve({ valid: false, error: 'Not a valid image file' });
-      };
-      
-      img.src = url;
-    });
+    }
   }, []);
 
   // Compress large camera photos
@@ -269,7 +275,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
 
         // Upload the file
         console.log(`⬆️ Starting upload: ${item.fileName}`);
-        await uploadPhoto(fileToUpload, eventId, (progress) => {
+        await uploadMedia(fileToUpload, eventId, (progress: number) => {
           setUploadProgress(prev => 
             prev.map((q, idx) => 
               idx === i ? { ...q, progress: Math.max(progress, 30) } : q
@@ -324,20 +330,26 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   }, [eventId, onUploadComplete, compressImage]);
 
   const handleFileSelect = async (files: FileList) => {
-    const imageFiles = Array.from(files).filter(file => 
-      file.type.startsWith('image/') || file.type === '' || 
-      file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/)
+    // Check freemium limits before processing files
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits
+    }
+
+    const mediaFiles = Array.from(files).filter(file => 
+      file.type.startsWith('image/') || file.type.startsWith('video/') || file.type === '' || 
+      file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|mov|avi|webm)$/)
     );
 
-    if (imageFiles.length === 0) {
-      alert('Please select valid image files');
+    if (mediaFiles.length === 0) {
+      alert('Please select valid image or video files');
       return;
     }
 
-    console.log('📤 Files selected for validation and upload:', imageFiles.length);
+    console.log('📤 Media files selected for validation and upload:', mediaFiles.length);
 
     // Create initial queue with validation status
-    const initialQueue: UploadProgress[] = imageFiles.map((file, index) => {
+    const initialQueue: UploadProgress[] = mediaFiles.map((file, index) => {
       const analysis = analyzeFile(file);
       
       return {
@@ -359,8 +371,8 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     const seenFingerprints = new Set<string>();
     let hasErrors = false;
 
-    for (let i = 0; i < imageFiles.length; i++) {
-      const file = imageFiles[i];
+    for (let i = 0; i < mediaFiles.length; i++) {
+      const file = mediaFiles[i];
       
       try {
         // Update status to show validation in progress
@@ -370,7 +382,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           )
         );
 
-        console.log(`🔍 Validating file ${i + 1}/${imageFiles.length}: ${file.name}`);
+        console.log(`🔍 Validating file ${i + 1}/${mediaFiles.length}: ${file.name}`);
 
         // Validate file
         const validation = await validateFile(file);
@@ -457,7 +469,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     }
 
     if (hasErrors) {
-      console.warn(`⚠️ ${imageFiles.length - validatedQueue.length} files failed validation`);
+      console.warn(`⚠️ ${mediaFiles.length - validatedQueue.length} files failed validation`);
     }
 
     console.log(`🚀 Starting upload for ${validatedQueue.length} validated files`);
@@ -509,7 +521,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       }
 
       // Upload just this file
-      await uploadPhoto(fileToUpload, eventId, (progress) => {
+      await uploadMedia(fileToUpload, eventId, (progress: number) => {
         setUploadProgress(prev => 
           prev.map((q, idx) => 
             idx === fileIndex ? { ...q, progress: Math.max(progress, 30) } : q
@@ -547,12 +559,24 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     setUploadProgress(prev => prev.filter((_, idx) => idx !== fileIndex));
   }, []);
 
-  const handleCameraClick = () => {
+  const handleCameraClick = async () => {
+    // Check freemium limits BEFORE opening file picker
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits - modal already shown
+    }
+    
     const cameraInput = document.getElementById('bottom-camera-input') as HTMLInputElement;
     cameraInput?.click();
   };
 
-  const handleGalleryClick = () => {
+  const handleGalleryClick = async () => {
+    // Check freemium limits BEFORE opening file picker
+    const canUpload = await checkUploadAllowed();
+    if (!canUpload) {
+      return; // Upload blocked due to freemium limits - modal already shown
+    }
+    
     const galleryInput = document.getElementById('bottom-gallery-input') as HTMLInputElement;
     galleryInput?.click();
   };
@@ -636,7 +660,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       <input
         id="bottom-camera-input"
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
         capture="environment"
@@ -646,7 +670,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         id="bottom-gallery-input"
         type="file"
         multiple
-        accept="image/*"
+        accept="image/*,video/*"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
       />
@@ -1348,6 +1372,38 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Upgrade Modal for Freemium Limits */}
+      {event && (
+        <UpgradeModal
+          open={showUpgradeModal}
+          onClose={() => setShowUpgradeModal(false)}
+          eventId={eventId}
+          currentPhotoCount={event.photoCount || 0}
+          onUpgradeSuccess={async () => {
+            setShowUpgradeModal(false);
+            console.log('🔄 BottomNavbar: Upgrade successful, refreshing event data...');
+            
+            try {
+              // Wait a moment for server to process upgrade
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Force refresh event data
+              const updatedEvent = await getEvent(eventId);
+              if (updatedEvent) {
+                setEvent(updatedEvent);
+                console.log('✅ BottomNavbar: Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
+              } else {
+                console.warn('⚠️ BottomNavbar: Failed to get updated event data');
+              }
+            } catch (error) {
+              console.error('❌ BottomNavbar: Error refreshing event data:', error);
+              // Fallback: reload the page to ensure fresh data
+              window.location.reload();
+            }
+          }}
+        />
+      )}
     </>
   );
 };

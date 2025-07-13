@@ -7,7 +7,9 @@ import {
   doc,
   getDoc,
   getDocs,
-  setDoc
+  setDoc,
+  updateDoc,
+  increment
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
@@ -100,7 +102,8 @@ export const uploadPhoto = async (
             fileName: file.name,
             size: file.size,
             contentType: file.type,
-            storagePath: `events/${eventId}/photos/${photoId}.${extension}`
+            storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
+            mediaType: 'photo' as const // Add mediaType for backward compatibility
           });
           
           console.log('✅ Firebase upload completed:', file.name);
@@ -133,7 +136,8 @@ export const subscribeToPhotos = (
         uploadedAt: data.uploadedAt.toDate(),
         eventId: data.eventId,
         fileName: data.fileName,
-        size: data.size
+        size: data.size,
+        mediaType: data.mediaType || 'photo' as const // Default to 'photo' for backward compatibility
       });
     });
     
@@ -144,12 +148,12 @@ export const subscribeToPhotos = (
   });
 };
 
-export const createEvent = async (title: string, date: string): Promise<string> => {
+export const createEvent = async (title: string, date: string, organizerEmail: string): Promise<string> => {
   // Generate custom event ID using event date, title, and random hash
   const customEventId = generateEventId(title, date);
   
   console.log('📅 Creating event with custom ID:', customEventId);
-  console.log('🎯 Event details:', { title, date });
+  console.log('🎯 Event details:', { title, date, organizerEmail });
   
   // Use setDoc with custom ID instead of addDoc with auto-generated ID
   const docRef = doc(db, 'events', customEventId);
@@ -157,7 +161,11 @@ export const createEvent = async (title: string, date: string): Promise<string> 
     title,
     date,
     createdAt: new Date(),
-    isActive: true
+    isActive: true,
+    organizerEmail,
+    planType: 'free',
+    photoLimit: 2,
+    photoCount: 0
   });
   
   console.log('✅ Event created successfully with ID:', customEventId);
@@ -175,7 +183,13 @@ export const getEvent = async (eventId: string): Promise<Event | null> => {
       title: data.title,
       date: data.date,
       createdAt: data.createdAt.toDate(),
-      isActive: data.isActive
+      isActive: data.isActive,
+      organizerEmail: data.organizerEmail || '',
+      planType: data.planType || 'free',
+      photoLimit: data.planType === 'free' ? 2 : (data.photoLimit || 2), // Force 2-photo limit for all free events
+      photoCount: data.photoCount || 0,
+      paymentId: data.paymentId,
+      customBranding: data.customBranding
     };
   }
   
@@ -280,4 +294,41 @@ export const downloadAllPhotos = async (
     console.error('Legacy bulk download failed:', error);
     throw error;
   }
+};
+
+// Freemium & Premium functions
+
+// Increment photo count for an event
+export const incrementPhotoCount = async (eventId: string): Promise<void> => {
+  const eventRef = doc(db, 'events', eventId);
+  await updateDoc(eventRef, {
+    photoCount: increment(1)
+  });
+};
+
+// Check if event can accept more photos (freemium limit)
+export const canUploadPhoto = async (eventId: string): Promise<boolean> => {
+  const event = await getEvent(eventId);
+  if (!event) return false;
+  
+  if (event.planType === 'premium') return true;
+  
+  return event.photoCount < event.photoLimit;
+};
+
+// Upgrade event to premium
+export const upgradeEventToPremium = async (
+  eventId: string, 
+  paymentId: string,
+  customBranding?: any
+): Promise<void> => {
+  const eventRef = doc(db, 'events', eventId);
+  await updateDoc(eventRef, {
+    planType: 'premium',
+    paymentId,
+    photoLimit: -1, // Unlimited
+    customBranding: customBranding || null
+  });
+  
+  console.log('✅ Event upgraded to premium:', eventId);
 };

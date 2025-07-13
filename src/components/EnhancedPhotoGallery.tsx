@@ -27,25 +27,48 @@ import {
   Close,
   PhotoLibrary,
   AccessTime,
-  FileDownload,
   ArrowBackIos,
   ArrowForwardIos,
   Email,
-  GetApp
+  GetApp,
+  PlayArrow,
+  Videocam,
+  Star,
+  Security
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, downloadPhoto as downloadPhotoService, requestEmailDownload } from '../services/photoService';
-import { Photo } from '../types';
+import { subscribeToPhotos, requestEmailDownload, getEvent } from '../services/photoService';
+import { Media, Event } from '../types';
+import UpgradeModal from './UpgradeModal';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;
 }
 
 const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) => {
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [photos, setPhotos] = useState<Media[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
   const [thumbnailsRef, setThumbnailsRef] = useState<HTMLElement | null>(null);
+  const [event, setEvent] = useState<Event | null>(null);
+  const [eventLoading, setEventLoading] = useState(true);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  // Utility function to detect if media is a video
+  const isVideo = useCallback((media: Media): boolean => {
+    // Check if mediaType is explicitly set to 'video'
+    if (media.mediaType === 'video') return true;
+    
+    // Fallback: check content type or file extension
+    const contentType = media.contentType || '';
+    const fileName = media.fileName || '';
+    
+    const videoContentTypes = ['video/mp4', 'video/mpeg', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'application/mp4'];
+    const videoExtensions = ['.mp4', '.mov', '.avi', '.webm'];
+    
+    return videoContentTypes.some(type => contentType.includes(type)) ||
+           videoExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  }, []);
   
   // Email download state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -64,6 +87,22 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
 
     return () => unsubscribe();
+  }, [eventId]);
+
+  // Load event data for plan information
+  useEffect(() => {
+    const loadEvent = async () => {
+      try {
+        const eventData = await getEvent(eventId);
+        setEvent(eventData);
+      } catch (error) {
+        console.error('Failed to load event data:', error);
+      } finally {
+        setEventLoading(false);
+      }
+    };
+    
+    loadEvent();
   }, [eventId]);
 
   const openModal = (photoIndex: number) => {
@@ -140,22 +179,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
   };
 
-  const downloadPhoto = async (photo: Photo) => {
-    try {
-      console.log('Starting professional download for photo:', photo.fileName);
-      await downloadPhotoService(photo.id);
-    } catch (error) {
-      console.error('Professional download failed:', error);
-      // Fallback to opening in new tab
-      const newWindow = window.open(photo.url, '_blank');
-      if (newWindow) {
-        newWindow.focus();
-        console.log('Fallback: Image opened in new tab. Right-click on the image and select "Save image as..." to download');
-      } else {
-        console.error('Download failed and could not open new tab.');
-      }
-    }
-  };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
 
@@ -186,36 +209,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     );
   }
 
-  if (photos.length === 0) {
-    return (
-      <Container maxWidth="sm">
-        <Card 
-          sx={{ 
-            textAlign: 'center', 
-            py: 8, 
-            bgcolor: 'grey.50',
-            border: '2px dashed',
-            borderColor: 'grey.300'
-          }}
-        >
-          <PhotoLibrary 
-            sx={{ 
-              fontSize: 80, 
-              color: 'grey.400', 
-              mb: 2 
-            }} 
-          />
-          <Typography variant="h5" gutterBottom color="text.secondary">
-            No photos yet
-          </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Photos will appear here as guests upload them!
-          </Typography>
-        </Card>
-      </Container>
-    );
-  }
-
   return (
     <Container maxWidth="lg">
       <Box sx={{ mb: 4 }}>
@@ -226,29 +219,127 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               Event Gallery
             </Typography>
           </Box>
-          <Chip 
-            label={`${photos.length} photo${photos.length !== 1 ? 's' : ''}`}
-            color="primary"
-            variant="outlined"
-          />
+          
+          {/* Plan Status and Photo Limit */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            {/* Photo Count/Limit Display */}
+            {!eventLoading && event && (
+              <Chip 
+                label={
+                  event.planType === 'premium' 
+                    ? `${photos.length} photos • Unlimited`
+                    : `${photos.length}/${event.photoLimit} photos`
+                }
+                color={
+                  event.planType === 'premium' 
+                    ? 'success'
+                    : photos.length >= event.photoLimit 
+                      ? 'error' 
+                      : 'primary'
+                }
+                variant="outlined"
+                sx={{ fontWeight: 'bold' }}
+              />
+            )}
+            
+            {/* Plan Status Indicator */}
+            {!eventLoading && event && (
+              <Chip
+                icon={event.planType === 'premium' ? <Star /> : <Security />}
+                label={event.planType === 'premium' ? 'Premium Plan' : 'Free Trial'}
+                color={event.planType === 'premium' ? 'warning' : 'default'}
+                variant={event.planType === 'premium' ? 'filled' : 'outlined'}
+                sx={{
+                  fontWeight: 'bold',
+                  ...(event.planType === 'premium' && {
+                    background: 'linear-gradient(45deg, #ffd700, #ffed4e)',
+                    color: '#000',
+                    '& .MuiChip-icon': {
+                      color: '#000'
+                    }
+                  })
+                }}
+              />
+            )}
+            
+            {/* Upgrade Button for Free Users */}
+            {!eventLoading && event && event.planType === 'free' && (
+              <Button
+                variant="contained"
+                color="primary"
+                size="small"
+                onClick={() => setShowUpgradeModal(true)}
+                startIcon={<Star />}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 'bold',
+                  background: 'linear-gradient(45deg, #d81b60, #8e24aa)',
+                  '&:hover': {
+                    background: 'linear-gradient(45deg, #c2185b, #7b1fa2)',
+                  }
+                }}
+              >
+                Upgrade
+              </Button>
+            )}
+          </Box>
         </Box>
-        <Typography variant="body1" color="text.secondary">
-          Live updates from your guests - photos appear as they're uploaded!
-        </Typography>
+        
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+          <Typography variant="body1" color="text.secondary">
+            Live updates from your guests - photos appear as they're uploaded!
+          </Typography>
+          
+          {/* Limit Warning for Free Users */}
+          {!eventLoading && event && event.planType === 'free' && photos.length >= event.photoLimit && (
+            <Typography variant="body2" color="error" sx={{ fontWeight: 'bold' }}>
+              Upload limit reached • Upgrade for unlimited photos
+            </Typography>
+          )}
+        </Box>
       </Box>
-      
-      <Box 
-        sx={{ 
-          display: 'grid',
-          gridTemplateColumns: {
-            xs: 'repeat(2, 1fr)',
-            sm: 'repeat(3, 1fr)',
-            md: 'repeat(4, 1fr)',
-            lg: 'repeat(5, 1fr)'
-          },
-          gap: 2
-        }}
-      >
+
+      {/* No Media Message */}
+      {photos.length === 0 ? (
+        <Container maxWidth="sm" sx={{ px: 0 }}>
+          <Card 
+            sx={{ 
+              textAlign: 'center', 
+              py: 8, 
+              bgcolor: 'grey.50',
+              border: '2px dashed',
+              borderColor: 'grey.300'
+            }}
+          >
+            <PhotoLibrary 
+              sx={{ 
+                fontSize: 80, 
+                color: 'grey.400', 
+                mb: 2 
+              }} 
+            />
+            <Typography variant="h5" gutterBottom color="text.secondary">
+              No media yet
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              Photos and videos will appear here as guests upload them!
+            </Typography>
+          </Card>
+        </Container>
+      ) : (
+        /* Photo Grid */
+        <Box 
+          sx={{ 
+            display: 'grid',
+            gridTemplateColumns: {
+              xs: 'repeat(2, 1fr)',
+              sm: 'repeat(3, 1fr)',
+              md: 'repeat(4, 1fr)',
+              lg: 'repeat(5, 1fr)'
+            },
+            gap: 2
+          }}
+        >
         {photos.map((photo, index) => (
           <Zoom in timeout={300 + index * 50} key={photo.id}>
             <Card 
@@ -263,19 +354,100 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               }}
               onClick={() => openModal(index)}
             >
-              <CardMedia
-                component="img"
-                height={200}
-                image={photo.url}
-                alt={photo.fileName || 'Event photo'}
-                sx={{ 
-                  objectFit: 'cover',
-                  transition: 'transform 0.3s ease',
-                  '&:hover': {
-                    transform: 'scale(1.05)'
-                  }
-                }}
-              />
+              {isVideo(photo) ? (
+                // Video thumbnail with actual frame
+                <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
+                  <Box
+                    component="video"
+                    src={photo.url}
+                    muted
+                    preload="metadata"
+                    sx={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      backgroundColor: 'grey.900'
+                    }}
+                    onLoadedMetadata={(e) => {
+                      const video = e.target as HTMLVideoElement;
+                      // Seek to 3 seconds for thumbnail
+                      video.currentTime = Math.min(3, video.duration * 0.1);
+                    }}
+                    onError={(e) => {
+                      // Fallback: show video icon if frame extraction fails
+                      const video = e.target as HTMLVideoElement;
+                      const parent = video.parentElement;
+                      if (parent) {
+                        video.style.display = 'none';
+                        parent.style.background = 'linear-gradient(135deg, #434343 0%, #000000 100%)';
+                        parent.style.display = 'flex';
+                        parent.style.alignItems = 'center';
+                        parent.style.justifyContent = 'center';
+                        
+                        // Add fallback icon
+                        const icon = document.createElement('div');
+                        icon.innerHTML = '🎬';
+                        icon.style.fontSize = '60px';
+                        parent.appendChild(icon);
+                      }
+                    }}
+                  />
+                  
+                  {/* Play Button Overlay */}
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      bgcolor: alpha('#000000', 0.7),
+                      borderRadius: '50%',
+                      width: 60,
+                      height: 60,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'all 0.3s ease',
+                      '&:hover': {
+                        bgcolor: alpha('#000000', 0.9),
+                        transform: 'translate(-50%, -50%) scale(1.1)'
+                      }
+                    }}
+                  >
+                    <PlayArrow sx={{ fontSize: 30, color: 'white', ml: 0.5 }} />
+                  </Box>
+                  
+                  {/* Video Label Chip */}
+                  <Chip
+                    icon={<Videocam />}
+                    label="Video"
+                    size="small"
+                    sx={{
+                      position: 'absolute',
+                      top: 8,
+                      right: 8,
+                      bgcolor: alpha('#000000', 0.7),
+                      color: 'white',
+                      '& .MuiChip-icon': { color: 'white' }
+                    }}
+                  />
+                </Box>
+              ) : (
+                // Regular image
+                <CardMedia
+                  component="img"
+                  height={200}
+                  image={photo.url}
+                  alt={photo.fileName || 'Event photo'}
+                  sx={{ 
+                    objectFit: 'cover',
+                    transition: 'transform 0.3s ease',
+                    '&:hover': {
+                      transform: 'scale(1.05)'
+                    }
+                  }}
+                />
+              )}
               <Box 
                 sx={{
                   position: 'absolute',
@@ -297,7 +469,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
             </Card>
           </Zoom>
         ))}
-      </Box>
+        </Box>
+      )}
 
       {/* Android-Style Photo Viewer */}
       <Dialog
@@ -339,13 +512,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   {formatDate(currentPhoto.uploadedAt)}
                 </Typography>
               </Box>
-              <IconButton
-                onClick={() => downloadPhoto(currentPhoto)}
-                sx={{ mr: 1, color: 'white' }}
-                title="Download"
-              >
-                <FileDownload />
-              </IconButton>
               <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
                 <Close />
               </IconButton>
@@ -385,19 +551,37 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 </IconButton>
               )}
 
-              {/* Photo */}
-              <Box
-                component="img"
-                src={currentPhoto.url}
-                alt={currentPhoto.fileName || 'Event photo'}
-                sx={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                  userSelect: 'none',
-                  pointerEvents: 'none'
-                }}
-              />
+              {/* Photo or Video Display */}
+              {isVideo(currentPhoto) ? (
+                <Box
+                  component="video"
+                  controls
+                  autoPlay={false}
+                  muted
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    userSelect: 'none'
+                  }}
+                >
+                  <source src={currentPhoto.url} type={currentPhoto.contentType || 'video/mp4'} />
+                  Your browser does not support the video tag.
+                </Box>
+              ) : (
+                <Box
+                  component="img"
+                  src={currentPhoto.url}
+                  alt={currentPhoto.fileName || 'Event photo'}
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain',
+                    userSelect: 'none',
+                    pointerEvents: 'none'
+                  }}
+                />
+              )}
 
               {/* Next Button */}
               {selectedPhotoIndex! < photos.length - 1 && (
@@ -471,19 +655,81 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       '&:hover': {
                         transform: 'scale(1.05)',
                         border: `2px solid ${alpha(theme.palette.primary.main, 0.7)}`
-                      }
+                      },
+                      position: 'relative'
                     }}
                   >
-                    <Box
-                      component="img"
-                      src={photo.url}
-                      alt={`Thumbnail ${index + 1}`}
-                      sx={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover'
-                      }}
-                    />
+                    {isVideo(photo) ? (
+                      // Video thumbnail with actual frame
+                      <Box sx={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+                        <Box
+                          component="video"
+                          src={photo.url}
+                          muted
+                          preload="metadata"
+                          sx={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            backgroundColor: 'grey.800'
+                          }}
+                          onLoadedMetadata={(e) => {
+                            const video = e.target as HTMLVideoElement;
+                            // Seek to 3 seconds for thumbnail
+                            video.currentTime = Math.min(3, video.duration * 0.1);
+                          }}
+                          onError={(e) => {
+                            // Fallback: show video icon if frame extraction fails
+                            const video = e.target as HTMLVideoElement;
+                            const parent = video.parentElement;
+                            if (parent) {
+                              video.style.display = 'none';
+                              parent.style.background = 'linear-gradient(135deg, #424242 0%, #212121 100%)';
+                              parent.style.display = 'flex';
+                              parent.style.alignItems = 'center';
+                              parent.style.justifyContent = 'center';
+                              
+                              // Add fallback icon
+                              const icon = document.createElement('div');
+                              icon.innerHTML = '🎬';
+                              icon.style.fontSize = '20px';
+                              parent.appendChild(icon);
+                            }
+                          }}
+                        />
+                        {/* Small play icon overlay for video thumbnails */}
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            top: '50%',
+                            left: '50%',
+                            transform: 'translate(-50%, -50%)',
+                            bgcolor: alpha('#000000', 0.7),
+                            borderRadius: '50%',
+                            width: 20,
+                            height: 20,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            pointerEvents: 'none'
+                          }}
+                        >
+                          <PlayArrow sx={{ fontSize: 10, color: 'white', ml: 0.2 }} />
+                        </Box>
+                      </Box>
+                    ) : (
+                      // Regular photo thumbnail
+                      <Box
+                        component="img"
+                        src={photo.url}
+                        alt={`Thumbnail ${index + 1}`}
+                        sx={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover'
+                        }}
+                      />
+                    )}
                   </Box>
                 ))}
               </Box>
@@ -604,6 +850,38 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           )}
         </DialogActions>
       </Dialog>
+
+      {/* Upgrade Modal for Free Users */}
+      {event && (
+        <UpgradeModal
+          open={showUpgradeModal}
+          onClose={() => setShowUpgradeModal(false)}
+          eventId={event.id}
+          currentPhotoCount={event.photoCount || 0}
+          onUpgradeSuccess={async () => {
+            setShowUpgradeModal(false);
+            console.log('🔄 Upgrade successful, refreshing event data...');
+            
+            try {
+              // Wait a moment for server to process upgrade
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Force refresh event data
+              const updatedEvent = await getEvent(event.id);
+              if (updatedEvent) {
+                setEvent(updatedEvent);
+                console.log('✅ Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
+              } else {
+                console.warn('⚠️ Failed to get updated event data');
+              }
+            } catch (error) {
+              console.error('❌ Error refreshing event data:', error);
+              // Fallback: reload the page to ensure fresh data
+              window.location.reload();
+            }
+          }}
+        />
+      )}
     </Container>
   );
 };

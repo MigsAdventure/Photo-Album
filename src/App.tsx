@@ -31,6 +31,9 @@ import {
 import EnhancedPhotoGallery from './components/EnhancedPhotoGallery';
 import QRCodeDisplay from './components/QRCodeDisplay';
 import BottomNavbar from './components/BottomNavbar';
+import PaymentSuccess from './components/PaymentSuccess';
+import PaymentCancelled from './components/PaymentCancelled';
+import PaymentFailed from './components/PaymentFailed';
 import { createEvent, getEvent, subscribeToPhotos } from './services/photoService';
 import { Event, Photo } from './types';
 
@@ -93,13 +96,17 @@ const AdminDashboard: React.FC = () => {
     setEmailSent(false);
     
     try {
-      const eventId = await createEvent(title, date);
+      const eventId = await createEvent(title, date, email);
       const newEvent: Event = {
         id: eventId,
         title,
         date,
         createdAt: new Date(),
-        isActive: true
+        isActive: true,
+        organizerEmail: email,
+        planType: 'free',
+        photoLimit: 2,
+        photoCount: 0
       };
       setEvent(newEvent);
 
@@ -233,12 +240,13 @@ const AdminDashboard: React.FC = () => {
 
           <TextField
             fullWidth
-            label="Your Email Address (Optional)"
+            label="Your Email Address"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="e.g., organizer@example.com"
             helperText="We'll send you the event URL and QR code for easy access"
+            required
             sx={{ mb: 3 }}
           />
 
@@ -435,6 +443,9 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<AdminDashboard />} />
           <Route path="/event/:eventId" element={<GuestView />} />
+          <Route path="/payment/success" element={<PaymentSuccess />} />
+          <Route path="/payment/cancelled" element={<PaymentCancelled />} />
+          <Route path="/payment/failed" element={<PaymentFailed />} />
         </Routes>
       </Router>
     </ThemeProvider>
