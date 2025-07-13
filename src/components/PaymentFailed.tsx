@@ -215,7 +215,7 @@ const PaymentFailed: React.FC = () => {
           </Typography>
           <Button
             variant="outlined"
-            href="mailto:support@socialboostai.com?subject=Payment Issue - Event: ${event?.title || eventId}"
+            href={`mailto:support@socialboostai.com?subject=Payment Issue - Event: ${event?.title || eventId}`}
             startIcon={<ContactSupport />}
             sx={{ fontWeight: 600 }}
           >

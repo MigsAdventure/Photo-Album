@@ -67,7 +67,8 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
       isScreenshot,
       needsCompression,
       originalSize: file.size,
-      estimatedCompressedSize: needsCompression ? file.size * 0.3 : file.size
+      estimatedCompressedSize: needsCompression ? file.size * 0.3 : file.size,
+      mediaType: 'photo'
     };
   }, []);
 

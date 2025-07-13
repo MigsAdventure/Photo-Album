@@ -26,7 +26,6 @@ import {
   Payment
 } from '@mui/icons-material';
 import { UpgradeModalProps } from '../types';
-import { sendUpgradeToGHL } from '../services/ghlService';
 import { getEvent } from '../services/photoService';
 
 const UpgradeModal: React.FC<UpgradeModalProps> = ({
