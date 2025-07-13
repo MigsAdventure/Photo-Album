@@ -33,17 +33,57 @@ exports.handler = async (event, context) => {
     if (webhookData.action === 'upgrade_confirmed') {
       console.log('💰 Processing upgrade confirmation webhook');
       
-      const { eventId, paymentId, paymentAmount, contactId } = webhookData;
+      // GHL sends template variables like {{inboundWebhookRequest.event_id}}
+      // We need to extract the actual values from the webhook data
+      let { eventId, paymentId, paymentAmount, contactId } = webhookData;
       
-      if (!eventId) {
-        console.log('❌ No event ID found in webhook');
+      console.log('📋 Raw webhook fields:', { eventId, paymentId, paymentAmount, contactId });
+      
+      // Check if we got template variables instead of actual values
+      if (eventId && eventId.includes('{{')) {
+        console.log('🔍 Template variables detected, looking for actual values...');
+        
+        // Look for the actual data in the webhook request
+        // GHL might send the real data in different fields
+        const possibleEventIds = [
+          webhookData.event_id,
+          webhookData.eventId,
+          event.queryStringParameters?.event_id,
+          event.queryStringParameters?.eventId
+        ].filter(Boolean);
+        
+        const possiblePaymentIds = [
+          webhookData.payment_id,
+          webhookData.paymentId,
+          event.queryStringParameters?.payment_id,
+          event.queryStringParameters?.paymentId
+        ].filter(Boolean);
+        
+        console.log('🔍 Possible event IDs found:', possibleEventIds);
+        console.log('🔍 Possible payment IDs found:', possiblePaymentIds);
+        
+        // Use the first valid looking event ID
+        eventId = possibleEventIds.find(id => id && !id.includes('{{')) || eventId;
+        paymentId = possiblePaymentIds.find(id => id && !id.includes('{{')) || paymentId;
+      }
+      
+      console.log('📋 Final extracted values:', { eventId, paymentId, paymentAmount, contactId });
+      
+      if (!eventId || eventId.includes('{{')) {
+        console.log('❌ No valid event ID found in webhook');
+        console.log('❌ Available webhook keys:', Object.keys(webhookData));
+        console.log('❌ Available query params:', event.queryStringParameters);
         return {
           statusCode: 400,
           headers: {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Headers': 'Content-Type',
           },
-          body: JSON.stringify({ error: 'Event ID required' }),
+          body: JSON.stringify({ 
+            error: 'Event ID required', 
+            received: eventId,
+            availableFields: Object.keys(webhookData)
+          }),
         };
       }
 
