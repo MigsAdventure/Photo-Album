@@ -38,7 +38,6 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
 
   const handleUpgrade = async () => {
     setLoading(true);
@@ -62,39 +61,13 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
       });
 
       const paymentLink = `${paymentBaseUrl}?${params.toString()}`;
-      setPaymentUrl(paymentLink);
       
-      // Open payment link in new tab
-      window.open(paymentLink, '_blank');
-      
-      // For demo purposes, simulate successful payment after 3 seconds
-      // In production, this will be handled by the GHL webhook
-      setTimeout(async () => {
-        try {
-          // Send test notification to GHL webhook
-          await sendUpgradeToGHL({
-            eventId,
-            eventTitle: event.title,
-            organizerEmail: event.organizerEmail,
-            organizerName: event.organizerEmail.split('@')[0],
-            planType: 'premium',
-            paymentAmount: 29,
-            paymentId: `demo_${Date.now()}`,
-            paymentMethod: 'demo'
-          });
-          
-          onUpgradeSuccess();
-          onClose();
-        } catch (webhookError) {
-          console.error('Webhook notification failed:', webhookError);
-          setError('Payment completed but notification failed');
-        }
-      }, 3000);
+      // Redirect to payment page in same tab
+      window.location.href = paymentLink;
 
     } catch (error) {
       console.error('Upgrade failed:', error);
       setError(error instanceof Error ? error.message : 'Upgrade failed');
-    } finally {
       setLoading(false);
     }
   };
@@ -205,13 +178,6 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
             {error}
-          </Alert>
-        )}
-
-        {/* Success Display */}
-        {paymentUrl && (
-          <Alert severity="success" sx={{ mb: 2 }}>
-            Payment link opened in new tab. Complete your purchase to unlock premium features!
           </Alert>
         )}
       </DialogContent>

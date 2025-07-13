@@ -31,6 +31,9 @@ import {
 import EnhancedPhotoGallery from './components/EnhancedPhotoGallery';
 import QRCodeDisplay from './components/QRCodeDisplay';
 import BottomNavbar from './components/BottomNavbar';
+import PaymentSuccess from './components/PaymentSuccess';
+import PaymentCancelled from './components/PaymentCancelled';
+import PaymentFailed from './components/PaymentFailed';
 import { createEvent, getEvent, subscribeToPhotos } from './services/photoService';
 import { Event, Photo } from './types';
 
@@ -440,6 +443,9 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<AdminDashboard />} />
           <Route path="/event/:eventId" element={<GuestView />} />
+          <Route path="/payment/success" element={<PaymentSuccess />} />
+          <Route path="/payment/cancelled" element={<PaymentCancelled />} />
+          <Route path="/payment/failed" element={<PaymentFailed />} />
         </Routes>
       </Router>
     </ThemeProvider>
