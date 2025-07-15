@@ -237,7 +237,8 @@ exports.handler = async (event, context) => {
         body: JSON.stringify({ 
           success: true, 
           message: 'Event reset to free',
-          eventId
+          eventId,
+          event_id: eventId
         }),
       };
     }

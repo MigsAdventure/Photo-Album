@@ -27,6 +27,7 @@ import {
 } from '@mui/icons-material';
 import { UpgradeModalProps } from '../types';
 import { getEvent } from '../services/photoService';
+import { sendUpgradeToGHL } from '../services/ghlService';
 
 const UpgradeModal: React.FC<UpgradeModalProps> = ({
   open,
@@ -65,6 +66,25 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({
       localStorage.setItem('pendingUpgrade', JSON.stringify(upgradeData));
       console.log('✅ UpgradeModal: Fresh event data stored in localStorage:', upgradeData);
       console.log('📝 UpgradeModal: This will be available for 5 minutes after payment success');
+
+      // 🔥 CRITICAL FIX: Send upgrade data to GHL FIRST before payment redirect
+      console.log('📤 UpgradeModal: Sending upgrade data to GHL inbound webhook...');
+      const ghlSuccess = await sendUpgradeToGHL({
+        eventId,
+        eventTitle: event.title,
+        organizerEmail: event.organizerEmail,
+        organizerName: event.organizerEmail.split('@')[0],
+        planType: 'premium',
+        paymentAmount: 29,
+        paymentId: `${eventId}_${Date.now()}`,
+        paymentMethod: 'external_form'
+      });
+
+      if (ghlSuccess) {
+        console.log('✅ UpgradeModal: GHL webhook data sent successfully - inbound webhook will have event data');
+      } else {
+        console.warn('⚠️ UpgradeModal: GHL webhook failed, but continuing with payment - will need manual upgrade');
+      }
 
       // Create payment URL with event data
       const paymentBaseUrl = 'https://socialboostai.com/premium-upgrade-page';
