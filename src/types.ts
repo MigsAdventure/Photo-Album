@@ -15,6 +15,9 @@ export interface Media {
   thumbnail?: string; // video preview image URL
   width?: number;
   height?: number;
+  
+  // Ownership tracking
+  uploadedBy?: string; // session ID of the uploader
 }
 
 // Legacy Photo interface - extends Media for backward compatibility
@@ -120,4 +123,17 @@ export interface UpgradeModalProps {
   eventId: string;
   currentPhotoCount: number;
   onUpgradeSuccess: () => void;
+}
+
+// User session and ownership tracking
+export interface UserSession {
+  sessionId: string;
+  ownedPhotos: string[]; // array of photo IDs owned by this session
+  createdAt: string; // ISO date string
+}
+
+export interface PhotoOwnership {
+  canDelete: boolean;
+  isOwner: boolean;
+  sessionId?: string;
 }

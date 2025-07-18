@@ -9,10 +9,12 @@ import {
   getDocs,
   setDoc,
   updateDoc,
-  increment
+  increment,
+  deleteDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
+import { getCurrentSessionId, addOwnedPhoto, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
 
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
@@ -75,6 +77,9 @@ export const uploadPhoto = async (
   const extension = file.name.split('.').pop() || 'jpg';
   const storageRef = ref(storage, `events/${eventId}/photos/${photoId}.${extension}`);
   
+  // Get current session ID for ownership tracking
+  const sessionId = getCurrentSessionId();
+  
   const uploadTask = uploadBytesResumable(storageRef, file);
   
   return new Promise((resolve, reject) => {
@@ -93,8 +98,8 @@ export const uploadPhoto = async (
         try {
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
           
-          // Save photo metadata to Firestore
-          await addDoc(collection(db, 'photos'), {
+          // Save photo metadata to Firestore with ownership tracking
+          const docRef = await addDoc(collection(db, 'photos'), {
             id: photoId,
             url: downloadURL,
             uploadedAt: new Date(),
@@ -103,10 +108,14 @@ export const uploadPhoto = async (
             size: file.size,
             contentType: file.type,
             storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
-            mediaType: 'photo' as const // Add mediaType for backward compatibility
+            mediaType: 'photo' as const,
+            uploadedBy: sessionId // Track ownership
           });
           
-          console.log('✅ Firebase upload completed:', file.name);
+          // Add to user's owned photos list
+          addOwnedPhoto(docRef.id);
+          
+          console.log('✅ Firebase upload completed with ownership:', file.name, 'by session:', sessionId);
           resolve(downloadURL);
         } catch (error) {
           console.error('❌ Firebase metadata save error:', error);
@@ -137,7 +146,8 @@ export const subscribeToPhotos = (
         eventId: data.eventId,
         fileName: data.fileName,
         size: data.size,
-        mediaType: data.mediaType || 'photo' as const // Default to 'photo' for backward compatibility
+        mediaType: data.mediaType || 'photo' as const, // Default to 'photo' for backward compatibility
+        uploadedBy: data.uploadedBy // Include ownership info
       });
     });
     
@@ -252,19 +262,24 @@ export const requestEmailDownload = async (
     });
 
     if (!response.ok) {
-      // Try to parse error response
+      // Try to parse error response - read as text first to avoid "body stream already read" error
       let errorMessage = 'Failed to request email download';
       try {
-        const errorData = await response.json();
-        errorMessage = errorData.error || errorData.details || errorMessage;
-      } catch (parseError) {
-        // If JSON parsing fails, it might be an HTML error page (the original issue)
-        const textResponse = await response.text();
-        if (textResponse.includes('DOCTYPE')) {
-          errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
-        } else {
-          errorMessage = `Server error (${response.status}): ${response.statusText}`;
+        const responseText = await response.text();
+        try {
+          const errorData = JSON.parse(responseText);
+          errorMessage = errorData.error || errorData.details || errorMessage;
+        } catch (parseError) {
+          // If JSON parsing fails, it might be an HTML error page
+          if (responseText.includes('DOCTYPE')) {
+            errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
+          } else {
+            errorMessage = `Server error (${response.status}): ${response.statusText}`;
+          }
         }
+      } catch (textError) {
+        // If we can't even read the response as text
+        errorMessage = `Server error (${response.status}): ${response.statusText}`;
       }
       throw new Error(errorMessage);
     }
@@ -370,4 +385,105 @@ export const upgradeEventToPremium = async (
   });
   
   console.log('✅ Event upgraded to premium:', eventId);
+};
+
+// Photo deletion functions with ownership checking
+
+// Check if current user can delete a photo
+export const canDeletePhoto = async (photoId: string): Promise<boolean> => {
+  try {
+    // Get photo metadata from Firestore
+    const docRef = doc(db, 'photos', photoId);
+    const docSnap = await getDoc(docRef);
+    
+    if (!docSnap.exists()) {
+      console.warn('⚠️ Photo not found for deletion check:', photoId);
+      return false;
+    }
+    
+    const photoData = docSnap.data();
+    const uploaderSessionId = photoData.uploadedBy;
+    
+    // Check ownership using session service
+    const ownership = getPhotoOwnership(photoId, uploaderSessionId);
+    
+    console.log('🔍 Delete permission check for', photoId, ':', ownership.canDelete ? 'ALLOWED' : 'DENIED');
+    return ownership.canDelete;
+    
+  } catch (error) {
+    console.error('❌ Error checking delete permission:', error);
+    return false;
+  }
+};
+
+// Delete a photo (with ownership validation)
+export const deletePhoto = async (photoId: string): Promise<void> => {
+  try {
+    console.log('🗑️ Initiating photo deletion:', photoId);
+    
+    // First verify ownership
+    const canDelete = await canDeletePhoto(photoId);
+    if (!canDelete) {
+      throw new Error('You can only delete photos that you uploaded');
+    }
+    
+    // Get photo metadata to find storage path
+    const docRef = doc(db, 'photos', photoId);
+    const docSnap = await getDoc(docRef);
+    
+    if (!docSnap.exists()) {
+      throw new Error('Photo not found');
+    }
+    
+    const photoData = docSnap.data();
+    const storagePath = photoData.storagePath;
+    const eventId = photoData.eventId;
+    
+    console.log('📁 Deleting from storage path:', storagePath);
+    
+    // Delete from Firebase Storage
+    if (storagePath) {
+      try {
+        const { ref, deleteObject } = await import('firebase/storage');
+        const { storage } = await import('../firebase');
+        
+        const storageRef = ref(storage, storagePath);
+        await deleteObject(storageRef);
+        console.log('✅ Photo deleted from Firebase Storage');
+      } catch (storageError) {
+        console.warn('⚠️ Failed to delete from storage (may not exist):', storageError);
+        // Continue with Firestore deletion even if storage deletion fails
+      }
+    }
+    
+    // Delete from Firestore
+    await deleteDoc(docRef);
+    console.log('✅ Photo metadata deleted from Firestore');
+    
+    // Remove from user's owned photos list
+    removeOwnedPhoto(photoId);
+    
+    // Decrement photo count for the event
+    try {
+      const eventRef = doc(db, 'events', eventId);
+      await updateDoc(eventRef, {
+        photoCount: increment(-1)
+      });
+      console.log('✅ Event photo count decremented');
+    } catch (error) {
+      console.warn('⚠️ Failed to decrement event photo count:', error);
+      // Don't fail the entire deletion for this
+    }
+    
+    console.log('🎉 Photo deletion completed successfully:', photoId);
+    
+  } catch (error) {
+    console.error('❌ Photo deletion failed:', error);
+    throw error;
+  }
+};
+
+// Get photo ownership info (for UI display)
+export const getPhotoOwnershipInfo = (photoId: string, uploaderSessionId?: string) => {
+  return getPhotoOwnership(photoId, uploaderSessionId);
 };

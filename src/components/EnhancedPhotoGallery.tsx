@@ -34,10 +34,12 @@ import {
   PlayArrow,
   Videocam,
   Star,
-  Security
+  Security,
+  Delete,
+  MoreVert
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, requestEmailDownload, getEvent } from '../services/photoService';
+import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
 
@@ -76,14 +78,39 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailSuccess, setEmailSuccess] = useState(false);
   const [emailError, setEmailError] = useState('');
+
+  // Delete photo state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [photoToDelete, setPhotoToDelete] = useState<Media | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  
+  // Long-press detection for mobile
+  const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
+  const [touchStartTime, setTouchStartTime] = useState<number>(0);
+  const [ownedPhotos, setOwnedPhotos] = useState<Set<string>>(new Set());
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   useEffect(() => {
-    const unsubscribe = subscribeToPhotos(eventId, (newPhotos) => {
+    const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
       setPhotos(newPhotos);
       setLoading(false);
+      
+      // Check ownership for all photos
+      const owned = new Set<string>();
+      for (const photo of newPhotos) {
+        try {
+          const canDelete = await canDeletePhoto(photo.id);
+          if (canDelete) {
+            owned.add(photo.id);
+          }
+        } catch (error) {
+          console.warn('Failed to check ownership for photo:', photo.id, error);
+        }
+      }
+      setOwnedPhotos(owned);
     });
 
     return () => unsubscribe();
@@ -179,6 +206,79 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
   };
 
+  // Delete handlers
+  const handleDeleteRequest = (photo: Media) => {
+    setPhotoToDelete(photo);
+    setDeleteDialogOpen(true);
+    setDeleteError('');
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!photoToDelete) return;
+    
+    setDeleteLoading(true);
+    setDeleteError('');
+    
+    try {
+      await deletePhoto(photoToDelete.id);
+      console.log('✅ Photo deleted successfully:', photoToDelete.id);
+      setDeleteDialogOpen(false);
+      setPhotoToDelete(null);
+      
+      // Update ownership tracking
+      setOwnedPhotos(prev => {
+        const updated = new Set(prev);
+        updated.delete(photoToDelete.id);
+        return updated;
+      });
+      
+    } catch (error: any) {
+      console.error('❌ Photo deletion failed:', error);
+      setDeleteError(error.message || 'Failed to delete photo. Please try again.');
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  // Touch event handlers for long-press detection
+  const handleTouchStart = (photo: Media, event: React.TouchEvent) => {
+    if (!ownedPhotos.has(photo.id)) return;
+    
+    setTouchStartTime(Date.now());
+    const timer = setTimeout(() => {
+      // Trigger haptic feedback on supported devices
+      if (navigator.vibrate) {
+        navigator.vibrate(50);
+      }
+      handleDeleteRequest(photo);
+    }, 600); // 600ms long press
+    
+    setLongPressTimer(timer);
+  };
+
+  const handleTouchEnd = (event: React.TouchEvent) => {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+    setTouchStartTime(0);
+  };
+
+  const handleTouchMove = (event: React.TouchEvent) => {
+    // Cancel long press if user moves finger
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+  };
+
+  // Right-click handler for desktop
+  const handleContextMenu = (photo: Media, event: React.MouseEvent) => {
+    event.preventDefault();
+    if (ownedPhotos.has(photo.id)) {
+      handleDeleteRequest(photo);
+    }
+  };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
 
@@ -286,9 +386,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
         </Box>
         
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Typography variant="body1" color="text.secondary">
-            Live updates from your guests - photos appear as they're uploaded!
-          </Typography>
+          <Box>
+            <Typography variant="body1" color="text.secondary">
+              Live updates from your guests - photos appear as they're uploaded!
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontSize: '0.875rem' }}>
+              {isMobile ? 'Hold down' : 'Right-click'} your own photos to delete them
+            </Typography>
+          </Box>
           
           {/* Limit Warning for Free Users */}
           {!eventLoading && event && event.planType === 'free' && photos.length >= event.photoLimit && (
@@ -350,9 +455,21 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 '&:hover': {
                   transform: 'scale(1.02)',
                   boxShadow: theme.shadows[8]
-                }
+                },
+                ...(ownedPhotos.has(photo.id) && {
+                  border: `2px solid ${alpha(theme.palette.success.main, 0.3)}`,
+                  '&:hover': {
+                    transform: 'scale(1.02)',
+                    boxShadow: theme.shadows[8],
+                    borderColor: alpha(theme.palette.success.main, 0.6)
+                  }
+                })
               }}
               onClick={() => openModal(index)}
+              onContextMenu={(e) => handleContextMenu(photo, e)}
+              onTouchStart={(e) => handleTouchStart(photo, e)}
+              onTouchEnd={handleTouchEnd}
+              onTouchMove={handleTouchMove}
             >
               {isVideo(photo) ? (
                 // Video thumbnail with actual frame
@@ -458,13 +575,34 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   color: 'white',
                   p: 1,
                   display: 'flex',
-                  alignItems: 'center'
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
                 }}
               >
-                <AccessTime sx={{ fontSize: 16, mr: 0.5 }} />
-                <Typography variant="caption">
-                  {formatDate(photo.uploadedAt)}
-                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <AccessTime sx={{ fontSize: 16, mr: 0.5 }} />
+                  <Typography variant="caption">
+                    {formatDate(photo.uploadedAt)}
+                  </Typography>
+                </Box>
+                
+                {/* Ownership indicator */}
+                {ownedPhotos.has(photo.id) && (
+                  <Chip
+                    label="My media"
+                    size="small"
+                    sx={{
+                      height: 18,
+                      bgcolor: alpha('#000000', 0.3),
+                      color: 'white',
+                      fontSize: '0.65rem',
+                      fontWeight: 500,
+                      '& .MuiChip-label': {
+                        px: 1
+                      }
+                    }}
+                  />
+                )}
               </Box>
             </Card>
           </Zoom>
@@ -875,6 +1013,101 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               </Button>
             </>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => {
+          setDeleteDialogOpen(false);
+          setPhotoToDelete(null);
+          setDeleteError('');
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
+          <Delete sx={{ mr: 1, color: 'error.main' }} />
+          Delete {photoToDelete && isVideo(photoToDelete) ? 'Video' : 'Photo'}
+        </DialogTitle>
+        
+        <DialogContent>
+          {deleteError ? (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {deleteError}
+            </Alert>
+          ) : null}
+          
+          <Typography variant="body1" sx={{ mb: 2 }}>
+            Are you sure you want to delete this {photoToDelete && isVideo(photoToDelete) ? 'video' : 'photo'}? This action cannot be undone.
+          </Typography>
+          
+          {photoToDelete && (
+            <Box sx={{ 
+              display: 'flex', 
+              justifyContent: 'center', 
+              mb: 2,
+              border: '2px solid',
+              borderColor: 'grey.300',
+              borderRadius: 2,
+              overflow: 'hidden',
+              maxHeight: 200
+            }}>
+              {isVideo(photoToDelete) ? (
+                <Box
+                  component="video"
+                  src={photoToDelete.url}
+                  muted
+                  preload="metadata"
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: 200,
+                    objectFit: 'contain'
+                  }}
+                />
+              ) : (
+                <Box
+                  component="img"
+                  src={photoToDelete.url}
+                  alt="Photo to delete"
+                  sx={{
+                    maxWidth: '100%',
+                    maxHeight: 200,
+                    objectFit: 'contain'
+                  }}
+                />
+              )}
+            </Box>
+          )}
+          
+          <Alert severity="warning" sx={{ mt: 2 }}>
+            <Typography variant="body2">
+              <strong>Warning:</strong> This will permanently delete the {photoToDelete && isVideo(photoToDelete) ? 'video' : 'photo'} from the event gallery.
+            </Typography>
+          </Alert>
+        </DialogContent>
+        
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button
+            onClick={() => {
+              setDeleteDialogOpen(false);
+              setPhotoToDelete(null);
+              setDeleteError('');
+            }}
+            disabled={deleteLoading}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDeleteConfirm}
+            variant="contained"
+            color="error"
+            disabled={deleteLoading}
+            startIcon={deleteLoading ? <CircularProgress size={20} /> : <Delete />}
+          >
+            {deleteLoading ? 'Deleting...' : 'Delete'}
+          </Button>
         </DialogActions>
       </Dialog>
 
