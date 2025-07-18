@@ -35,8 +35,7 @@ import {
   Videocam,
   Star,
   Security,
-  Delete,
-  MoreVert
+  Delete
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
@@ -87,7 +86,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   
   // Long-press detection for mobile
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
-  const [touchStartTime, setTouchStartTime] = useState<number>(0);
   const [ownedPhotos, setOwnedPhotos] = useState<Set<string>>(new Set());
   
   const theme = useTheme();
@@ -244,7 +242,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const handleTouchStart = (photo: Media, event: React.TouchEvent) => {
     if (!ownedPhotos.has(photo.id)) return;
     
-    setTouchStartTime(Date.now());
     const timer = setTimeout(() => {
       // Trigger haptic feedback on supported devices
       if (navigator.vibrate) {
@@ -261,7 +258,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       clearTimeout(longPressTimer);
       setLongPressTimer(null);
     }
-    setTouchStartTime(0);
   };
 
   const handleTouchMove = (event: React.TouchEvent) => {
