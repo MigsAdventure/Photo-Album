@@ -223,11 +223,20 @@ export const downloadPhoto = async (photoId: string): Promise<void> => {
   }
 };
 
-// Professional bulk download with email delivery
+// Professional bulk download with email delivery - enhanced with background processing
 export const requestEmailDownload = async (
   eventId: string,
   email: string
-): Promise<void> => {
+): Promise<{
+  success: boolean;
+  processing: 'immediate' | 'background';
+  message: string;
+  fileCount?: number;
+  estimatedSizeMB?: number;
+  videoCount?: number;
+  estimatedWaitTime?: string;
+  requestId: string;
+}> => {
   try {
     console.log('📧 Requesting email download for event:', eventId, 'to:', email);
     
@@ -243,12 +252,42 @@ export const requestEmailDownload = async (
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to request email download');
+      // Try to parse error response
+      let errorMessage = 'Failed to request email download';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorData.details || errorMessage;
+      } catch (parseError) {
+        // If JSON parsing fails, it might be an HTML error page (the original issue)
+        const textResponse = await response.text();
+        if (textResponse.includes('DOCTYPE')) {
+          errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
+        } else {
+          errorMessage = `Server error (${response.status}): ${response.statusText}`;
+        }
+      }
+      throw new Error(errorMessage);
     }
 
     const result = await response.json();
     console.log('✅ Email download requested successfully:', result);
+    
+    // Log different processing types
+    if (result.processing === 'background') {
+      console.log(`🚀 Background processing initiated:`, {
+        fileCount: result.fileCount,
+        sizeMB: result.estimatedSizeMB,
+        videoCount: result.videoCount,
+        waitTime: result.estimatedWaitTime
+      });
+    } else {
+      console.log(`⚡ Immediate processing completed:`, {
+        fileCount: result.photoCount || result.fileCount,
+        sizeMB: result.fileSizeMB
+      });
+    }
+    
+    return result;
     
   } catch (error) {
     console.error('❌ Email download request failed:', error);

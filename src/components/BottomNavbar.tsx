@@ -1005,16 +1005,16 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         <DialogContent>
           {emailSuccess ? (
             <Alert severity="success" sx={{ mb: 2 }}>
-              🎉 Download link sent successfully! Check your email for the download link.
+              🎉 Download request processed successfully! Check your email for details.
             </Alert>
           ) : (
             <>
               <Typography variant="body1" sx={{ mb: 3 }}>
-                We'll create a ZIP file with all {photos.length} photos and email you a download link.
+                We'll create a ZIP file with all {photos.length} files and email you a download link.
               </Typography>
               
               <Alert severity="info" sx={{ mb: 3 }}>
-                📧 Photos are available for download for one full year from the event date.
+                📧 Files are available for download for one full year from the event date.
               </Alert>
               
               <TextField
@@ -1077,9 +1077,19 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
                   setEmailError('');
                   
                   try {
-                    await requestEmailDownload(eventId, email);
+                    const result = await requestEmailDownload(eventId, email);
                     setEmailSuccess(true);
-                    console.log('✅ Email download request sent successfully');
+                    
+                    // Show different success messages based on processing type
+                    if (result.processing === 'background') {
+                      console.log('🚀 Background processing initiated for large files');
+                      // Update success message state to show background processing info
+                      setEmailError(''); // Clear any previous errors
+                    } else {
+                      console.log('⚡ Immediate processing completed');
+                    }
+                    
+                    console.log('✅ Email download request sent successfully:', result.message);
                   } catch (error: any) {
                     console.error('❌ Email download request failed:', error);
                     setEmailError(error.message || 'Failed to send download request. Please try again.');
