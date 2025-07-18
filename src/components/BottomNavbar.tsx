@@ -641,7 +641,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           const captureButton = document.createElement('div');
           captureButton.style.cssText = `
             position: absolute;
-            bottom: 40px;
+            bottom: 48px;
             left: 50%;
             transform: translateX(-50%);
             width: 80px;
