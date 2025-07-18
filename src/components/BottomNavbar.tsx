@@ -663,7 +663,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         accept="image/*,video/*"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
-        capture="environment"
+        capture
       />
       
       <input
