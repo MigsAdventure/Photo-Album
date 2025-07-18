@@ -364,7 +364,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           accept="image/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
-          capture="environment"
+          capture
         />
 
         <input

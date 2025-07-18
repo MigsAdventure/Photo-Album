@@ -436,6 +436,94 @@ const GuestView: React.FC = () => {
 
 // Main App component
 const App: React.FC = () => {
+  useEffect(() => {
+    // Listen for payment success messages from closing payment tabs
+    const handleMessage = (event: MessageEvent) => {
+      // Verify origin for security
+      if (event.origin !== window.location.origin) {
+        return;
+      }
+      
+      if (event.data?.type === 'PAYMENT_SUCCESS') {
+        console.log('💳 Payment success message received:', event.data);
+        
+        // Show a success notification
+        const { eventId, orderId } = event.data;
+        
+        // Create a temporary success notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          background: linear-gradient(45deg, #4caf50, #2e7d32);
+          color: white;
+          padding: 16px 24px;
+          border-radius: 12px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          z-index: 10000;
+          font-family: 'Roboto', sans-serif;
+          font-weight: 500;
+          max-width: 350px;
+          animation: slideIn 0.3s ease-out;
+        `;
+        
+        notification.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 24px;">🎉</span>
+            <div>
+              <div style="font-weight: 600; margin-bottom: 4px;">Payment Successful!</div>
+              <div style="font-size: 14px; opacity: 0.9;">Your event has been upgraded to Premium</div>
+              ${orderId ? `<div style="font-size: 12px; opacity: 0.7; margin-top: 4px;">Order: ${orderId}</div>` : ''}
+            </div>
+          </div>
+        `;
+        
+        // Add slide-in animation
+        const style = document.createElement('style');
+        style.textContent = `
+          @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+          }
+          @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+          }
+        `;
+        document.head.appendChild(style);
+        
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+          notification.style.animation = 'slideOut 0.3s ease-in forwards';
+          setTimeout(() => {
+            if (notification.parentNode) {
+              notification.parentNode.removeChild(notification);
+            }
+            if (style.parentNode) {
+              style.parentNode.removeChild(style);
+            }
+          }, 300);
+        }, 5000);
+        
+        // If we're currently viewing the event, potentially refresh the gallery
+        const currentPath = window.location.pathname;
+        if (eventId && currentPath.includes(`/event/${eventId}`)) {
+          console.log('📍 Currently viewing the upgraded event, gallery will auto-refresh');
+          // The gallery components should automatically refresh due to their subscriptions
+        }
+      }
+    };
+    
+    window.addEventListener('message', handleMessage);
+    
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />

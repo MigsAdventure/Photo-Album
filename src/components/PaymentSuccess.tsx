@@ -283,7 +283,7 @@ const PaymentSuccess: React.FC = () => {
       </Card>
 
       {/* Action Buttons */}
-      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
+      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
         <Button
           variant="contained"
           size="large"
@@ -301,6 +301,47 @@ const PaymentSuccess: React.FC = () => {
         >
           Return to Your Event Gallery
         </Button>
+        
+        {/* Close Tab Button - appears if opened in new tab */}
+        {window.opener && (
+          <Button
+            variant="outlined"
+            size="large"
+            onClick={() => {
+              try {
+                // Try to communicate back to parent window
+                if (window.opener && !window.opener.closed) {
+                  window.opener.postMessage({
+                    type: 'PAYMENT_SUCCESS',
+                    eventId: eventId,
+                    orderId: orderId,
+                    timestamp: new Date().toISOString()
+                  }, window.location.origin);
+                }
+                
+                // Close this tab
+                window.close();
+              } catch (error) {
+                console.error('Error closing tab:', error);
+                // Fallback: try to navigate back
+                handleReturnToGallery();
+              }
+            }}
+            sx={{ 
+              px: 4, 
+              py: 1.5,
+              fontWeight: 600,
+              borderColor: 'success.main',
+              color: 'success.main',
+              '&:hover': {
+                bgcolor: 'success.50',
+                borderColor: 'success.dark',
+              }
+            }}
+          >
+            ✓ Close & Return to App
+          </Button>
+        )}
       </Box>
 
       {/* Receipt Note */}
