@@ -566,8 +566,162 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       return; // Upload blocked due to freemium limits - modal already shown
     }
     
+    // For mobile devices, try to access camera directly using getUserMedia
+    if (/Mobile|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+      try {
+        // Try to access camera directly
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          console.log('📱 Attempting direct camera access...');
+          
+          // Request camera permission and access
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+              facingMode: 'environment', // Use back camera
+              width: { ideal: 1920 },
+              height: { ideal: 1080 }
+            } 
+          });
+          
+          // Create a temporary video element to capture the stream
+          const video = document.createElement('video');
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          video.srcObject = stream;
+          video.autoplay = true;
+          video.playsInline = true;
+          
+          // Create a dialog to show camera preview
+          const cameraDialog = document.createElement('div');
+          cameraDialog.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: black;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+          `;
+          
+          video.style.cssText = `
+            width: 100%;
+            height: 70%;
+            object-fit: cover;
+          `;
+          
+          const buttonContainer = document.createElement('div');
+          buttonContainer.style.cssText = `
+            position: absolute;
+            bottom: 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+          `;
+          
+          const captureButton = document.createElement('button');
+          captureButton.textContent = '📷 Capture';
+          captureButton.style.cssText = `
+            background: #1976d2;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            padding: 15px 30px;
+            font-size: 18px;
+            cursor: pointer;
+          `;
+          
+          const cancelButton = document.createElement('button');
+          cancelButton.textContent = '❌ Cancel';
+          cancelButton.style.cssText = `
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            padding: 15px 30px;
+            font-size: 18px;
+            cursor: pointer;
+          `;
+          
+          // Handle capture
+          captureButton.onclick = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx?.drawImage(video, 0, 0);
+            
+            canvas.toBlob(async (blob) => {
+              if (blob) {
+                const file = new File([blob], `camera-photo-${Date.now()}.jpg`, {
+                  type: 'image/jpeg',
+                  lastModified: Date.now()
+                });
+                
+                // Clean up
+                stream.getTracks().forEach(track => track.stop());
+                document.body.removeChild(cameraDialog);
+                
+                // Upload the captured photo
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                await handleFileSelect(dt.files);
+              }
+            }, 'image/jpeg', 0.8);
+          };
+          
+          // Handle cancel
+          cancelButton.onclick = () => {
+            stream.getTracks().forEach(track => track.stop());
+            document.body.removeChild(cameraDialog);
+          };
+          
+          buttonContainer.appendChild(captureButton);
+          buttonContainer.appendChild(cancelButton);
+          cameraDialog.appendChild(video);
+          cameraDialog.appendChild(buttonContainer);
+          document.body.appendChild(cameraDialog);
+          
+          return;
+        }
+      } catch (error) {
+        console.warn('📱 Direct camera access failed:', error);
+        // Fall back to file input method
+      }
+    }
+    
+    // Fallback: Use file input with multiple attempts for better camera access
+    console.log('📱 Falling back to file input method');
+    
+    // Try different approaches for mobile camera access
     const cameraInput = document.getElementById('bottom-camera-input') as HTMLInputElement;
-    cameraInput?.click();
+    if (cameraInput) {
+      // Reset the input to ensure change event fires
+      cameraInput.value = '';
+      
+      // For mobile, create a fresh input element with camera-specific attributes
+      if (/Mobile|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+        const newInput = document.createElement('input');
+        newInput.type = 'file';
+        newInput.accept = 'image/*';
+        newInput.capture = 'environment' as any; // Force rear camera
+        newInput.style.display = 'none';
+        newInput.onchange = (e) => {
+          const files = (e.target as HTMLInputElement).files;
+          if (files) {
+            handleFileSelect(files);
+          }
+          document.body.removeChild(newInput);
+        };
+        document.body.appendChild(newInput);
+        newInput.click();
+      } else {
+        cameraInput.click();
+      }
+    }
   };
 
   const handleGalleryClick = async () => {
@@ -660,7 +814,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
       <input
         id="bottom-camera-input"
         type="file"
-        accept="image/*,video/*"
+        accept="image/*,image/heic,image/heif"
         onChange={handleFileInputChange}
         style={{ display: 'none' }}
         capture
