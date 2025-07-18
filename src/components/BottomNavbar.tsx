@@ -591,7 +591,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           video.autoplay = true;
           video.playsInline = true;
           
-          // Create a dialog to show camera preview
+          // Create a fullscreen camera interface with overlay buttons
           const cameraDialog = document.createElement('div');
           cameraDialog.style.cssText = `
             position: fixed;
@@ -599,54 +599,90 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: black;
             z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
+            overflow: hidden;
           `;
           
           video.style.cssText = `
-            width: 100%;
-            height: 70%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
             object-fit: cover;
           `;
           
-          const buttonContainer = document.createElement('div');
-          buttonContainer.style.cssText = `
+          // Create exit button (top-right corner)
+          const exitButton = document.createElement('div');
+          exitButton.style.cssText = `
             position: absolute;
-            bottom: 20px;
+            top: 20px;
+            right: 20px;
+            width: 56px;
+            height: 56px;
+            background: rgba(244, 67, 54, 0.9);
+            border-radius: 50%;
             display: flex;
-            gap: 20px;
             align-items: center;
             justify-content: center;
-            width: 100%;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 10000;
+            transition: all 0.2s ease;
           `;
           
-          const captureButton = document.createElement('button');
-          captureButton.textContent = '📷 Capture';
+          exitButton.innerHTML = `
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>
+          `;
+          
+          // Create capture button (bottom-center)
+          const captureButton = document.createElement('div');
           captureButton.style.cssText = `
-            background: #1976d2;
-            color: white;
-            border: none;
-            border-radius: 50px;
-            padding: 15px 30px;
-            font-size: 18px;
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 80px;
+            background: rgba(233, 30, 99, 0.9);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             cursor: pointer;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+            z-index: 10000;
+            transition: all 0.2s ease;
           `;
           
-          const cancelButton = document.createElement('button');
-          cancelButton.textContent = '❌ Cancel';
-          cancelButton.style.cssText = `
-            background: #f44336;
-            color: white;
-            border: none;
-            border-radius: 50px;
-            padding: 15px 30px;
-            font-size: 18px;
-            cursor: pointer;
+          captureButton.innerHTML = `
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
+              <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M17,3H7A2,2 0 0,0 5,5V19A2,2 0 0,0 7,21H17A2,2 0 0,0 19,19V5A2,2 0 0,0 17,3M17,19H7V5H17V19Z"/>
+            </svg>
           `;
+          
+          // Add hover effects
+          captureButton.onmouseenter = () => {
+            captureButton.style.transform = 'translateX(-50%) scale(1.1)';
+            captureButton.style.background = 'rgba(233, 30, 99, 1)';
+          };
+          
+          captureButton.onmouseleave = () => {
+            captureButton.style.transform = 'translateX(-50%) scale(1)';
+            captureButton.style.background = 'rgba(233, 30, 99, 0.9)';
+          };
+          
+          exitButton.onmouseenter = () => {
+            exitButton.style.transform = 'scale(1.1)';
+            exitButton.style.background = 'rgba(244, 67, 54, 1)';
+          };
+          
+          exitButton.onmouseleave = () => {
+            exitButton.style.transform = 'scale(1)';
+            exitButton.style.background = 'rgba(244, 67, 54, 0.9)';
+          };
           
           // Handle capture
           captureButton.onclick = () => {
@@ -673,16 +709,15 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
             }, 'image/jpeg', 0.8);
           };
           
-          // Handle cancel
-          cancelButton.onclick = () => {
+          // Handle exit
+          exitButton.onclick = () => {
             stream.getTracks().forEach(track => track.stop());
             document.body.removeChild(cameraDialog);
           };
           
-          buttonContainer.appendChild(captureButton);
-          buttonContainer.appendChild(cancelButton);
           cameraDialog.appendChild(video);
-          cameraDialog.appendChild(buttonContainer);
+          cameraDialog.appendChild(captureButton);
+          cameraDialog.appendChild(exitButton);
           document.body.appendChild(cameraDialog);
           
           return;
