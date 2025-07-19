@@ -383,32 +383,57 @@ exports.handler = async (event, context) => {
 
     // Step 2: Determine processing strategy
     if (isLargeCollection) {
-      console.log(`🚀 Large collection detected [${requestId}] - Using Netlify background processing (Worker disabled due to memory limits)`);
+      console.log(`🚀 Large collection detected [${requestId}] - Routing to Cloudflare Worker (no timeout limits)`);
       
-      // DISABLED: Cloudflare Worker routing due to memory limitation issues
-      // Worker fails on collections >200MB with "Invalid typed array length" error
-      // Causing continuous retry loops - will re-enable once memory limits are properly handled
-      
-      // Direct to Netlify background processing
-      processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
-      
-      // Return immediate success response
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          success: true,
-          processing: 'background',
-          message: hasVideos 
-            ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos with enhanced compression. You'll receive an email in 2-5 minutes.`
-            : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with compression. You'll receive an email in 1-3 minutes.`,
-          fileCount: photos.length,
-          estimatedSizeMB: Math.round(fileSizeMB),
-          videoCount,
-          estimatedWaitTime: hasVideos ? '2-5 minutes' : '1-3 minutes',
-          requestId
-        }),
-      };
+      try {
+        // Route large collections to Cloudflare Worker (no 10-second timeout!)
+        const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
+        
+        console.log(`✅ Worker routing successful [${requestId}]:`, workerResult.message);
+        
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            success: true,
+            processing: 'cloudflare-worker',
+            message: hasVideos 
+              ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos with enhanced compression via Cloudflare Worker. You'll receive an email in 2-7 minutes.`
+              : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with compression via Cloudflare Worker. You'll receive an email in 1-4 minutes.`,
+            fileCount: photos.length,
+            estimatedSizeMB: Math.round(fileSizeMB),
+            videoCount,
+            estimatedWaitTime: hasVideos ? '2-7 minutes' : '1-4 minutes',
+            requestId,
+            processingEngine: 'cloudflare-worker'
+          }),
+        };
+        
+      } catch (workerError) {
+        console.warn(`⚠️ Worker routing failed [${requestId}]:`, workerError.message);
+        console.log(`🔄 Falling back to Netlify background processing [${requestId}]`);
+        
+        // Fallback to Netlify background processing
+        processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
+        
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            success: true,
+            processing: 'netlify-fallback',
+            message: hasVideos 
+              ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos. Cloudflare Worker unavailable, using backup processing. You'll receive an email in 3-8 minutes.`
+              : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB). Cloudflare Worker unavailable, using backup processing. You'll receive an email in 2-5 minutes.`,
+            fileCount: photos.length,
+            estimatedSizeMB: Math.round(fileSizeMB),
+            videoCount,
+            estimatedWaitTime: hasVideos ? '3-8 minutes' : '2-5 minutes',
+            requestId,
+            processingEngine: 'netlify-fallback'
+          }),
+        };
+      }
     } else {
       // Small collection - process immediately
       console.log(`⚡ Small collection [${requestId}] - Processing immediately`);

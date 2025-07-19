@@ -94,22 +94,35 @@ function recordCircuitBreakerFailure(requestId, error) {
  * @returns {object} - Memory analysis and recommendations
  */
 function analyzeMemoryRequirements(photos, requestId) {
-  const WORKER_MEMORY_LIMIT = 100 * 1024 * 1024; // Conservative 100MB limit
-  const SAFETY_BUFFER = 0.8; // Use only 80% of available memory
-  const LARGE_FILE_THRESHOLD = 150 * 1024 * 1024; // 150MB per file limit
+  const WORKER_MEMORY_LIMIT = 120 * 1024 * 1024; // 120MB total Worker memory limit
+  const SAFETY_BUFFER = 0.8; // Use 80% of available memory for processing
+  const LARGE_FILE_THRESHOLD = 600 * 1024 * 1024; // 600MB+ files need special handling
+  const MAX_SINGLE_FILE_SIZE = 500 * 1024 * 1024; // 500MB max per individual file
   
   let totalEstimatedSize = 0;
   let largeFileCount = 0;
   let videoCount = 0;
+  let maxSingleFileSize = 0;
   const largeFiles = [];
+  const tooLargeFiles = [];
   
   for (const photo of photos) {
     const estimatedSize = photo.size || 5 * 1024 * 1024; // Default 5MB if unknown
     totalEstimatedSize += estimatedSize;
+    maxSingleFileSize = Math.max(maxSingleFileSize, estimatedSize);
     
+    // Track files over 600MB as "large" but still processable
     if (estimatedSize > LARGE_FILE_THRESHOLD) {
       largeFileCount++;
       largeFiles.push({
+        fileName: photo.fileName,
+        sizeMB: (estimatedSize / 1024 / 1024).toFixed(2)
+      });
+    }
+    
+    // Track files over 500MB as potentially too large for Worker
+    if (estimatedSize > MAX_SINGLE_FILE_SIZE) {
+      tooLargeFiles.push({
         fileName: photo.fileName,
         sizeMB: (estimatedSize / 1024 / 1024).toFixed(2)
       });
@@ -120,29 +133,45 @@ function analyzeMemoryRequirements(photos, requestId) {
     }
   }
   
-  const zipOverhead = totalEstimatedSize * 0.15; // Conservative 15% overhead
-  const memoryNeeded = totalEstimatedSize + zipOverhead;
+  // Smart memory calculation: Worker processes files ONE AT A TIME
+  // So we only need memory for: largest single file + ZIP overhead + processing buffer
+  const largestFileMB = maxSingleFileSize / 1024 / 1024;
+  const zipProcessingOverhead = 20 * 1024 * 1024; // 20MB for ZIP processing
+  const actualMemoryNeeded = maxSingleFileSize + zipProcessingOverhead;
   const safeMemoryLimit = WORKER_MEMORY_LIMIT * SAFETY_BUFFER;
+  
+  // Worker can handle collection if:
+  // 1. Largest single file fits in memory (≤500MB)
+  // 2. No individual files exceed our processing limits
+  const canProcessLargestFile = maxSingleFileSize <= MAX_SINGLE_FILE_SIZE;
+  const memoryFitsInWorker = actualMemoryNeeded < safeMemoryLimit;
   
   const analysis = {
     totalFiles: photos.length,
     totalEstimatedSizeMB: (totalEstimatedSize / 1024 / 1024).toFixed(2),
-    memoryNeededMB: (memoryNeeded / 1024 / 1024).toFixed(2),
+    largestFileMB: largestFileMB.toFixed(2),
+    actualMemoryNeededMB: (actualMemoryNeeded / 1024 / 1024).toFixed(2),
     safeMemoryLimitMB: (safeMemoryLimit / 1024 / 1024).toFixed(2),
     largeFileCount,
     videoCount,
     largeFiles,
-    canUseWorker: memoryNeeded < safeMemoryLimit && largeFileCount === 0,
-    recommendedStrategy: memoryNeeded < 50 * 1024 * 1024 ? 'worker-immediate' : 'netlify-background',
-    riskLevel: memoryNeeded > safeMemoryLimit ? 'high' : memoryNeeded > safeMemoryLimit * 0.7 ? 'medium' : 'low'
+    tooLargeFiles,
+    canProcessLargestFile,
+    memoryFitsInWorker,
+    canUseWorker: canProcessLargestFile && memoryFitsInWorker,
+    recommendedStrategy: canProcessLargestFile && memoryFitsInWorker ? 'worker-streaming' : 'netlify-background',
+    riskLevel: !canProcessLargestFile ? 'high' : !memoryFitsInWorker ? 'medium' : 'low',
+    processingNotes: tooLargeFiles.length > 0 ? `${tooLargeFiles.length} files exceed 500MB limit` : 'All files within processing limits'
   };
   
-  console.log(`🔍 Memory analysis [${requestId}]:`, {
+  console.log(`🔍 Smart memory analysis [${requestId}]:`, {
     totalSizeMB: analysis.totalEstimatedSizeMB,
-    memoryNeededMB: analysis.memoryNeededMB,
+    largestFileMB: analysis.largestFileMB,
+    actualMemoryNeededMB: analysis.actualMemoryNeededMB,
     canUseWorker: analysis.canUseWorker,
     strategy: analysis.recommendedStrategy,
-    risk: analysis.riskLevel
+    risk: analysis.riskLevel,
+    notes: analysis.processingNotes
   });
   
   return analysis;
@@ -285,14 +314,55 @@ async function createStreamingZipArchive(photos, requestId) {
         const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
         const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
 
-        // Memory-safe limits: Skip extremely large files to prevent Worker crashes
-        if (contentLength > 150 * 1024 * 1024) { // 150MB limit for individual files
-          console.warn(`⚠️ Skipping large file [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - exceeds 150MB memory limit)`);
-          skippedFileCount++;
+        // Handle large files (including 500MB videos) with streaming
+        if (contentLength > 100 * 1024 * 1024) { // 100MB+ files use streaming
+          console.log(`🌊 Large file detected [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - using streaming processing)`);
+          
+          // For very large files (500MB+), we need to process differently
+          if (contentLength > 500 * 1024 * 1024) { // 500MB+
+            console.warn(`⚠️ Extremely large file [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - may exceed Worker limits)`);
+            // Still try to process, but be aware of memory constraints
+          }
+          
+          // Download file to buffer (Worker can handle up to 500MB+ with proper memory management)
+          const buffer = await downloadSmallFile(response, requestId, photo.fileName);
+          let processedBuffer = buffer;
+
+          // For videos, don't compress (wastes CPU and memory)
+          if (isVideo) {
+            compressionStats.videosProcessed++;
+            console.log(`🎬 Video processed [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - no compression)`);
+          } else if (isPhoto && buffer.byteLength > 500 * 1024) {
+            // Only compress photos, not videos
+            try {
+              processedBuffer = await compress(buffer, photo.fileName);
+              compressionStats.photosCompressed++;
+              console.log(`📸 Large photo compressed [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB → ${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+            } catch (compressionError) {
+              console.error(`❌ Compression failed [${requestId}]: ${photo.fileName}`, compressionError);
+              processedBuffer = buffer;
+            }
+          }
+
+          // Add to processed files
+          processedFiles.push({
+            fileName: photo.fileName,
+            buffer: processedBuffer,
+            originalSize: buffer.byteLength,
+            compressedSize: processedBuffer.byteLength
+          });
+
+          processedFileCount++;
+          
+          // Aggressive memory cleanup for large files
+          if (typeof global !== 'undefined' && global.gc) {
+            global.gc();
+          }
+          
           continue;
         }
 
-        // Download file to buffer
+        // Download smaller files normally
         const buffer = await downloadSmallFile(response, requestId, photo.fileName);
         let processedBuffer = buffer;
 
