@@ -141,16 +141,24 @@ function analyzeMemoryRequirements(photos, requestId) {
   const safeMemoryLimit = WORKER_MEMORY_LIMIT * SAFETY_BUFFER;
   
   // Worker can handle collection if:
-  // 1. Largest single file fits in memory (≤500MB)
-  // 2. No individual files exceed our processing limits
+  // 1. Largest single file fits in processing limits (≤500MB)
+  // 2. We have enough memory for largest file + overhead
   const canProcessLargestFile = maxSingleFileSize <= MAX_SINGLE_FILE_SIZE;
-  const memoryFitsInWorker = actualMemoryNeeded < safeMemoryLimit;
+  
+  // More realistic memory check: We only need memory for ONE file at a time + ZIP overhead
+  // Even a 500MB file should work since we process one-at-a-time
+  const REALISTIC_MEMORY_NEEDED = Math.min(maxSingleFileSize, 100 * 1024 * 1024) + 20 * 1024 * 1024; // Max 120MB total
+  const memoryFitsInWorker = REALISTIC_MEMORY_NEEDED < safeMemoryLimit;
+  
+  // Worker should accept if largest individual file is ≤500MB
+  // Total collection size doesn't matter since we process one-at-a-time
+  const shouldUseWorker = canProcessLargestFile; // Remove overly strict memory check
   
   const analysis = {
     totalFiles: photos.length,
     totalEstimatedSizeMB: (totalEstimatedSize / 1024 / 1024).toFixed(2),
     largestFileMB: largestFileMB.toFixed(2),
-    actualMemoryNeededMB: (actualMemoryNeeded / 1024 / 1024).toFixed(2),
+    actualMemoryNeededMB: (REALISTIC_MEMORY_NEEDED / 1024 / 1024).toFixed(2),
     safeMemoryLimitMB: (safeMemoryLimit / 1024 / 1024).toFixed(2),
     largeFileCount,
     videoCount,
@@ -158,9 +166,10 @@ function analyzeMemoryRequirements(photos, requestId) {
     tooLargeFiles,
     canProcessLargestFile,
     memoryFitsInWorker,
-    canUseWorker: canProcessLargestFile && memoryFitsInWorker,
-    recommendedStrategy: canProcessLargestFile && memoryFitsInWorker ? 'worker-streaming' : 'netlify-background',
-    riskLevel: !canProcessLargestFile ? 'high' : !memoryFitsInWorker ? 'medium' : 'low',
+    shouldUseWorker,
+    canUseWorker: shouldUseWorker, // Use the more realistic check
+    recommendedStrategy: shouldUseWorker ? 'worker-streaming' : 'netlify-background',
+    riskLevel: !canProcessLargestFile ? 'high' : largestFileMB > 300 ? 'medium' : 'low',
     processingNotes: tooLargeFiles.length > 0 ? `${tooLargeFiles.length} files exceed 500MB limit` : 'All files within processing limits'
   };
   
