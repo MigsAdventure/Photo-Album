@@ -18,6 +18,7 @@
   "author": "Social Boost AI",
   "license": "MIT",
   "dependencies": {
+    "archiver": "^7.0.1",
     "fflate": "^0.8.1"
   },
   "devDependencies": {

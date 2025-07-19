@@ -96,21 +96,19 @@ async function downloadSmallFile(response, requestId, fileName) {
 }
 
 /**
- * Create ZIP archive with TRUE streaming for large files
- * Downloads files in chunks and streams directly to ZIP
- * Creates single ZIP with complete 500MB+ video files
+ * Create ZIP archive with TRUE streaming using archiver
+ * Industry-standard solution for 350MB+ videos
  * @param {Array} photos - Array of photo objects with {fileName, url}
  * @param {string} requestId - Request ID for logging  
  * @returns {Promise<Object>} - { zipBuffer, stats }
  */
 async function createStreamingZipArchive(photos, requestId) {
-  console.log(`🌊 Creating TRUE streaming ZIP [${requestId}] with ${photos.length} files`);
+  console.log(`🌊 Creating archiver-based streaming ZIP [${requestId}] with ${photos.length} files`);
   
   try {
-    const { Zip } = await import('fflate');
+    const archiver = (await import('archiver')).default;
     
     let totalOriginalSize = 0;
-    let totalFinalSize = 0;
     let processedFileCount = 0;
     let compressionStats = {
       photosCompressed: 0,
@@ -118,25 +116,68 @@ async function createStreamingZipArchive(photos, requestId) {
       compressionRatio: 0
     };
 
-    // Create streaming ZIP with collected chunks
+    // Create ZIP chunks collection
     const zipChunks = [];
     
     return new Promise(async (resolve, reject) => {
       try {
-        // Create ZIP stream that collects output chunks
-        const zip = new Zip((err, data) => {
-          if (err) {
-            console.error(`❌ ZIP stream error [${requestId}]:`, err);
-            reject(new Error(`ZIP streaming failed: ${err.message}`));
-            return;
-          }
-          
-          // Collect ZIP output chunks
-          zipChunks.push(data);
-          totalFinalSize += data.byteLength;
+        // Create archiver instance with no compression for speed
+        const archive = archiver('zip', {
+          zlib: { level: 0 }, // No compression for large videos
+          store: true // Store method for maximum speed
         });
 
-        // Process each file with streaming
+        // Handle archiver events
+        archive.on('error', (err) => {
+          console.error(`❌ Archive error [${requestId}]:`, err);
+          reject(new Error(`Archive creation failed: ${err.message}`));
+        });
+
+        archive.on('warning', (warn) => {
+          console.warn(`⚠️ Archive warning [${requestId}]:`, warn);
+        });
+
+        // Collect ZIP data as it's generated
+        archive.on('data', (chunk) => {
+          zipChunks.push(chunk);
+        });
+
+        archive.on('end', () => {
+          try {
+            // Combine all chunks into final buffer
+            const totalSize = zipChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const finalBuffer = new Uint8Array(totalSize);
+            let offset = 0;
+            
+            for (const chunk of zipChunks) {
+              finalBuffer.set(chunk, offset);
+              offset += chunk.length;
+            }
+
+            const finalSizeMB = totalSize / 1024 / 1024;
+            compressionStats.compressionRatio = totalOriginalSize > 0 
+              ? ((totalOriginalSize - totalSize) / totalOriginalSize * 100)
+              : 0;
+
+            console.log(`✅ Archiver ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
+
+            resolve({
+              zipBuffer: finalBuffer.buffer,
+              stats: {
+                processedFileCount,
+                totalOriginalSize,
+                totalCompressedSize: totalSize,
+                compressionStats,
+                finalSizeMB
+              }
+            });
+          } catch (finalizationError) {
+            console.error(`❌ ZIP finalization error [${requestId}]:`, finalizationError);
+            reject(new Error(`ZIP finalization failed: ${finalizationError.message}`));
+          }
+        });
+
+        // Process each file with true streaming
         for (const photo of photos) {
           try {
             console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
@@ -164,17 +205,40 @@ async function createStreamingZipArchive(photos, requestId) {
             
             const sanitizedName = sanitizeFileName(photo.fileName);
 
-            // Stream large files directly to ZIP
+            // For large files: Stream directly using archiver's true streaming
             if (contentLength > 80 * 1024 * 1024) { // Large files: stream
-              console.log(`🌊 Streaming large file to ZIP [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+              console.log(`🌊 Streaming large file with archiver [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
               
-              await streamFileDirectlyToZip(response, contentLength, sanitizedName, zip, requestId);
+              // Create readable stream from response body
+              const readableStream = new ReadableStream({
+                start(controller) {
+                  const reader = response.body.getReader();
+                  
+                  function pump() {
+                    return reader.read().then(({ done, value }) => {
+                      if (done) {
+                        controller.close();
+                        return;
+                      }
+                      controller.enqueue(value);
+                      return pump();
+                    });
+                  }
+                  
+                  return pump();
+                }
+              });
+
+              // Stream directly to archive (TRUE STREAMING!)
+              archive.append(readableStream, { name: sanitizedName });
               
               if (isVideo) {
                 compressionStats.videosProcessed++;
               }
               
-            } else { // Small files: process normally
+              console.log(`✅ Large file streamed to archive [${requestId}]: ${photo.fileName}`);
+              
+            } else { // Small files: process with compression
               const buffer = await downloadSmallFile(response, requestId, photo.fileName);
               
               let processedBuffer = buffer;
@@ -193,11 +257,10 @@ async function createStreamingZipArchive(photos, requestId) {
                 compressionStats.videosProcessed++;
               }
 
-              // Add to ZIP stream
-              const uint8Array = new Uint8Array(processedBuffer);
-              zip.add(sanitizedName, uint8Array, { level: 0 });
+              // Add buffer to archive
+              archive.append(processedBuffer, { name: sanitizedName });
               
-              console.log(`📁 Added to ZIP [${requestId}]: ${photo.fileName} (${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+              console.log(`📁 Added to archive [${requestId}]: ${photo.fileName} (${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
             }
 
             processedFileCount++;
@@ -218,117 +281,19 @@ async function createStreamingZipArchive(photos, requestId) {
           return;
         }
 
-        // Finalize ZIP
-        console.log(`📦 Finalizing ZIP [${requestId}] with ${processedFileCount} files...`);
-        zip.end();
+        // Finalize the archive
+        console.log(`📦 Finalizing archive [${requestId}] with ${processedFileCount} files...`);
+        archive.finalize();
 
-        // Wait for ZIP completion
-        zip.terminate = () => {
-          try {
-            // Combine all ZIP chunks
-            const totalBufferSize = zipChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-            const finalBuffer = new Uint8Array(totalBufferSize);
-            let offset = 0;
-            
-            for (const chunk of zipChunks) {
-              finalBuffer.set(chunk, offset);
-              offset += chunk.byteLength;
-            }
-
-            const finalSizeMB = totalBufferSize / 1024 / 1024;
-            compressionStats.compressionRatio = totalOriginalSize > 0 
-              ? ((totalOriginalSize - totalBufferSize) / totalOriginalSize * 100)
-              : 0;
-
-            console.log(`✅ ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
-
-            resolve({
-              zipBuffer: finalBuffer.buffer,
-              stats: {
-                processedFileCount,
-                totalOriginalSize,
-                totalCompressedSize: totalBufferSize,
-                compressionStats,
-                finalSizeMB
-              }
-            });
-
-          } catch (finalizationError) {
-            console.error(`❌ ZIP finalization error [${requestId}]:`, finalizationError);
-            reject(new Error(`ZIP finalization failed: ${finalizationError.message}`));
-          }
-        };
-
-      } catch (streamError) {
-        console.error(`❌ ZIP streaming setup error [${requestId}]:`, streamError);
-        reject(new Error(`ZIP streaming setup failed: ${streamError.message}`));
+      } catch (setupError) {
+        console.error(`❌ Archive setup error [${requestId}]:`, setupError);
+        reject(new Error(`Archive setup failed: ${setupError.message}`));
       }
     });
 
   } catch (error) {
-    console.error(`❌ Streaming ZIP creation failed [${requestId}]:`, error);
-    throw new Error(`Failed to create streaming ZIP: ${error.message}`);
-  }
-}
-
-/**
- * Stream large file directly to ZIP without holding in memory
- * Downloads in chunks and feeds directly to ZIP stream
- * @param {Response} response - Fetch response object  
- * @param {number} contentLength - Total file size in bytes
- * @param {string} fileName - Sanitized file name for ZIP entry
- * @param {object} zipStream - fflate ZIP stream object
- * @param {string} requestId - Request ID for logging
- * @returns {Promise<void>}
- */
-async function streamFileDirectlyToZip(response, contentLength, fileName, zipStream, requestId) {
-  const chunkSize = 10 * 1024 * 1024; // 10MB chunks
-  let totalBytesRead = 0;
-  let isFirstChunk = true;
-  
-  console.log(`🌊 Starting direct streaming [${requestId}]: ${fileName} (${(contentLength/1024/1024).toFixed(2)}MB)`);
-  
-  try {
-    const reader = response.body.getReader();
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      
-      if (done) {
-        console.log(`✅ Streaming complete [${requestId}]: ${fileName} (${totalBytesRead} bytes)`);
-        break;
-      }
-      
-      // Stream chunk directly to ZIP
-      if (isFirstChunk) {
-        // Start the ZIP file entry
-        zipStream.add(fileName, value, { level: 0 });
-        isFirstChunk = false;
-      } else {
-        // Continue streaming chunks to same file entry
-        zipStream.push(fileName, value);
-      }
-      
-      totalBytesRead += value.byteLength;
-      
-      // Log progress every 50MB
-      if (totalBytesRead % (50 * 1024 * 1024) < value.byteLength) {
-        const progressPercent = (totalBytesRead / contentLength * 100).toFixed(1);
-        console.log(`📊 Streaming progress [${requestId}]: ${fileName} ${progressPercent}% (${(totalBytesRead/1024/1024).toFixed(2)}MB/${(contentLength/1024/1024).toFixed(2)}MB)`);
-      }
-      
-      // Yield control periodically
-      if (totalBytesRead % (30 * 1024 * 1024) < value.byteLength) {
-        await new Promise(resolve => setTimeout(resolve, 1));
-      }
-    }
-    
-    // Finalize this file entry in ZIP
-    zipStream.end(fileName);
-    
-  } catch (error) {
-    console.error(`❌ Direct streaming failed [${requestId}]: ${fileName}`, error);
-    throw new Error(`Failed to stream file to ZIP: ${error.message}`);
+    console.error(`❌ Archiver ZIP creation failed [${requestId}]:`, error);
+    throw new Error(`Failed to create archiver ZIP: ${error.message}`);
   }
 }
 
