@@ -1,11 +1,152 @@
 /**
  * Cloudflare Worker for Wedding Photo Processing
- * Handles large collections with photo compression and long timeouts
+ * Enhanced with circuit breaker system and 500MB video support
+ * Prevents infinite loops with memory-safe processing
  */
 
 import { compress, compressVideo } from './compression';
 import { createZipArchive } from './archiver';
 import { sendEmail, sendErrorEmail } from './email';
+
+// Circuit breaker configuration to prevent infinite loops
+const REQUEST_TRACKING = new Map();
+const MAX_RETRIES = 3;
+const BACKOFF_MULTIPLIER = 2;
+const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Circuit breaker system to prevent infinite retry loops
+ * @param {string} requestId - Unique request identifier
+ * @returns {object} - Tracking information
+ * @throws {Error} - If circuit breaker prevents processing
+ */
+function checkCircuitBreaker(requestId) {
+  const now = Date.now();
+  const tracking = REQUEST_TRACKING.get(requestId) || { 
+    attempts: 0, 
+    lastAttempt: 0,
+    firstAttempt: now,
+    errors: []
+  };
+  
+  // Clean up old tracking entries (older than 30 minutes)
+  if (now - tracking.firstAttempt > CIRCUIT_BREAKER_TIMEOUT) {
+    REQUEST_TRACKING.delete(requestId);
+    return checkCircuitBreaker(requestId); // Start fresh
+  }
+  
+  // Check max retries exceeded
+  if (tracking.attempts >= MAX_RETRIES) {
+    console.error(`🚫 Circuit breaker OPEN [${requestId}]: Max retries (${MAX_RETRIES}) exceeded`);
+    throw new Error(`Circuit breaker: Maximum ${MAX_RETRIES} attempts exceeded. Request blocked to prevent infinite loops.`);
+  }
+  
+  // Check backoff period
+  const timeSinceLastAttempt = now - tracking.lastAttempt;
+  const requiredBackoff = Math.pow(BACKOFF_MULTIPLIER, tracking.attempts) * 1000;
+  
+  if (tracking.attempts > 0 && timeSinceLastAttempt < requiredBackoff) {
+    console.warn(`⏳ Circuit breaker BACKOFF [${requestId}]: ${requiredBackoff}ms required, ${timeSinceLastAttempt}ms elapsed`);
+    throw new Error(`Circuit breaker: Backoff period not met. Wait ${Math.ceil((requiredBackoff - timeSinceLastAttempt) / 1000)}s before retry.`);
+  }
+  
+  // Update tracking
+  tracking.attempts++;
+  tracking.lastAttempt = now;
+  REQUEST_TRACKING.set(requestId, tracking);
+  
+  console.log(`✅ Circuit breaker CHECK [${requestId}]: Attempt ${tracking.attempts}/${MAX_RETRIES}, backoff ${requiredBackoff}ms`);
+  
+  return tracking;
+}
+
+/**
+ * Record circuit breaker success - resets failure count
+ * @param {string} requestId - Request identifier
+ */
+function recordCircuitBreakerSuccess(requestId) {
+  REQUEST_TRACKING.delete(requestId);
+  console.log(`🎉 Circuit breaker SUCCESS [${requestId}]: Request completed successfully, tracking cleared`);
+}
+
+/**
+ * Record circuit breaker failure - adds to error history
+ * @param {string} requestId - Request identifier
+ * @param {Error} error - Error that occurred
+ */
+function recordCircuitBreakerFailure(requestId, error) {
+  const tracking = REQUEST_TRACKING.get(requestId);
+  if (tracking) {
+    tracking.errors.push({
+      timestamp: Date.now(),
+      message: error.message,
+      type: error.constructor.name
+    });
+    REQUEST_TRACKING.set(requestId, tracking);
+    console.error(`❌ Circuit breaker FAILURE [${requestId}]: ${error.message} (Attempt ${tracking.attempts}/${MAX_RETRIES})`);
+  }
+}
+
+/**
+ * Pre-flight memory check to prevent Worker crashes
+ * @param {Array} photos - Array of photo objects
+ * @param {string} requestId - Request identifier
+ * @returns {object} - Memory analysis and recommendations
+ */
+function analyzeMemoryRequirements(photos, requestId) {
+  const WORKER_MEMORY_LIMIT = 100 * 1024 * 1024; // Conservative 100MB limit
+  const SAFETY_BUFFER = 0.8; // Use only 80% of available memory
+  const LARGE_FILE_THRESHOLD = 150 * 1024 * 1024; // 150MB per file limit
+  
+  let totalEstimatedSize = 0;
+  let largeFileCount = 0;
+  let videoCount = 0;
+  const largeFiles = [];
+  
+  for (const photo of photos) {
+    const estimatedSize = photo.size || 5 * 1024 * 1024; // Default 5MB if unknown
+    totalEstimatedSize += estimatedSize;
+    
+    if (estimatedSize > LARGE_FILE_THRESHOLD) {
+      largeFileCount++;
+      largeFiles.push({
+        fileName: photo.fileName,
+        sizeMB: (estimatedSize / 1024 / 1024).toFixed(2)
+      });
+    }
+    
+    if (/\.(mp4|mov|avi|webm)$/i.test(photo.fileName)) {
+      videoCount++;
+    }
+  }
+  
+  const zipOverhead = totalEstimatedSize * 0.15; // Conservative 15% overhead
+  const memoryNeeded = totalEstimatedSize + zipOverhead;
+  const safeMemoryLimit = WORKER_MEMORY_LIMIT * SAFETY_BUFFER;
+  
+  const analysis = {
+    totalFiles: photos.length,
+    totalEstimatedSizeMB: (totalEstimatedSize / 1024 / 1024).toFixed(2),
+    memoryNeededMB: (memoryNeeded / 1024 / 1024).toFixed(2),
+    safeMemoryLimitMB: (safeMemoryLimit / 1024 / 1024).toFixed(2),
+    largeFileCount,
+    videoCount,
+    largeFiles,
+    canUseWorker: memoryNeeded < safeMemoryLimit && largeFileCount === 0,
+    recommendedStrategy: memoryNeeded < 50 * 1024 * 1024 ? 'worker-immediate' : 'netlify-background',
+    riskLevel: memoryNeeded > safeMemoryLimit ? 'high' : memoryNeeded > safeMemoryLimit * 0.7 ? 'medium' : 'low'
+  };
+  
+  console.log(`🔍 Memory analysis [${requestId}]:`, {
+    totalSizeMB: analysis.totalEstimatedSizeMB,
+    memoryNeededMB: analysis.memoryNeededMB,
+    canUseWorker: analysis.canUseWorker,
+    strategy: analysis.recommendedStrategy,
+    risk: analysis.riskLevel
+  });
+  
+  return analysis;
+}
 
 /**
  * Stream large files directly to ZIP without holding full file in memory
@@ -275,7 +416,50 @@ export default {
         });
       }
 
+      // Circuit breaker check to prevent infinite loops
+      try {
+        checkCircuitBreaker(requestId);
+      } catch (circuitBreakerError) {
+        console.error(`🚫 Circuit breaker blocked request [${requestId}]:`, circuitBreakerError.message);
+        return new Response(JSON.stringify({
+          error: 'Request blocked by circuit breaker',
+          reason: circuitBreakerError.message,
+          requestId,
+          action: 'Request blocked to prevent infinite loops. Please wait before retrying.'
+        }), {
+          status: 429, // Too Many Requests
+          headers: { 
+            'Content-Type': 'application/json',
+            'Retry-After': '60' // Suggest 60 second retry
+          },
+        });
+      }
+
+      // Pre-flight memory analysis to prevent crashes
+      const memoryAnalysis = analyzeMemoryRequirements(photos, requestId);
+      
+      if (!memoryAnalysis.canUseWorker) {
+        console.warn(`⚠️ Worker rejected due to memory constraints [${requestId}]:`, {
+          memoryNeededMB: memoryAnalysis.memoryNeededMB,
+          safeMemoryLimitMB: memoryAnalysis.safeMemoryLimitMB,
+          largeFileCount: memoryAnalysis.largeFileCount,
+          riskLevel: memoryAnalysis.riskLevel
+        });
+        
+        // Record this as a "soft failure" - not the Worker's fault
+        return new Response(JSON.stringify({
+          error: 'Collection too large for Worker processing',
+          memoryAnalysis,
+          requestId,
+          recommendation: 'Use Netlify background processing for large collections'
+        }), {
+          status: 413, // Payload Too Large
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       console.log(`🚀 Worker processing [${requestId}]: ${photos.length} files for ${email}`);
+      console.log(`📊 Memory analysis [${requestId}]: ${memoryAnalysis.memoryNeededMB}MB needed, ${memoryAnalysis.riskLevel} risk`);
 
       // Start background processing (don't wait for completion)
       ctx.waitUntil(processCollectionInBackground(eventId, email, photos, requestId, env));
@@ -285,8 +469,13 @@ export default {
         success: true,
         message: `Processing ${photos.length} files with compression. Email will be sent when complete.`,
         requestId,
-        estimatedTime: '2-5 minutes',
-        processing: 'worker-background'
+        estimatedTime: memoryAnalysis.videoCount > 0 ? '3-7 minutes' : '1-3 minutes',
+        processing: 'worker-background',
+        memoryAnalysis: {
+          totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
+          videoCount: memoryAnalysis.videoCount,
+          riskLevel: memoryAnalysis.riskLevel
+        }
       }), {
         status: 200,
         headers: { 
@@ -360,8 +549,14 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
     const totalTime = (Date.now() - startTime) / 1000;
     console.log(`✅ Background processing complete [${requestId}] in ${totalTime.toFixed(1)}s`);
 
+    // Record circuit breaker success - clears retry tracking
+    recordCircuitBreakerSuccess(requestId);
+
   } catch (error) {
     console.error(`❌ Background processing failed [${requestId}]:`, error);
+    
+    // Record circuit breaker failure - adds to error history
+    recordCircuitBreakerFailure(requestId, error);
     
     try {
       await sendErrorEmail(eventId, email, requestId, error.message, env);

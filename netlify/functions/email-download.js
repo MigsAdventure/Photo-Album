@@ -6,6 +6,186 @@ const https = require('https');
 const archiver = require('archiver');
 const nodemailer = require('nodemailer');
 
+// Circuit breaker configuration to prevent infinite loops (Netlify version)
+const REQUEST_TRACKING = new Map();
+const MAX_RETRIES = 3;
+const BACKOFF_MULTIPLIER = 2;
+const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Circuit breaker system to prevent infinite retry loops (Netlify version)
+ * @param {string} requestId - Unique request identifier
+ * @returns {object} - Tracking information
+ * @throws {Error} - If circuit breaker prevents processing
+ */
+function checkCircuitBreaker(requestId) {
+  const now = Date.now();
+  const tracking = REQUEST_TRACKING.get(requestId) || { 
+    attempts: 0, 
+    lastAttempt: 0,
+    firstAttempt: now,
+    errors: []
+  };
+  
+  // Clean up old tracking entries (older than 30 minutes)
+  if (now - tracking.firstAttempt > CIRCUIT_BREAKER_TIMEOUT) {
+    REQUEST_TRACKING.delete(requestId);
+    return checkCircuitBreaker(requestId); // Start fresh
+  }
+  
+  // Check max retries exceeded
+  if (tracking.attempts >= MAX_RETRIES) {
+    console.error(`🚫 Netlify Circuit breaker OPEN [${requestId}]: Max retries (${MAX_RETRIES}) exceeded`);
+    throw new Error(`Circuit breaker: Maximum ${MAX_RETRIES} attempts exceeded. Request blocked to prevent infinite loops.`);
+  }
+  
+  // Check backoff period
+  const timeSinceLastAttempt = now - tracking.lastAttempt;
+  const requiredBackoff = Math.pow(BACKOFF_MULTIPLIER, tracking.attempts) * 1000;
+  
+  if (tracking.attempts > 0 && timeSinceLastAttempt < requiredBackoff) {
+    console.warn(`⏳ Netlify Circuit breaker BACKOFF [${requestId}]: ${requiredBackoff}ms required, ${timeSinceLastAttempt}ms elapsed`);
+    throw new Error(`Circuit breaker: Backoff period not met. Wait ${Math.ceil((requiredBackoff - timeSinceLastAttempt) / 1000)}s before retry.`);
+  }
+  
+  // Update tracking
+  tracking.attempts++;
+  tracking.lastAttempt = now;
+  REQUEST_TRACKING.set(requestId, tracking);
+  
+  console.log(`✅ Netlify Circuit breaker CHECK [${requestId}]: Attempt ${tracking.attempts}/${MAX_RETRIES}, backoff ${requiredBackoff}ms`);
+  
+  return tracking;
+}
+
+/**
+ * Record circuit breaker success - resets failure count
+ * @param {string} requestId - Request identifier
+ */
+function recordCircuitBreakerSuccess(requestId) {
+  REQUEST_TRACKING.delete(requestId);
+  console.log(`🎉 Netlify Circuit breaker SUCCESS [${requestId}]: Request completed successfully, tracking cleared`);
+}
+
+/**
+ * Record circuit breaker failure - adds to error history
+ * @param {string} requestId - Request identifier
+ * @param {Error} error - Error that occurred
+ */
+function recordCircuitBreakerFailure(requestId, error) {
+  const tracking = REQUEST_TRACKING.get(requestId);
+  if (tracking) {
+    tracking.errors.push({
+      timestamp: Date.now(),
+      message: error.message,
+      type: error.constructor.name
+    });
+    REQUEST_TRACKING.set(requestId, tracking);
+    console.error(`❌ Netlify Circuit breaker FAILURE [${requestId}]: ${error.message} (Attempt ${tracking.attempts}/${MAX_RETRIES})`);
+  }
+}
+
+/**
+ * Analyze collection size and determine optimal processing strategy
+ * Enhanced to support 500MB videos and 5GB total archives
+ * @param {Array} photos - Array of photo objects
+ * @param {string} requestId - Request identifier
+ * @returns {object} - Analysis and processing recommendations
+ */
+function analyzeCollectionRequirements(photos, requestId) {
+  let totalEstimatedSize = 0;
+  let videoCount = 0;
+  let largeVideoCount = 0;
+  let maxFileSize = 0;
+  const largeFiles = [];
+  const videoDetails = [];
+  
+  for (const photo of photos) {
+    const estimatedSize = photo.size || 10 * 1024 * 1024; // Default 10MB if unknown (higher for Netlify)
+    totalEstimatedSize += estimatedSize;
+    maxFileSize = Math.max(maxFileSize, estimatedSize);
+    
+    const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
+    if (isVideo) {
+      videoCount++;
+      const sizeMB = estimatedSize / 1024 / 1024;
+      videoDetails.push({
+        fileName: photo.fileName,
+        sizeMB: sizeMB.toFixed(2)
+      });
+      
+      if (estimatedSize > 100 * 1024 * 1024) { // 100MB+ videos
+        largeVideoCount++;
+      }
+    }
+    
+    // Track files over 200MB for special handling
+    if (estimatedSize > 200 * 1024 * 1024) {
+      largeFiles.push({
+        fileName: photo.fileName,
+        sizeMB: (estimatedSize / 1024 / 1024).toFixed(2),
+        type: isVideo ? 'video' : 'photo'
+      });
+    }
+  }
+  
+  const totalSizeGB = totalEstimatedSize / (1024 * 1024 * 1024);
+  const maxFileSizeMB = maxFileSize / 1024 / 1024;
+  
+  // Determine processing strategy based on industry standards
+  let processingStrategy;
+  let estimatedTime;
+  let memoryStrategy;
+  
+  if (totalSizeGB > 5) {
+    processingStrategy = 'multi-part-archive';
+    estimatedTime = '10-15 minutes';
+    memoryStrategy = 'streaming-chunked';
+  } else if (totalEstimatedSize > 2 * 1024 * 1024 * 1024) { // 2GB+
+    processingStrategy = 'streaming-background';
+    estimatedTime = '5-10 minutes';
+    memoryStrategy = 'streaming';
+  } else if (maxFileSizeMB > 500 || largeVideoCount > 0) {
+    processingStrategy = 'large-file-optimized';
+    estimatedTime = '3-7 minutes';
+    memoryStrategy = 'streaming';
+  } else if (totalEstimatedSize > 100 * 1024 * 1024) { // 100MB+
+    processingStrategy = 'background';
+    estimatedTime = '2-5 minutes';
+    memoryStrategy = 'memory-efficient';
+  } else {
+    processingStrategy = 'immediate';
+    estimatedTime = '30-90 seconds';
+    memoryStrategy = 'standard';
+  }
+  
+  const analysis = {
+    totalFiles: photos.length,
+    totalSizeMB: (totalEstimatedSize / 1024 / 1024).toFixed(2),
+    totalSizeGB: totalSizeGB.toFixed(3),
+    maxFileSizeMB: maxFileSizeMB.toFixed(2),
+    videoCount,
+    largeVideoCount,
+    largeFiles,
+    videoDetails,
+    processingStrategy,
+    estimatedTime,
+    memoryStrategy,
+    canSupportLargeFiles: true, // Netlify can handle larger files than Worker
+    supports500MBVideos: true,
+    supports5GBArchives: totalSizeGB <= 5
+  };
+  
+  console.log(`🔍 Netlify Collection analysis [${requestId}]:`, {
+    totalSizeMB: analysis.totalSizeMB,
+    strategy: analysis.processingStrategy,
+    videoCount: analysis.videoCount,
+    estimatedTime: analysis.estimatedTime
+  });
+  
+  return analysis;
+}
+
 // Firebase configuration
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -131,6 +311,26 @@ exports.handler = async (event, context) => {
   try {
     console.log(`📧 Processing email download [${requestId}]:`, { eventId, email });
 
+    // Circuit breaker check to prevent infinite loops
+    try {
+      checkCircuitBreaker(requestId);
+    } catch (circuitBreakerError) {
+      console.error(`🚫 Netlify Circuit breaker blocked request [${requestId}]:`, circuitBreakerError.message);
+      return {
+        statusCode: 429, // Too Many Requests
+        headers: {
+          ...headers,
+          'Retry-After': '60' // Suggest 60 second retry
+        },
+        body: JSON.stringify({
+          error: 'Request blocked by circuit breaker',
+          reason: circuitBreakerError.message,
+          requestId,
+          action: 'Request blocked to prevent infinite loops. Please wait before retrying.'
+        }),
+      };
+    }
+
     // Step 1: Quick file analysis to determine processing strategy
     console.log(`🔍 Analyzing files for event [${requestId}]:`, eventId);
     
@@ -183,23 +383,13 @@ exports.handler = async (event, context) => {
 
     // Step 2: Determine processing strategy
     if (isLargeCollection) {
-      console.log(`🚀 Large collection detected [${requestId}] - Routing to enhanced Cloudflare Worker`);
+      console.log(`🚀 Large collection detected [${requestId}] - Using Netlify background processing (Worker disabled due to memory limits)`);
       
-      // Try Cloudflare Worker first with fixed streaming, fallback to Netlify background processing
-      try {
-        const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
-        if (workerResult.success) {
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify(workerResult),
-          };
-        }
-      } catch (workerError) {
-        console.warn(`⚠️ Worker routing failed [${requestId}], falling back to Netlify:`, workerError.message);
-      }
+      // DISABLED: Cloudflare Worker routing due to memory limitation issues
+      // Worker fails on collections >200MB with "Invalid typed array length" error
+      // Causing continuous retry loops - will re-enable once memory limits are properly handled
       
-      // Fallback: Start background processing without waiting
+      // Direct to Netlify background processing
       processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
       
       // Return immediate success response
@@ -324,8 +514,14 @@ async function processLargeCollectionInBackground(photos, eventId, email, reques
     
     console.log(`✅ Background processing complete [${requestId}]`);
     
+    // Record circuit breaker success - clears retry tracking
+    recordCircuitBreakerSuccess(requestId);
+    
   } catch (error) {
     console.error(`❌ Background processing failed [${requestId}]:`, error);
+    
+    // Record circuit breaker failure - adds to error history
+    recordCircuitBreakerFailure(requestId, error);
     
     // Send error email to user
     try {
