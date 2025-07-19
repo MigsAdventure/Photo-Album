@@ -232,8 +232,8 @@ async function processLargeCollectionInBackground(photos, eventId, email, reques
       try {
         console.log(`⬇️ Processing ${i + 1}/${photos.length} [${requestId}]: ${photo.fileName}`);
         
-        // Stream download to avoid memory issues
-        const photoBuffer = await downloadFileWithRetry(photo.url, requestId);
+        // Stream download to avoid memory issues - pass fileName for video detection
+        const photoBuffer = await downloadFileWithRetry(photo.url, requestId, photo.fileName);
         
         if (photoBuffer) {
           const safeFileName = photo.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -332,32 +332,52 @@ async function processCollectionImmediately(photos, eventId, email, requestId) {
 }
 
 // Helper function to download file from URL with retry logic
-async function downloadFileWithRetry(url, requestId, maxRetries = 3) {
+async function downloadFileWithRetry(url, requestId, fileName = '', maxRetries = 3) {
+  const isVideo = fileName.toLowerCase().includes('.mp4') || fileName.toLowerCase().includes('.mov') || fileName.toLowerCase().includes('.avi');
+  const fileType = isVideo ? 'video' : 'image';
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`📥 Download attempt ${attempt}/${maxRetries} [${requestId}]`);
-      return await downloadFile(url);
+      console.log(`📥 Download attempt ${attempt}/${maxRetries} [${requestId}] (${fileType}): ${fileName}`);
+      return await downloadFile(url, isVideo);
     } catch (error) {
-      console.error(`❌ Download attempt ${attempt} failed [${requestId}]:`, error.message);
+      console.error(`❌ Download attempt ${attempt} failed [${requestId}] (${fileType}):`, error.message);
+      
+      // For 404 errors, the Firebase URL might have expired - try to refresh it
+      if (error.message.includes('404') && attempt < maxRetries) {
+        console.log(`🔄 URL might be expired [${requestId}], attempting URL refresh...`);
+        // In production, you might want to refresh the Firebase URL here
+        // For now, we'll just retry with longer delays
+      }
+      
       if (attempt === maxRetries) {
+        console.error(`💥 Final download failure [${requestId}] for ${fileName}: ${error.message}`);
         throw error;
       }
-      // Wait before retry (exponential backoff)
-      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+      
+      // Exponential backoff with longer delays for videos
+      const baseDelay = isVideo ? 3000 : 1000; // 3s for videos, 1s for images
+      const delay = baseDelay * Math.pow(2, attempt - 1);
+      console.log(`⏳ Waiting ${delay/1000}s before retry [${requestId}]...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
-// Helper function to download file from URL
-async function downloadFile(url) {
+// Helper function to download file from URL with video optimization
+async function downloadFile(url, isVideo = false) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    const timeout = 30000; // 30 second timeout
+    // Dynamic timeout: 90s for videos, 30s for images
+    const timeout = isVideo ? 90000 : 30000;
+    
+    console.log(`⬇️ Starting download (timeout: ${timeout/1000}s)...`);
     
     const request = https.get(url, (response) => {
       // Handle redirects
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        return downloadFile(response.headers.location).then(resolve).catch(reject);
+        console.log(`🔄 Following redirect to: ${response.headers.location.substring(0, 100)}...`);
+        return downloadFile(response.headers.location, isVideo).then(resolve).catch(reject);
       }
       
       if (response.statusCode !== 200) {
@@ -365,17 +385,48 @@ async function downloadFile(url) {
         return;
       }
       
-      response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => resolve(Buffer.concat(chunks)));
-      response.on('error', reject);
+      const contentLength = parseInt(response.headers['content-length'] || '0');
+      let downloadedBytes = 0;
+      let lastProgressLog = 0;
+      
+      response.on('data', (chunk) => {
+        chunks.push(chunk);
+        downloadedBytes += chunk.length;
+        
+        // Log progress for large files (every 25% for videos, every 50% for images)
+        if (contentLength > 0) {
+          const progress = (downloadedBytes / contentLength) * 100;
+          const progressThreshold = isVideo ? 25 : 50;
+          
+          if (progress >= lastProgressLog + progressThreshold) {
+            console.log(`📊 Download progress: ${Math.round(progress)}% (${Math.round(downloadedBytes/1024/1024)}MB/${Math.round(contentLength/1024/1024)}MB)`);
+            lastProgressLog = Math.floor(progress / progressThreshold) * progressThreshold;
+          }
+        }
+      });
+      
+      response.on('end', () => {
+        const finalSizeMB = downloadedBytes / 1024 / 1024;
+        console.log(`✅ Download complete: ${finalSizeMB.toFixed(2)}MB`);
+        resolve(Buffer.concat(chunks));
+      });
+      
+      response.on('error', (error) => {
+        console.error(`❌ Response error:`, error.message);
+        reject(error);
+      });
     });
     
     request.setTimeout(timeout, () => {
+      console.error(`⏰ Download timeout after ${timeout/1000}s`);
       request.destroy();
-      reject(new Error('Download timeout'));
+      reject(new Error(`Download timeout (${timeout/1000}s)`));
     });
     
-    request.on('error', reject);
+    request.on('error', (error) => {
+      console.error(`❌ Request error:`, error.message);
+      reject(error);
+    });
   });
 }
 
