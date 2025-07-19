@@ -98,14 +98,20 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
         try {
           console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
           
-          // Get file from R2
-          const r2Object = await env.R2_BUCKET.get(photo.storagePath);
-          if (!r2Object) {
-            console.error(`❌ File not found in R2 [${requestId}]: ${photo.storagePath}`);
+          // Download file from Firebase Storage
+          console.log(`📥 Downloading from Firebase [${requestId}]: ${photo.fileName}`);
+          const response = await fetch(photo.url, {
+            headers: {
+              'User-Agent': 'SharedMoments-Worker/1.0'
+            }
+          });
+
+          if (!response.ok) {
+            console.error(`❌ Failed to download file [${requestId}]: ${photo.fileName} - HTTP ${response.status}`);
             continue;
           }
 
-          const originalBuffer = await r2Object.arrayBuffer();
+          const originalBuffer = await response.arrayBuffer();
           const originalSize = originalBuffer.byteLength;
           totalOriginalSize += originalSize;
 
