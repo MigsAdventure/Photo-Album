@@ -1,11 +1,10 @@
 /**
  * Cloudflare Worker for Wedding Photo Processing
- * Enhanced with circuit breaker system and 500MB video support
- * Prevents infinite loops with memory-safe processing
+ * Orchestrator that routes large collections to Durable Objects
+ * Handles professional wedding-scale albums (500MB+ videos, 2-3GB collections)
  */
 
-import { compress, compressVideo } from './compression';
-import { createZipArchive } from './archiver';
+import { WeddingZipProcessor } from './wedding-zip-processor';
 import { sendEmail, sendErrorEmail } from './email';
 
 // Circuit breaker configuration to prevent infinite loops
@@ -513,6 +512,8 @@ function sanitizeFileName(fileName) {
     .trim() || 'unnamed_file';
 }
 
+export { WeddingZipProcessor };
+
 export default {
   async fetch(request, env, ctx) {
     // Handle CORS preflight
@@ -608,23 +609,49 @@ export default {
         });
       }
 
-      console.log(`🚀 Worker processing [${requestId}]: ${photos.length} files for ${email}`);
-      console.log(`📊 Memory analysis [${requestId}]: ${memoryAnalysis.memoryNeededMB}MB needed, ${memoryAnalysis.riskLevel} risk`);
+      console.log(`🎯 Routing to Durable Object [${requestId}]: ${photos.length} files for ${email}`);
+      console.log(`📊 Collection analysis [${requestId}]: ${memoryAnalysis.totalEstimatedSizeMB}MB total, ${memoryAnalysis.videoCount} videos`);
 
-      // Start background processing (don't wait for completion)
-      ctx.waitUntil(processCollectionInBackground(eventId, email, photos, requestId, env));
+      // Route to Durable Object for professional-scale processing
+      const objectId = env.WEDDING_ZIP_PROCESSOR.idFromName(requestId);
+      const durableObject = env.WEDDING_ZIP_PROCESSOR.get(objectId);
+
+      // Send request to Durable Object
+      const durableObjectResponse = await durableObject.fetch(new Request('https://dummy.url/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId, email, photos, requestId })
+      }));
+
+      if (!durableObjectResponse.ok) {
+        const errorData = await durableObjectResponse.json();
+        console.error(`❌ Durable Object error [${requestId}]:`, errorData);
+        throw new Error(`Durable Object processing failed: ${errorData.error || 'Unknown error'}`);
+      }
+
+      const durableResult = await durableObjectResponse.json();
+      console.log(`✅ Durable Object started [${requestId}]:`, durableResult.status);
+
+      // Record circuit breaker success for orchestration
+      recordCircuitBreakerSuccess(requestId);
 
       // Return immediate response
       return new Response(JSON.stringify({
         success: true,
-        message: `Processing ${photos.length} files with compression. Email will be sent when complete.`,
+        message: `Processing ${photos.length} files with professional wedding-scale system. Email will be sent when complete.`,
         requestId,
-        estimatedTime: memoryAnalysis.videoCount > 0 ? '3-7 minutes' : '1-3 minutes',
-        processing: 'worker-background',
-        memoryAnalysis: {
+        estimatedTime: photos.length > 50 ? '5-10 minutes' : '2-5 minutes',
+        processing: 'durable-object-streaming',
+        collectionAnalysis: {
           totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
           videoCount: memoryAnalysis.videoCount,
+          largeFileCount: memoryAnalysis.largeFileCount,
           riskLevel: memoryAnalysis.riskLevel
+        },
+        capabilities: {
+          maxVideoSize: '500MB+',
+          maxCollectionSize: 'Unlimited',
+          supportedFiles: 'All wedding media formats'
         }
       }), {
         status: 200,

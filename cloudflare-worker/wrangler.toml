@@ -16,6 +16,16 @@ enabled = true
 binding = "R2_BUCKET"
 bucket_name = "sharedmoments-photos-production"
 
+# Durable Objects configuration
+[[durable_objects.bindings]]
+name = "WEDDING_ZIP_PROCESSOR"
+class_name = "WeddingZipProcessor"
+
+# Durable Objects migration (free plan compatible)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "WeddingZipProcessor" ]
+
 # Environment variables (set these via wrangler secret put)
 # EMAIL_USER = "noreply@sharedmoments.socialboostai.com"
 # EMAIL_PASSWORD = "your-smtp-password"

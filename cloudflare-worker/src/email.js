@@ -18,10 +18,18 @@ export async function sendEmail(data, env) {
     finalSizeMB,
     downloadUrl,
     compressionStats,
-    processingTimeSeconds
+    processingTimeSeconds,
+    failedFiles,
+    processingMethod
   } = data;
 
   console.log(`📧 Sending success email [${requestId}] to: ${email}`);
+  
+  // Log failed files if any
+  if (failedFiles && failedFiles.length > 0) {
+    console.log(`⚠️ Email includes ${failedFiles.length} failed files [${requestId}]:`, 
+      failedFiles.map(f => `${f.fileName} (${f.reason})`).join(', '));
+  }
 
   try {
     // Call your existing Netlify email function
@@ -37,6 +45,8 @@ export async function sendEmail(data, env) {
       downloadUrl,
       compressionStats,
       processingTimeSeconds,
+      failedFiles: failedFiles || [],
+      processingMethod: processingMethod || 'worker-streaming',
       source: 'cloudflare-worker'
     };
 
