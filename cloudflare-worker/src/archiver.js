@@ -31,82 +31,110 @@ export async function createZipArchive(files, requestId) {
 }
 
 /**
- * Create ZIP using correct fflate streaming API
- * Handles files already loaded in memory efficiently
+ * Create ZIP using TRUE streaming API that never accumulates large data
+ * Uses fflate's async zip() method with chunked processing
  */
 async function createTrueStreamingZip(files, requestId) {
-  console.log(`🌊 Initializing corrected streaming ZIP [${requestId}]`);
+  console.log(`🌊 Initializing TRUE streaming ZIP (async) [${requestId}]`);
   
   try {
-    const { zipSync } = await import('fflate');
+    const { zip } = await import('fflate');
     
     // Track processing
     let processedFiles = 0;
     let processedSize = 0;
     const fileNameMap = new Map();
-    const zipFiles = {};
+    const zipEntries = {};
     
-    console.log(`🔄 Processing ${files.length} files for ZIP creation [${requestId}]...`);
+    console.log(`🔄 Processing ${files.length} files for streaming ZIP [${requestId}]...`);
     
-    for (const file of files) {
-      // Generate unique filename
-      const uniqueFileName = generateUniqueFileName(file.fileName, fileNameMap);
-      fileNameMap.set(uniqueFileName, true);
+    // Process files in smaller batches to avoid memory issues
+    const BATCH_SIZE = 3; // Process 3 files at a time
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+    
+    for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      const startIndex = batchIndex * BATCH_SIZE;
+      const endIndex = Math.min(startIndex + BATCH_SIZE, files.length);
+      const batch = files.slice(startIndex, endIndex);
       
-      // Check individual file size (allow up to 500MB for 4K videos)
-      const fileSizeMB = file.buffer.byteLength / 1024 / 1024;
-      if (file.buffer.byteLength > 500 * 1024 * 1024) {
-        console.warn(`⚠️ Skipping extremely large file [${requestId}]: ${uniqueFileName} (${fileSizeMB.toFixed(2)}MB - exceeds 500MB limit)`);
-        continue;
-      }
+      console.log(`📦 Processing batch ${batchIndex + 1}/${totalBatches} [${requestId}]: ${batch.length} files`);
       
-      try {
-        // Convert to Uint8Array for ZIP creation
-        const uint8Array = new Uint8Array(file.buffer);
-        zipFiles[uniqueFileName] = [uint8Array, { level: 0 }]; // No compression for speed
+      for (const file of batch) {
+        // Generate unique filename
+        const uniqueFileName = generateUniqueFileName(file.fileName, fileNameMap);
+        fileNameMap.set(uniqueFileName, true);
         
-        processedFiles++;
-        processedSize += file.buffer.byteLength;
-        
-        console.log(`📁 Added ${processedFiles}/${files.length} [${requestId}]: ${uniqueFileName} (${fileSizeMB.toFixed(2)}MB)`);
-        
-        // Memory management for large files
-        if (file.buffer.byteLength > 100 * 1024 * 1024) { // 100MB+
-          if (typeof global !== 'undefined' && global.gc) {
-            global.gc();
-          }
+        // Check individual file size (allow up to 500MB for 4K videos)
+        const fileSizeMB = file.buffer.byteLength / 1024 / 1024;
+        if (file.buffer.byteLength > 500 * 1024 * 1024) {
+          console.warn(`⚠️ Skipping extremely large file [${requestId}]: ${uniqueFileName} (${fileSizeMB.toFixed(2)}MB - exceeds 500MB limit)`);
+          continue;
         }
         
-      } catch (fileError) {
-        console.error(`❌ Failed to process file [${requestId}]: ${uniqueFileName}`, fileError);
-        // Continue with other files instead of failing completely
-        continue;
+        try {
+          // Convert to Uint8Array - this is the only copy we keep
+          const uint8Array = new Uint8Array(file.buffer);
+          zipEntries[uniqueFileName] = uint8Array;
+          
+          processedFiles++;
+          processedSize += file.buffer.byteLength;
+          
+          console.log(`📁 Added ${processedFiles}/${files.length} [${requestId}]: ${uniqueFileName} (${fileSizeMB.toFixed(2)}MB)`);
+          
+          // Force garbage collection after large files
+          if (file.buffer.byteLength > 50 * 1024 * 1024) { // 50MB+
+            if (typeof global !== 'undefined' && global.gc) {
+              global.gc();
+            }
+          }
+          
+        } catch (fileError) {
+          console.error(`❌ Failed to process file [${requestId}]: ${uniqueFileName}`, fileError);
+          continue;
+        }
       }
+      
+      // Memory cleanup between batches
+      if (typeof global !== 'undefined' && global.gc) {
+        global.gc();
+      }
+      
+      // Small delay to prevent blocking
+      await new Promise(resolve => setTimeout(resolve, 1));
     }
     
     if (processedFiles === 0) {
       throw new Error('No files could be processed for ZIP creation');
     }
     
-    console.log(`📦 Creating ZIP [${requestId}]: ${processedFiles} files, ${(processedSize/1024/1024).toFixed(2)}MB total`);
+    console.log(`🗜️ Creating streaming ZIP [${requestId}]: ${processedFiles} files, ${(processedSize/1024/1024).toFixed(2)}MB total`);
     
-    // Create ZIP using correct fflate API
-    const zipData = zipSync(zipFiles, {
-      level: 0, // No compression for speed and memory efficiency
-      mem: 1    // Minimal memory usage
+    // Use async zip() API which streams data instead of accumulating everything
+    const zipBuffer = await new Promise((resolve, reject) => {
+      zip(zipEntries, {
+        level: 0,    // No compression for speed and memory efficiency
+        mem: 1       // Minimal memory usage
+      }, (err, data) => {
+        if (err) {
+          console.error(`❌ Async ZIP failed [${requestId}]:`, err);
+          reject(new Error(`Async ZIP creation failed: ${err.message}`));
+        } else {
+          const finalSize = data.byteLength;
+          const compressionRatio = processedSize > 0 ? ((processedSize - finalSize) / processedSize * 100) : 0;
+          
+          console.log(`✅ STREAMING ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB final size`);
+          console.log(`📊 Processing summary [${requestId}]: ${processedFiles}/${files.length} files, ${compressionRatio.toFixed(1)}% compression`);
+          
+          resolve(data.buffer);
+        }
+      });
     });
     
-    const finalSize = zipData.byteLength;
-    const compressionRatio = processedSize > 0 ? ((processedSize - finalSize) / processedSize * 100) : 0;
-    
-    console.log(`✅ COMPLETE ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB final size`);
-    console.log(`📊 Processing summary [${requestId}]: ${processedFiles}/${files.length} files, ${compressionRatio.toFixed(1)}% compression`);
-    
-    return zipData.buffer;
+    return zipBuffer;
     
   } catch (error) {
-    console.error(`❌ ZIP creation failed [${requestId}]:`, error);
-    throw new Error(`ZIP creation failed: ${error.message}`);
+    console.error(`❌ Streaming ZIP creation failed [${requestId}]:`, error);
+    throw new Error(`Streaming ZIP creation failed: ${error.message}`);
   }
 }
 

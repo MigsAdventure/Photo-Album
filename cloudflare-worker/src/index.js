@@ -10,9 +10,12 @@ import { sendEmail, sendErrorEmail } from './email';
 
 // Circuit breaker configuration to prevent infinite loops
 const REQUEST_TRACKING = new Map();
+const GLOBAL_REQUEST_TRACKING = new Map(); // Track by IP/email to prevent new requestId bypassing
 const MAX_RETRIES = 3;
 const BACKOFF_MULTIPLIER = 2;
 const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const GLOBAL_RATE_LIMIT = 5; // Max 5 requests per minute per email/IP
+const GLOBAL_RATE_WINDOW = 60 * 1000; // 1 minute window
 
 /**
  * Circuit breaker system to prevent infinite retry loops
@@ -85,6 +88,48 @@ function recordCircuitBreakerFailure(requestId, error) {
     REQUEST_TRACKING.set(requestId, tracking);
     console.error(`❌ Circuit breaker FAILURE [${requestId}]: ${error.message} (Attempt ${tracking.attempts}/${MAX_RETRIES})`);
   }
+}
+
+/**
+ * Global rate limiter to prevent infinite loops with new requestIds
+ * @param {string} email - User email
+ * @param {string} clientIP - Client IP address
+ * @returns {boolean} - True if request is allowed, false if rate limited
+ */
+function checkGlobalRateLimit(email, clientIP) {
+  const now = Date.now();
+  const key = `${email}:${clientIP}`;
+  
+  // Clean up old entries first
+  for (const [trackingKey, requests] of GLOBAL_REQUEST_TRACKING.entries()) {
+    const validRequests = requests.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
+    if (validRequests.length === 0) {
+      GLOBAL_REQUEST_TRACKING.delete(trackingKey);
+    } else {
+      GLOBAL_REQUEST_TRACKING.set(trackingKey, validRequests);
+    }
+  }
+  
+  // Get current request timestamps for this email/IP
+  const requests = GLOBAL_REQUEST_TRACKING.get(key) || [];
+  
+  // Filter to only recent requests (within rate window)
+  const recentRequests = requests.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
+  
+  console.log(`🌐 Global rate limit check [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests in last ${GLOBAL_RATE_WINDOW/1000}s`);
+  
+  // Check if rate limit exceeded
+  if (recentRequests.length >= GLOBAL_RATE_LIMIT) {
+    console.error(`🚫 GLOBAL RATE LIMIT EXCEEDED [${key}]: ${recentRequests.length} requests in ${GLOBAL_RATE_WINDOW/1000}s (limit: ${GLOBAL_RATE_LIMIT})`);
+    return false;
+  }
+  
+  // Add current request timestamp
+  recentRequests.push(now);
+  GLOBAL_REQUEST_TRACKING.set(key, recentRequests);
+  
+  console.log(`✅ Global rate limit OK [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests`);
+  return true;
 }
 
 /**
@@ -495,7 +540,26 @@ export default {
         });
       }
 
-      // Circuit breaker check to prevent infinite loops
+      // GLOBAL RATE LIMITING - Check first to prevent new requestId bypass
+      const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+      if (!checkGlobalRateLimit(email, clientIP)) {
+        console.error(`🚫 GLOBAL RATE LIMIT EXCEEDED [${email}:${clientIP}]: Request blocked`);
+        return new Response(JSON.stringify({
+          error: 'Too many requests',
+          reason: `Rate limit exceeded: maximum ${GLOBAL_RATE_LIMIT} requests per minute`,
+          email,
+          requestId,
+          action: 'Stop retrying. Wait 1 minute before submitting a new request.'
+        }), {
+          status: 429, // Too Many Requests
+          headers: { 
+            'Content-Type': 'application/json',
+            'Retry-After': '60' // Force 60 second wait
+          },
+        });
+      }
+
+      // Circuit breaker check to prevent infinite loops per requestId
       try {
         checkCircuitBreaker(requestId);
       } catch (circuitBreakerError) {
