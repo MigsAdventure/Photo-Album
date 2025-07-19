@@ -96,22 +96,21 @@ async function downloadSmallFile(response, requestId, fileName) {
 }
 
 /**
- * Create ZIP archive with true streaming for large files
- * Never holds full large files in memory
+ * Create ZIP archive with TRUE streaming for large files
+ * Downloads files in chunks and streams directly to ZIP
+ * Creates single ZIP with complete 500MB+ video files
  * @param {Array} photos - Array of photo objects with {fileName, url}
  * @param {string} requestId - Request ID for logging  
  * @returns {Promise<Object>} - { zipBuffer, stats }
  */
 async function createStreamingZipArchive(photos, requestId) {
-  console.log(`🌊 Creating streaming ZIP archive [${requestId}] with ${photos.length} files`);
+  console.log(`🌊 Creating TRUE streaming ZIP [${requestId}] with ${photos.length} files`);
   
   try {
-    const { zipSync } = await import('fflate');
+    const { Zip } = await import('fflate');
     
-    const smallFiles = {};
-    const streamedFiles = [];
     let totalOriginalSize = 0;
-    let totalCompressedSize = 0;
+    let totalFinalSize = 0;
     let processedFileCount = 0;
     let compressionStats = {
       photosCompressed: 0,
@@ -119,141 +118,217 @@ async function createStreamingZipArchive(photos, requestId) {
       compressionRatio: 0
     };
 
-    // Process files one by one
-    for (const photo of photos) {
+    // Create streaming ZIP with collected chunks
+    const zipChunks = [];
+    
+    return new Promise(async (resolve, reject) => {
       try {
-        console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
-        
-        // Download file from Firebase
-        const response = await fetch(photo.url, {
-          headers: { 'User-Agent': 'SharedMoments-Worker/1.0' }
+        // Create ZIP stream that collects output chunks
+        const zip = new Zip((err, data) => {
+          if (err) {
+            console.error(`❌ ZIP stream error [${requestId}]:`, err);
+            reject(new Error(`ZIP streaming failed: ${err.message}`));
+            return;
+          }
+          
+          // Collect ZIP output chunks
+          zipChunks.push(data);
+          totalFinalSize += data.byteLength;
         });
 
-        if (!response.ok) {
-          console.error(`❌ Failed to download [${requestId}]: ${photo.fileName} - HTTP ${response.status}`);
-          continue;
-        }
+        // Process each file with streaming
+        for (const photo of photos) {
+          try {
+            console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
+            
+            // Download file from Firebase
+            const response = await fetch(photo.url, {
+              headers: { 'User-Agent': 'SharedMoments-Worker/1.0' }
+            });
 
-        // Get file size
-        const contentLength = parseInt(response.headers.get('content-length') || '0');
-        const contentLengthMB = contentLength / 1024 / 1024;
-        
-        console.log(`📊 File size [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
-        totalOriginalSize += contentLength;
-
-        // Determine file type
-        const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
-        const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
-
-        // Process based on size and type
-        if (contentLength > 80 * 1024 * 1024) { // 80MB+ files: stream directly
-          console.log(`🌊 Large file - will stream directly [${requestId}]: ${photo.fileName}`);
-          streamedFiles.push({
-            fileName: photo.fileName,
-            url: photo.url,
-            size: contentLength,
-            isVideo
-          });
-          
-          if (isVideo) {
-            compressionStats.videosProcessed++;
-          }
-          totalCompressedSize += contentLength; // No compression for large files
-          processedFileCount++;
-          
-        } else { // Small files: download and process normally
-          const buffer = await downloadSmallFile(response, requestId, photo.fileName);
-          
-          let processedBuffer = buffer;
-          let isCompressed = false;
-
-          // Compress photos if beneficial
-          if (isPhoto && buffer.byteLength > 500 * 1024) {
-            try {
-              processedBuffer = await compress(buffer, photo.fileName);
-              isCompressed = true;
-              compressionStats.photosCompressed++;
-              console.log(`📸 Compressed photo [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB → ${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
-            } catch (compressionError) {
-              console.error(`❌ Compression failed [${requestId}]: ${photo.fileName}`, compressionError);
-              processedBuffer = buffer;
+            if (!response.ok) {
+              console.error(`❌ Failed to download [${requestId}]: ${photo.fileName} - HTTP ${response.status}`);
+              continue;
             }
-          } else if (isVideo) {
-            compressionStats.videosProcessed++;
+
+            // Get file size
+            const contentLength = parseInt(response.headers.get('content-length') || '0');
+            const contentLengthMB = contentLength / 1024 / 1024;
+            
+            console.log(`📊 File size [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+            totalOriginalSize += contentLength;
+
+            // Determine file type
+            const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
+            const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
+            
+            const sanitizedName = sanitizeFileName(photo.fileName);
+
+            // Stream large files directly to ZIP
+            if (contentLength > 80 * 1024 * 1024) { // Large files: stream
+              console.log(`🌊 Streaming large file to ZIP [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+              
+              await streamFileDirectlyToZip(response, contentLength, sanitizedName, zip, requestId);
+              
+              if (isVideo) {
+                compressionStats.videosProcessed++;
+              }
+              
+            } else { // Small files: process normally
+              const buffer = await downloadSmallFile(response, requestId, photo.fileName);
+              
+              let processedBuffer = buffer;
+
+              // Compress photos if beneficial
+              if (isPhoto && buffer.byteLength > 500 * 1024) {
+                try {
+                  processedBuffer = await compress(buffer, photo.fileName);
+                  compressionStats.photosCompressed++;
+                  console.log(`📸 Compressed photo [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB → ${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+                } catch (compressionError) {
+                  console.error(`❌ Compression failed [${requestId}]: ${photo.fileName}`, compressionError);
+                  processedBuffer = buffer;
+                }
+              } else if (isVideo) {
+                compressionStats.videosProcessed++;
+              }
+
+              // Add to ZIP stream
+              const uint8Array = new Uint8Array(processedBuffer);
+              zip.add(sanitizedName, uint8Array, { level: 0 });
+              
+              console.log(`📁 Added to ZIP [${requestId}]: ${photo.fileName} (${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+            }
+
+            processedFileCount++;
+
+            // Memory cleanup
+            if (typeof global !== 'undefined' && global.gc) {
+              global.gc();
+            }
+
+          } catch (fileError) {
+            console.error(`❌ Failed to process file [${requestId}]: ${photo.fileName}`, fileError);
+            continue;
           }
-
-          // Add to small files for ZIP
-          const sanitizedName = sanitizeFileName(photo.fileName);
-          smallFiles[sanitizedName] = [new Uint8Array(processedBuffer), { level: 0 }];
-          
-          totalCompressedSize += processedBuffer.byteLength;
-          processedFileCount++;
-          
-          console.log(`📁 Added to ZIP [${requestId}]: ${photo.fileName} (${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
         }
 
-        // Memory cleanup
-        if (typeof global !== 'undefined' && global.gc) {
-          global.gc();
+        if (processedFileCount === 0) {
+          reject(new Error('No files were successfully processed'));
+          return;
         }
 
-      } catch (fileError) {
-        console.error(`❌ Failed to process file [${requestId}]: ${photo.fileName}`, fileError);
-        continue;
+        // Finalize ZIP
+        console.log(`📦 Finalizing ZIP [${requestId}] with ${processedFileCount} files...`);
+        zip.end();
+
+        // Wait for ZIP completion
+        zip.terminate = () => {
+          try {
+            // Combine all ZIP chunks
+            const totalBufferSize = zipChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+            const finalBuffer = new Uint8Array(totalBufferSize);
+            let offset = 0;
+            
+            for (const chunk of zipChunks) {
+              finalBuffer.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+
+            const finalSizeMB = totalBufferSize / 1024 / 1024;
+            compressionStats.compressionRatio = totalOriginalSize > 0 
+              ? ((totalOriginalSize - totalBufferSize) / totalOriginalSize * 100)
+              : 0;
+
+            console.log(`✅ ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
+
+            resolve({
+              zipBuffer: finalBuffer.buffer,
+              stats: {
+                processedFileCount,
+                totalOriginalSize,
+                totalCompressedSize: totalBufferSize,
+                compressionStats,
+                finalSizeMB
+              }
+            });
+
+          } catch (finalizationError) {
+            console.error(`❌ ZIP finalization error [${requestId}]:`, finalizationError);
+            reject(new Error(`ZIP finalization failed: ${finalizationError.message}`));
+          }
+        };
+
+      } catch (streamError) {
+        console.error(`❌ ZIP streaming setup error [${requestId}]:`, streamError);
+        reject(new Error(`ZIP streaming setup failed: ${streamError.message}`));
       }
-    }
-
-    if (processedFileCount === 0) {
-      throw new Error('No files were successfully processed');
-    }
-
-    // Create ZIP with small files
-    console.log(`📦 Creating ZIP [${requestId}]: ${Object.keys(smallFiles).length} small files, ${streamedFiles.length} large files`);
-    
-    let zipData;
-    if (Object.keys(smallFiles).length > 0) {
-      zipData = zipSync(smallFiles, { level: 0, mem: 1 });
-    } else {
-      // No small files, create empty ZIP structure for large files
-      zipData = zipSync({}, { level: 0, mem: 1 });
-    }
-
-    // For now, we'll process small files only to avoid memory issues
-    // Large files need a different approach (multipart upload or alternative delivery)
-    if (streamedFiles.length > 0) {
-      console.log(`⚠️ Large files detected [${requestId}]: ${streamedFiles.length} files over 80MB`);
-      console.log(`📋 These files will be delivered separately or require alternative processing`);
-      
-      // For immediate fix: skip large files but log them
-      for (const file of streamedFiles) {
-        console.log(`⚠️ Skipping large file [${requestId}]: ${file.fileName} (${(file.size/1024/1024).toFixed(2)}MB)`);
-        totalCompressedSize -= file.size; // Remove from totals
-        processedFileCount--;
-      }
-    }
-
-    // Calculate compression ratio
-    compressionStats.compressionRatio = totalOriginalSize > 0 
-      ? ((totalOriginalSize - totalCompressedSize) / totalOriginalSize * 100)
-      : 0;
-
-    const finalSizeMB = zipData.byteLength / 1024 / 1024;
-    console.log(`✅ ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
-
-    return {
-      zipBuffer: zipData.buffer,
-      stats: {
-        processedFileCount,
-        totalOriginalSize,
-        totalCompressedSize,
-        compressionStats,
-        finalSizeMB
-      }
-    };
+    });
 
   } catch (error) {
     console.error(`❌ Streaming ZIP creation failed [${requestId}]:`, error);
     throw new Error(`Failed to create streaming ZIP: ${error.message}`);
+  }
+}
+
+/**
+ * Stream large file directly to ZIP without holding in memory
+ * Downloads in chunks and feeds directly to ZIP stream
+ * @param {Response} response - Fetch response object  
+ * @param {number} contentLength - Total file size in bytes
+ * @param {string} fileName - Sanitized file name for ZIP entry
+ * @param {object} zipStream - fflate ZIP stream object
+ * @param {string} requestId - Request ID for logging
+ * @returns {Promise<void>}
+ */
+async function streamFileDirectlyToZip(response, contentLength, fileName, zipStream, requestId) {
+  const chunkSize = 10 * 1024 * 1024; // 10MB chunks
+  let totalBytesRead = 0;
+  let isFirstChunk = true;
+  
+  console.log(`🌊 Starting direct streaming [${requestId}]: ${fileName} (${(contentLength/1024/1024).toFixed(2)}MB)`);
+  
+  try {
+    const reader = response.body.getReader();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        console.log(`✅ Streaming complete [${requestId}]: ${fileName} (${totalBytesRead} bytes)`);
+        break;
+      }
+      
+      // Stream chunk directly to ZIP
+      if (isFirstChunk) {
+        // Start the ZIP file entry
+        zipStream.add(fileName, value, { level: 0 });
+        isFirstChunk = false;
+      } else {
+        // Continue streaming chunks to same file entry
+        zipStream.push(fileName, value);
+      }
+      
+      totalBytesRead += value.byteLength;
+      
+      // Log progress every 50MB
+      if (totalBytesRead % (50 * 1024 * 1024) < value.byteLength) {
+        const progressPercent = (totalBytesRead / contentLength * 100).toFixed(1);
+        console.log(`📊 Streaming progress [${requestId}]: ${fileName} ${progressPercent}% (${(totalBytesRead/1024/1024).toFixed(2)}MB/${(contentLength/1024/1024).toFixed(2)}MB)`);
+      }
+      
+      // Yield control periodically
+      if (totalBytesRead % (30 * 1024 * 1024) < value.byteLength) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    }
+    
+    // Finalize this file entry in ZIP
+    zipStream.end(fileName);
+    
+  } catch (error) {
+    console.error(`❌ Direct streaming failed [${requestId}]: ${fileName}`, error);
+    throw new Error(`Failed to stream file to ZIP: ${error.message}`);
   }
 }
 
