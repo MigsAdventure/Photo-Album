@@ -5,6 +5,9 @@
 /.pnp
 .pnp.js
 
+# Cloudflare Worker dependencies
+cloudflare-worker/node_modules
+
 # testing
 /coverage
 
