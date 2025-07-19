@@ -65,7 +65,7 @@ exports.handler = async (event, context) => {
     };
   }
 
-  const { eventId, email } = parsedBody;
+  const { eventId, email, source, downloadUrl, fileCount, finalSizeMB, compressionStats, processingTimeSeconds } = parsedBody;
 
   // Early validation
   if (!eventId || !email) {
@@ -77,6 +77,42 @@ exports.handler = async (event, context) => {
         requestId 
       }),
     };
+  }
+
+  // Check if this is a pre-processed payload from Cloudflare Worker
+  if (source === 'cloudflare-worker' && downloadUrl) {
+    console.log(`📧 Processing Worker email request [${requestId}] for ${email}`);
+    
+    try {
+      // Send email with pre-processed download link
+      await sendWorkerSuccessEmail(email, requestId, fileCount, finalSizeMB, downloadUrl, compressionStats, processingTimeSeconds);
+      
+      console.log(`✅ Worker email sent successfully [${requestId}]`);
+      
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          success: true,
+          message: `Download email sent to ${email}`,
+          requestId,
+          source: 'worker-email-handler'
+        }),
+      };
+      
+    } catch (error) {
+      console.error(`❌ Failed to send Worker email [${requestId}]:`, error);
+      
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ 
+          error: 'Failed to send email',
+          details: error.message,
+          requestId 
+        }),
+      };
+    }
   }
 
   // Validate email format
@@ -479,6 +515,154 @@ async function uploadToR2AndSendEmail(zipBuffer, eventId, email, requestId, file
 
   // Send success email
   await sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloadUrl);
+}
+
+// Send success email for Worker-processed downloads
+async function sendWorkerSuccessEmail(email, requestId, fileCount, fileSizeMB, downloadUrl, compressionStats, processingTimeSeconds) {
+  console.log(`📧 Sending Worker success email [${requestId}] to: ${email}`);
+  
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.mailgun.org',
+    port: 587,
+    secure: false,
+    auth: {
+      user: process.env.EMAIL_USER || 'noreply@sharedmoments.socialboostai.com',
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+
+  const compressionText = compressionStats 
+    ? `Professional compression applied (${compressionStats.photosCompressed} photos optimized, ${compressionStats.compressionRatio.toFixed(1)}% size reduction)`
+    : 'High-quality processing complete';
+
+  const processingText = processingTimeSeconds 
+    ? `Processed in ${processingTimeSeconds.toFixed(1)} seconds`
+    : 'Fast processing complete';
+
+  const mailOptions = {
+    from: `SharedMoments <${process.env.EMAIL_USER || 'noreply@sharedmoments.socialboostai.com'}>`,
+    to: email,
+    subject: `Your SharedMoments Photos are Ready for Download`,
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center; border-radius: 12px 12px 0 0;">
+          <h1 style="color: white; margin: 0; font-size: 28px; font-weight: 300; letter-spacing: 1px;">
+            📸 SharedMoments
+          </h1>
+          <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0; font-size: 16px;">
+            Your event photos are ready
+          </p>
+        </div>
+        
+        <!-- Main Content -->
+        <div style="padding: 40px 30px; background: white;">
+          <p style="font-size: 18px; line-height: 1.6; color: #333; margin-top: 0;">
+            Great news! We've prepared a professional download package with <strong>${fileCount} files</strong> from your special event.
+          </p>
+          
+          <!-- Download Details Card -->
+          <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 25px; border-radius: 12px; margin: 30px 0; border-left: 4px solid #667eea;">
+            <h3 style="margin-top: 0; color: #495057; font-size: 18px;">📊 Package Details</h3>
+            <div style="display: grid; gap: 12px;">
+              <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.1);">
+                <span style="color: #6c757d; font-weight: 500;">Files included:</span>
+                <span style="color: #495057; font-weight: 600;">${fileCount} high-quality files</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.1);">
+                <span style="color: #6c757d; font-weight: 500;">File size:</span>
+                <span style="color: #495057; font-weight: 600;">${fileSizeMB.toFixed(2)}MB ZIP archive</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.1);">
+                <span style="color: #6c757d; font-weight: 500;">Processing:</span>
+                <span style="color: #28a745; font-weight: 600;">${processingText}</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; padding: 8px 0;">
+                <span style="color: #6c757d; font-weight: 500;">Available until:</span>
+                <span style="color: #28a745; font-weight: 600;">1 year from event date</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compression Info -->
+          ${compressionStats ? `
+          <div style="background: #e8f5e8; border: 1px solid #4caf50; padding: 20px; border-radius: 12px; margin: 30px 0;">
+            <div style="display: flex; align-items: flex-start;">
+              <span style="font-size: 24px; margin-right: 12px;">⚡</span>
+              <div>
+                <h4 style="margin: 0 0 8px 0; color: #2e7d32; font-size: 16px;">Professional Processing</h4>
+                <p style="margin: 0; color: #388e3c; line-height: 1.5; font-size: 14px;">
+                  ${compressionText}
+                </p>
+              </div>
+            </div>
+          </div>
+          ` : ''}
+          
+          <!-- Download Button -->
+          <div style="text-align: center; margin: 40px 0;">
+            <a href="${downloadUrl}" 
+               style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); transition: all 0.3s ease;">
+              📥 Download Your Photos & Videos
+            </a>
+          </div>
+          
+          <!-- Large File Notice for Videos -->
+          ${fileSizeMB > 100 ? `
+          <div style="background: #fff3e0; border: 1px solid #ffcc02; padding: 20px; border-radius: 12px; margin: 30px 0;">
+            <div style="display: flex; align-items: flex-start;">
+              <span style="font-size: 24px; margin-right: 12px;">🎬</span>
+              <div>
+                <h4 style="margin: 0 0 8px 0; color: #f57c00; font-size: 16px;">Large File Package</h4>
+                <p style="margin: 0; color: #ef6c00; line-height: 1.5; font-size: 14px;">
+                  This package includes high-quality videos and may take longer to download depending on your internet connection. The download will resume automatically if interrupted.
+                </p>
+              </div>
+            </div>
+          </div>
+          ` : ''}
+          
+          <!-- Mobile Instructions -->
+          <div style="background: #fff3e0; border: 1px solid #ffcc02; padding: 20px; border-radius: 12px; margin: 30px 0;">
+            <div style="display: flex; align-items: flex-start;">
+              <span style="font-size: 24px; margin-right: 12px;">📱</span>
+              <div>
+                <h4 style="margin: 0 0 8px 0; color: #f57c00; font-size: 16px;">Mobile Users</h4>
+                <p style="margin: 0; color: #ef6c00; line-height: 1.5; font-size: 14px;">
+                  On mobile devices, tap "Download" and look for the ZIP file in your Downloads folder. You may need a file manager app to extract the photos and videos.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Footer -->
+        <div style="background: #f8f9fa; padding: 30px; text-align: center; border-radius: 0 0 12px 12px; border-top: 1px solid #e9ecef;">
+          <div style="margin-bottom: 20px;">
+            <h3 style="margin: 0 0 5px 0; color: #495057; font-size: 18px; font-weight: 300;">SharedMoments</h3>
+            <p style="margin: 0; color: #6c757d; font-size: 14px;">Professional Photo Sharing Platform</p>
+          </div>
+          
+          <div style="margin-bottom: 20px;">
+            <a href="https://sharedmoments.socialboostai.com" style="color: #667eea; text-decoration: none; font-weight: 500;">
+              sharedmoments.socialboostai.com
+            </a>
+          </div>
+          
+          <hr style="border: none; border-top: 1px solid #dee2e6; margin: 20px 0;">
+          
+          <p style="color: #adb5bd; font-size: 12px; margin: 10px 0 0 0; line-height: 1.4;">
+            Powered by <a href="https://socialboostai.com" style="color: #667eea; text-decoration: none; font-weight: 500;">Social Boost AI</a><br>
+            Wedding Marketing & Technology Solutions<br><br>
+            Request ID: ${requestId} | Generated: ${new Date().toLocaleString()}
+          </p>
+        </div>
+      </div>
+    `
+  };
+
+  await transporter.sendMail(mailOptions);
+  console.log(`✅ Worker success email sent [${requestId}]`);
 }
 
 // Send success email with download link
