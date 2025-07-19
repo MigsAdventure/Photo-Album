@@ -14,7 +14,7 @@ const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 
 // GLOBAL RATE LIMITING - Prevents infinite loops by tracking email+IP (like Cloudflare Worker)
 const GLOBAL_REQUEST_TRACKING = new Map();
-const GLOBAL_RATE_LIMIT = 5; // Max 5 requests per minute per email+IP
+const GLOBAL_RATE_LIMIT = 3; // Max 3 requests per minute per email+IP (stricter protection)
 const GLOBAL_RATE_WINDOW = 60 * 1000; // 1 minute window
 
 /**

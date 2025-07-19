@@ -14,7 +14,7 @@ const GLOBAL_REQUEST_TRACKING = new Map(); // Track by IP/email to prevent new r
 const MAX_RETRIES = 3;
 const BACKOFF_MULTIPLIER = 2;
 const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
-const GLOBAL_RATE_LIMIT = 5; // Max 5 requests per minute per email/IP
+const GLOBAL_RATE_LIMIT = 3; // Max 3 requests per minute per email/IP (stricter protection)
 const GLOBAL_RATE_WINDOW = 60 * 1000; // 1 minute window
 
 /**
@@ -368,7 +368,14 @@ async function createStreamingZipArchive(photos, requestId) {
         const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
         const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
 
-        // Handle large files (including 500MB videos) with streaming
+        // SKIP VIDEOS OVER 80MB (per user request for reliability)
+        if (isVideo && contentLength > 80 * 1024 * 1024) {
+          console.warn(`⏭️ Skipping large video [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB > 80MB limit)`);
+          skippedFileCount++;
+          continue;
+        }
+
+        // Handle large files with streaming (photos only, videos capped at 80MB)
         if (contentLength > 100 * 1024 * 1024) { // 100MB+ files use streaming
           console.log(`🌊 Large file detected [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - using streaming processing)`);
           
