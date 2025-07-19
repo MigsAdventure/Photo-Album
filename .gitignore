@@ -29,3 +29,6 @@ yarn-error.log*
 
 # Local Netlify folder
 .netlify
+
+# Test media files (large videos/images)
+test-media/
