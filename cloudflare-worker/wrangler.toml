@@ -7,6 +7,10 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "production"
 
+# Enable observability and logging
+[observability]
+enabled = true
+
 # R2 bucket binding
 [[r2_buckets]]
 binding = "R2_BUCKET"
