@@ -240,13 +240,25 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
 
   // Touch event handlers for long-press detection
   const handleTouchStart = (photo: Media, event: React.TouchEvent) => {
-    if (!ownedPhotos.has(photo.id)) return;
+    console.log('🖐️ Touch start for photo:', photo.id, 'owned:', ownedPhotos.has(photo.id));
+    
+    if (!ownedPhotos.has(photo.id)) {
+      console.log('❌ Photo not owned, skipping long-press setup');
+      return;
+    }
+    
+    // Prevent default to avoid interference with click events
+    event.preventDefault();
+    event.stopPropagation();
     
     const timer = setTimeout(() => {
+      console.log('⏰ Long-press triggered for photo:', photo.id);
+      
       // Trigger haptic feedback on supported devices
       if (navigator.vibrate) {
         navigator.vibrate(50);
       }
+      
       handleDeleteRequest(photo);
     }, 600); // 600ms long press
     
@@ -254,13 +266,20 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   };
 
   const handleTouchEnd = (event: React.TouchEvent) => {
+    console.log('🖐️ Touch end');
+    
     if (longPressTimer) {
+      console.log('⏹️ Clearing long-press timer');
       clearTimeout(longPressTimer);
       setLongPressTimer(null);
     }
+    
+    // Don't prevent default here to allow normal tap behavior if no long-press
   };
 
   const handleTouchMove = (event: React.TouchEvent) => {
+    console.log('🖐️ Touch move - canceling long-press');
+    
     // Cancel long press if user moves finger
     if (longPressTimer) {
       clearTimeout(longPressTimer);
@@ -270,10 +289,29 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
 
   // Right-click handler for desktop
   const handleContextMenu = (photo: Media, event: React.MouseEvent) => {
+    console.log('🖱️ Right-click on photo:', photo.id, 'owned:', ownedPhotos.has(photo.id));
+    
     event.preventDefault();
+    event.stopPropagation();
+    
     if (ownedPhotos.has(photo.id)) {
+      console.log('✅ Showing delete dialog for owned photo');
       handleDeleteRequest(photo);
+    } else {
+      console.log('❌ Photo not owned, no delete option');
     }
+  };
+
+  // Enhanced click handler that accounts for long-press
+  const handlePhotoClick = (photo: Media, index: number, event: React.MouseEvent | React.TouchEvent) => {
+    // Don't open modal if this was part of a long-press sequence
+    if (longPressTimer) {
+      console.log('🚫 Suppressing click due to active long-press timer');
+      return;
+    }
+    
+    console.log('👆 Opening photo modal for index:', index);
+    openModal(index);
   };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
@@ -461,7 +499,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   }
                 })
               }}
-              onClick={() => openModal(index)}
+              onClick={(e) => handlePhotoClick(photo, index, e)}
               onContextMenu={(e) => handleContextMenu(photo, e)}
               onTouchStart={(e) => handleTouchStart(photo, e)}
               onTouchEnd={handleTouchEnd}

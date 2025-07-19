@@ -145,11 +145,25 @@ exports.handler = async (event, context) => {
       processingStrategy: isLargeCollection ? 'background' : 'immediate'
     });
 
-    // Step 2: Determine processing strategy and respond immediately for large collections
+    // Step 2: Determine processing strategy
     if (isLargeCollection) {
-      console.log(`🚀 Large collection detected [${requestId}] - Starting background processing`);
+      console.log(`🚀 Large collection detected [${requestId}] - Routing to Cloudflare Worker`);
       
-      // Start background processing without waiting
+      // Try Cloudflare Worker first, fallback to Netlify background processing
+      try {
+        const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
+        if (workerResult.success) {
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify(workerResult),
+          };
+        }
+      } catch (workerError) {
+        console.warn(`⚠️ Worker routing failed [${requestId}], falling back to Netlify:`, workerError.message);
+      }
+      
+      // Fallback: Start background processing without waiting
       processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
       
       // Return immediate success response
@@ -160,8 +174,8 @@ exports.handler = async (event, context) => {
           success: true,
           processing: 'background',
           message: hasVideos 
-            ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos. You'll receive an email in 2-5 minutes.`
-            : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB). You'll receive an email in 2-5 minutes.`,
+            ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos with enhanced compression. You'll receive an email in 2-5 minutes.`
+            : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with compression. You'll receive an email in 1-3 minutes.`,
           fileCount: photos.length,
           estimatedSizeMB: Math.round(fileSizeMB),
           videoCount,
@@ -599,6 +613,56 @@ async function sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloa
 
   await transporter.sendMail(mailOptions);
   console.log(`✅ Success email sent [${requestId}]`);
+}
+
+// Route large collections to Cloudflare Worker for enhanced processing
+async function routeToCloudflareWorker(photos, eventId, email, requestId) {
+  console.log(`🚀 Routing to Cloudflare Worker [${requestId}]`);
+  
+  const WORKER_URL = process.env.CLOUDFLARE_WORKER_URL;
+  if (!WORKER_URL) {
+    throw new Error('Cloudflare Worker URL not configured');
+  }
+  
+  try {
+    const response = await fetch(WORKER_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.WORKER_AUTH_TOKEN || 'fallback-auth'}`
+      },
+      body: JSON.stringify({
+        eventId,
+        email,
+        photos,
+        requestId
+      }),
+      // 30 second timeout for worker communication
+      signal: AbortSignal.timeout(30000)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker responded with ${response.status}: ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log(`✅ Worker accepted request [${requestId}]:`, result.message);
+    
+    return {
+      success: true,
+      processing: 'worker-background',
+      message: result.message,
+      fileCount: photos.length,
+      estimatedSizeMB: Math.round(photos.reduce((sum, p) => sum + (p.size || 0), 0) / 1024 / 1024),
+      estimatedTime: result.estimatedTime,
+      requestId
+    };
+    
+  } catch (error) {
+    console.warn(`⚠️ Worker routing failed [${requestId}]:`, error.message);
+    throw error;
+  }
 }
 
 // Send error email to user

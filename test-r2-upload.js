@@ -41,7 +41,7 @@ Test Event ID: test-event-123
 This is a test upload to verify R2 connection works.`;
 
     const testEventId = 'test-event-123';
-    const testFileName = `test-upload-${Date.now()}.txt`;
+    const testFileName = ``;
     const key = `events/${testEventId}/photos/${testFileName}`;
 
     console.log('Uploading test file with key:', key);

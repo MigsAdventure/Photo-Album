@@ -1,0 +1,30 @@
+{
+  "name": "sharedmoments-photo-processor",
+  "version": "2.0.0",
+  "description": "Cloudflare Worker for processing and compressing wedding photo collections",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare-worker",
+    "photo-processing",
+    "image-compression",
+    "wedding-photography",
+    "r2-storage"
+  ],
+  "author": "Social Boost AI",
+  "license": "MIT",
+  "dependencies": {
+    "fflate": "^0.8.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "wrangler": "^4.25.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

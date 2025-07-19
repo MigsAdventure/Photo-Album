@@ -1,0 +1,38 @@
+name = "sharedmoments-photo-processor"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Worker configuration
+[vars]
+ENVIRONMENT = "production"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "sharedmoments-photos-production"
+
+# Environment variables (set these via wrangler secret put)
+# EMAIL_USER = "noreply@sharedmoments.socialboostai.com"
+# EMAIL_PASSWORD = "your-smtp-password"
+# EMAIL_HOST = "smtp.mailgun.org"
+# R2_PUBLIC_URL = "https://sharedmomentsphotos.socialboostai.com"
+# NETLIFY_EMAIL_FUNCTION_URL = "your-netlify-site/.netlify/functions/email-download"
+
+# Limits for Unbound Workers (handles large processing tasks)
+limits = { cpu_ms = 30000 }  # 30 seconds CPU time for compression
+usage_model = "unbound"     # Required for longer execution times
+
+# Routes (optional - can also set via Cloudflare dashboard)
+# routes = [
+#   { pattern = "worker.yourdomain.com/*", zone_name = "yourdomain.com" }
+# ]
+
+[build]
+command = ""  # No build step needed for this worker
+
+[env.development]
+name = "sharedmoments-photo-processor-dev"
+
+[env.staging]
+name = "sharedmoments-photo-processor-staging"
