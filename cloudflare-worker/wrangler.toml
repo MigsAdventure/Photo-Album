@@ -24,8 +24,8 @@ bucket_name = "sharedmoments-photos-production"
 # NETLIFY_EMAIL_FUNCTION_URL = "your-netlify-site/.netlify/functions/email-download"
 
 # Limits for Unbound Workers (handles large processing tasks)
-limits = { cpu_ms = 30000 }  # 30 seconds CPU time for compression
-usage_model = "unbound"     # Required for longer execution times
+limits = { cpu_ms = 900000 }  # 15 minutes CPU time - maximum allowed
+usage_model = "unbound"      # Required for longer execution times
 
 # Routes (optional - can also set via Cloudflare dashboard)
 # routes = [

@@ -14,8 +14,8 @@ export async function createZipArchive(files, requestId) {
   console.log(`🗜️ Creating ZIP archive [${requestId}] with ${files.length} files`);
   
   try {
-    // Use fflate for efficient ZIP creation in Workers environment
-    const { zip } = await import('fflate');
+    // Use fflate synchronous ZIP creation (compatible with Cloudflare Workers)
+    const { zipSync } = await import('fflate');
     
     const zipFiles = {};
     let totalSize = 0;
@@ -37,7 +37,7 @@ export async function createZipArchive(files, requestId) {
       
       // Convert ArrayBuffer to Uint8Array for fflate
       const uint8Array = new Uint8Array(file.buffer);
-      zipFiles[fileName] = uint8Array;
+      zipFiles[fileName] = [uint8Array, { level: 0 }]; // No compression for speed
       totalSize += file.buffer.byteLength;
       
       console.log(`📁 Added to ZIP [${requestId}]: ${fileName} (${(file.buffer.byteLength/1024).toFixed(1)}KB)`);
@@ -45,26 +45,19 @@ export async function createZipArchive(files, requestId) {
     
     console.log(`📦 ZIP preparation complete [${requestId}]: ${Object.keys(zipFiles).length} files, ${(totalSize/1024/1024).toFixed(2)}MB total`);
     
-    // Create ZIP with compression
-    const zipBuffer = await new Promise((resolve, reject) => {
-      zip(zipFiles, {
-        level: 6, // Moderate compression (0=none, 9=max)
-        mem: 8    // Memory level (1-12, higher = more memory but potentially better compression)
-      }, (err, data) => {
-        if (err) {
-          console.error(`❌ ZIP creation failed [${requestId}]:`, err);
-          reject(err);
-        } else {
-          const finalSize = data.byteLength;
-          const compressionRatio = totalSize > 0 ? ((totalSize - finalSize) / totalSize * 100) : 0;
-          
-          console.log(`✅ ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB (${compressionRatio.toFixed(1)}% compression)`);
-          resolve(data.buffer);
-        }
-      });
+    // Create ZIP synchronously (no Worker dependency) - no compression for speed
+    console.log(`🔄 Creating ZIP archive [${requestId}]...`);
+    const zipData = zipSync(zipFiles, {
+      level: 0, // No compression for maximum speed
+      mem: 1    // Minimal memory usage for speed
     });
     
-    return zipBuffer;
+    const finalSize = zipData.byteLength;
+    const compressionRatio = totalSize > 0 ? ((totalSize - finalSize) / totalSize * 100) : 0;
+    
+    console.log(`✅ ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB (${compressionRatio.toFixed(1)}% compression)`);
+    
+    return zipData.buffer;
     
   } catch (error) {
     console.error(`❌ ZIP archiver error [${requestId}]:`, error);
