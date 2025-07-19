@@ -183,9 +183,9 @@ exports.handler = async (event, context) => {
 
     // Step 2: Determine processing strategy
     if (isLargeCollection) {
-      console.log(`🚀 Large collection detected [${requestId}] - Routing to Cloudflare Worker`);
+      console.log(`🚀 Large collection detected [${requestId}] - Routing to enhanced Cloudflare Worker`);
       
-      // Try Cloudflare Worker first, fallback to Netlify background processing
+      // Try Cloudflare Worker first with fixed streaming, fallback to Netlify background processing
       try {
         const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
         if (workerResult.success) {
@@ -382,7 +382,7 @@ async function processCollectionImmediately(photos, eventId, email, requestId) {
 }
 
 // Helper function to download file from URL with retry logic
-async function downloadFileWithRetry(url, requestId, fileName = '', maxRetries = 3) {
+async function downloadFileWithRetry(url, requestId, fileName = '', maxRetries = 2) {
   const isVideo = fileName.toLowerCase().includes('.mp4') || fileName.toLowerCase().includes('.mov') || fileName.toLowerCase().includes('.avi');
   const fileType = isVideo ? 'video' : 'image';
   
