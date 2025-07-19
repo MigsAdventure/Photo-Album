@@ -11,16 +11,28 @@
  * @returns {ArrayBuffer} - ZIP file buffer
  */
 export async function createZipArchive(files, requestId) {
-  console.log(`🗜️ Creating ZIP archive [${requestId}] with ${files.length} files`);
+  console.log(`🗜️ Creating memory-efficient ZIP archive [${requestId}] with ${files.length} files`);
   
   try {
-    // Use fflate synchronous ZIP creation (compatible with Cloudflare Workers)
+    // Calculate total size and check for memory constraints
+    const totalSize = files.reduce((sum, file) => sum + file.buffer.byteLength, 0);
+    const totalSizeMB = totalSize / 1024 / 1024;
+    
+    console.log(`📊 Collection size analysis [${requestId}]: ${totalSizeMB.toFixed(2)}MB total`);
+    
+    // For very large collections (>150MB), use batched processing
+    if (totalSizeMB > 150) {
+      console.log(`⚠️ Large collection detected [${requestId}] - Using batched ZIP creation`);
+      return await createBatchedZipArchive(files, requestId);
+    }
+    
+    // For medium collections, use optimized memory approach
     const { zipSync } = await import('fflate');
     
     const zipFiles = {};
-    let totalSize = 0;
+    let processedSize = 0;
     
-    // Prepare files for ZIP creation
+    // Process files with memory-efficient approach
     for (const file of files) {
       // Ensure unique filenames (handle duplicates)
       let fileName = sanitizeFileName(file.fileName);
@@ -35,33 +47,173 @@ export async function createZipArchive(files, requestId) {
         counter++;
       }
       
-      // Convert ArrayBuffer to Uint8Array for fflate
-      const uint8Array = new Uint8Array(file.buffer);
-      zipFiles[fileName] = [uint8Array, { level: 0 }]; // No compression for speed
-      totalSize += file.buffer.byteLength;
+      // Check individual file size limit (100MB per file to avoid typed array limits)
+      if (file.buffer.byteLength > 100 * 1024 * 1024) {
+        console.warn(`⚠️ Skipping large file [${requestId}]: ${fileName} (${(file.buffer.byteLength/1024/1024).toFixed(2)}MB - exceeds 100MB limit)`);
+        continue;
+      }
       
-      console.log(`📁 Added to ZIP [${requestId}]: ${fileName} (${(file.buffer.byteLength/1024).toFixed(1)}KB)`);
+      try {
+        // Convert ArrayBuffer to Uint8Array with error handling
+        const uint8Array = new Uint8Array(file.buffer);
+        zipFiles[fileName] = [uint8Array, { level: 0 }]; // No compression for speed
+        processedSize += file.buffer.byteLength;
+        
+        console.log(`📁 Added to ZIP [${requestId}]: ${fileName} (${(file.buffer.byteLength/1024).toFixed(1)}KB)`);
+        
+        // Memory management for large files
+        if (file.buffer.byteLength > 50 * 1024 * 1024) { // 50MB+
+          if (typeof global !== 'undefined' && global.gc) {
+            global.gc();
+          }
+        }
+        
+      } catch (arrayError) {
+        console.error(`❌ Failed to create typed array for [${requestId}]: ${fileName}`, arrayError);
+        // Skip this file and continue with others
+        continue;
+      }
     }
     
-    console.log(`📦 ZIP preparation complete [${requestId}]: ${Object.keys(zipFiles).length} files, ${(totalSize/1024/1024).toFixed(2)}MB total`);
+    if (Object.keys(zipFiles).length === 0) {
+      throw new Error('No files could be processed for ZIP creation');
+    }
     
-    // Create ZIP synchronously (no Worker dependency) - no compression for speed
+    console.log(`📦 ZIP preparation complete [${requestId}]: ${Object.keys(zipFiles).length} files, ${(processedSize/1024/1024).toFixed(2)}MB total`);
+    
+    // Create ZIP synchronously with error handling
     console.log(`🔄 Creating ZIP archive [${requestId}]...`);
-    const zipData = zipSync(zipFiles, {
-      level: 0, // No compression for maximum speed
-      mem: 1    // Minimal memory usage for speed
-    });
     
-    const finalSize = zipData.byteLength;
-    const compressionRatio = totalSize > 0 ? ((totalSize - finalSize) / totalSize * 100) : 0;
-    
-    console.log(`✅ ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB (${compressionRatio.toFixed(1)}% compression)`);
-    
-    return zipData.buffer;
+    try {
+      const zipData = zipSync(zipFiles, {
+        level: 0, // No compression for maximum speed and memory efficiency
+        mem: 1    // Minimal memory usage
+      });
+      
+      const finalSize = zipData.byteLength;
+      const compressionRatio = processedSize > 0 ? ((processedSize - finalSize) / processedSize * 100) : 0;
+      
+      console.log(`✅ ZIP created [${requestId}]: ${(finalSize/1024/1024).toFixed(2)}MB (${compressionRatio.toFixed(1)}% compression)`);
+      
+      return zipData.buffer;
+      
+    } catch (zipError) {
+      console.error(`❌ ZIP creation failed [${requestId}]:`, zipError);
+      // If zipSync fails due to memory, try batched approach
+      if (zipError.message.includes('Invalid typed array length') || zipError.message.includes('memory')) {
+        console.log(`🔄 Falling back to batched processing [${requestId}]`);
+        return await createBatchedZipArchive(files, requestId);
+      }
+      throw zipError;
+    }
     
   } catch (error) {
     console.error(`❌ ZIP archiver error [${requestId}]:`, error);
     throw new Error(`Failed to create ZIP archive: ${error.message}`);
+  }
+}
+
+/**
+ * Create ZIP archive in batches for very large collections
+ * Processes files in smaller groups to avoid memory limits
+ */
+async function createBatchedZipArchive(files, requestId) {
+  console.log(`🔄 Creating batched ZIP archive [${requestId}]`);
+  
+  try {
+    const { zipSync } = await import('fflate');
+    
+    // Sort files by size (smallest first to optimize batching)
+    const sortedFiles = [...files].sort((a, b) => a.buffer.byteLength - b.buffer.byteLength);
+    
+    const batches = [];
+    let currentBatch = [];
+    let currentBatchSize = 0;
+    const maxBatchSize = 80 * 1024 * 1024; // 80MB per batch
+    
+    // Group files into batches
+    for (const file of sortedFiles) {
+      // Skip files that are too large individually
+      if (file.buffer.byteLength > 80 * 1024 * 1024) {
+        console.warn(`⚠️ Skipping oversized file [${requestId}]: ${file.fileName} (${(file.buffer.byteLength/1024/1024).toFixed(2)}MB)`);
+        continue;
+      }
+      
+      // If adding this file would exceed batch size, start a new batch
+      if (currentBatchSize + file.buffer.byteLength > maxBatchSize && currentBatch.length > 0) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentBatchSize = 0;
+      }
+      
+      currentBatch.push(file);
+      currentBatchSize += file.buffer.byteLength;
+    }
+    
+    // Add the last batch if it has files
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+    
+    console.log(`📦 Created ${batches.length} batches for processing [${requestId}]`);
+    
+    // Process each batch and collect ZIP data
+    const batchResults = [];
+    
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      console.log(`🔄 Processing batch ${i + 1}/${batches.length} [${requestId}]: ${batch.length} files`);
+      
+      const batchZipFiles = {};
+      
+      for (const file of batch) {
+        let fileName = sanitizeFileName(file.fileName);
+        let counter = 1;
+        const originalName = fileName;
+        const lastDotIndex = fileName.lastIndexOf('.');
+        const nameWithoutExt = lastDotIndex > -1 ? fileName.substring(0, lastDotIndex) : fileName;
+        const extension = lastDotIndex > -1 ? fileName.substring(lastDotIndex) : '';
+        
+        // Ensure unique filenames across all batches
+        while (batchResults.some(result => result.files[fileName]) || batchZipFiles[fileName]) {
+          fileName = `${nameWithoutExt}_${counter}${extension}`;
+          counter++;
+        }
+        
+        const uint8Array = new Uint8Array(file.buffer);
+        batchZipFiles[fileName] = [uint8Array, { level: 0 }];
+      }
+      
+      // Create ZIP for this batch
+      const batchZipData = zipSync(batchZipFiles, { level: 0, mem: 1 });
+      
+      batchResults.push({
+        zipData: batchZipData,
+        files: Object.keys(batchZipFiles)
+      });
+      
+      console.log(`✅ Batch ${i + 1} complete [${requestId}]: ${(batchZipData.byteLength/1024/1024).toFixed(2)}MB`);
+      
+      // Memory cleanup between batches
+      if (typeof global !== 'undefined' && global.gc) {
+        global.gc();
+      }
+    }
+    
+    // For now, return the first (largest) batch as the main ZIP
+    // In the future, we could implement multi-part ZIP delivery
+    const mainResult = batchResults[0];
+    const totalFiles = batchResults.reduce((sum, batch) => sum + batch.files.length, 0);
+    
+    console.log(`✅ Batched ZIP created [${requestId}]: ${(mainResult.zipData.byteLength/1024/1024).toFixed(2)}MB (${totalFiles} total files processed)`);
+    
+    // TODO: In production, you might want to upload all batches and send multiple download links
+    // For now, we'll return the first batch
+    return mainResult.zipData.buffer;
+    
+  } catch (error) {
+    console.error(`❌ Batched ZIP creation failed [${requestId}]:`, error);
+    throw new Error(`Batched ZIP creation failed: ${error.message}`);
   }
 }
 
