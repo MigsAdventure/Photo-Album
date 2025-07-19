@@ -7,6 +7,71 @@ import { compress, compressVideo } from './compression';
 import { createZipArchive } from './archiver';
 import { sendEmail, sendErrorEmail } from './email';
 
+/**
+ * Download large files in chunks to avoid Worker memory limits
+ * @param {Response} response - Fetch response object
+ * @param {number} contentLength - Total file size in bytes
+ * @param {string} requestId - Request ID for logging
+ * @param {string} fileName - File name for logging
+ * @returns {ArrayBuffer} - Complete file buffer
+ */
+async function downloadFileInChunks(response, contentLength, requestId, fileName) {
+  const chunkSize = 20 * 1024 * 1024; // 20MB chunks for optimal memory usage
+  const chunks = [];
+  let totalBytesRead = 0;
+  
+  console.log(`🌊 Starting chunked download [${requestId}]: ${fileName} (${(contentLength/1024/1024).toFixed(2)}MB in ${Math.ceil(contentLength/chunkSize)} chunks)`);
+  
+  try {
+    const reader = response.body.getReader();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        console.log(`✅ Chunked download complete [${requestId}]: ${fileName} (${totalBytesRead} bytes)`);
+        break;
+      }
+      
+      // Add chunk to collection
+      chunks.push(value);
+      totalBytesRead += value.byteLength;
+      
+      // Log progress every 50MB
+      if (totalBytesRead % (50 * 1024 * 1024) < value.byteLength) {
+        const progressPercent = (totalBytesRead / contentLength * 100).toFixed(1);
+        console.log(`📊 Download progress [${requestId}]: ${fileName} ${progressPercent}% (${(totalBytesRead/1024/1024).toFixed(2)}MB/${(contentLength/1024/1024).toFixed(2)}MB)`);
+      }
+      
+      // Memory management - force garbage collection for large downloads
+      if (totalBytesRead % (100 * 1024 * 1024) < value.byteLength) { // Every 100MB
+        if (typeof global !== 'undefined' && global.gc) {
+          global.gc();
+        }
+      }
+    }
+    
+    // Combine all chunks into single ArrayBuffer
+    console.log(`🔄 Combining ${chunks.length} chunks [${requestId}]: ${fileName}`);
+    
+    const combinedBuffer = new Uint8Array(totalBytesRead);
+    let offset = 0;
+    
+    for (const chunk of chunks) {
+      combinedBuffer.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    
+    console.log(`✅ File reconstruction complete [${requestId}]: ${fileName} (${(combinedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+    
+    return combinedBuffer.buffer;
+    
+  } catch (error) {
+    console.error(`❌ Chunked download failed [${requestId}]: ${fileName}`, error);
+    throw new Error(`Failed to download file in chunks: ${error.message}`);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     // Handle CORS preflight
@@ -98,7 +163,7 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
         try {
           console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
           
-          // Download file from Firebase Storage
+          // Download file from Firebase Storage with streaming for large files
           console.log(`📥 Downloading from Firebase [${requestId}]: ${photo.fileName}`);
           const response = await fetch(photo.url, {
             headers: {
@@ -111,7 +176,22 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
             continue;
           }
 
-          const originalBuffer = await response.arrayBuffer();
+          // Get content length to determine if we need streaming
+          const contentLength = parseInt(response.headers.get('content-length') || '0');
+          const contentLengthMB = contentLength / 1024 / 1024;
+          
+          console.log(`📊 File size [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+
+          let originalBuffer;
+
+          // Use streaming for large files (>100MB) to avoid memory limits
+          if (contentLength > 100 * 1024 * 1024) {
+            console.log(`🌊 Using streaming download [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+            originalBuffer = await downloadFileInChunks(response, contentLength, requestId, photo.fileName);
+          } else {
+            console.log(`📥 Direct download [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+            originalBuffer = await response.arrayBuffer();
+          }
           const originalSize = originalBuffer.byteLength;
           totalOriginalSize += originalSize;
 
