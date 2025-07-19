@@ -12,6 +12,67 @@ const MAX_RETRIES = 3;
 const BACKOFF_MULTIPLIER = 2;
 const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 
+// GLOBAL RATE LIMITING - Prevents infinite loops by tracking email+IP (like Cloudflare Worker)
+const GLOBAL_REQUEST_TRACKING = new Map();
+const GLOBAL_RATE_LIMIT = 5; // Max 5 requests per minute per email+IP
+const GLOBAL_RATE_WINDOW = 60 * 1000; // 1 minute window
+
+/**
+ * Global rate limiting system to prevent infinite loops (Netlify version)
+ * Tracks by email+IP combination to prevent bypass with new requestIds
+ * @param {string} email - User email address
+ * @param {string} clientIP - Client IP address
+ * @returns {boolean} - True if request allowed, false if rate limited
+ */
+function checkGlobalRateLimit(email, clientIP) {
+  const now = Date.now();
+  const key = `${email}:${clientIP}`;
+  
+  // Get or create tracking for this email+IP
+  const tracking = GLOBAL_REQUEST_TRACKING.get(key) || [];
+  
+  // Remove old entries outside the window
+  const recentRequests = tracking.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
+  
+  console.log(`🌐 Netlify Global rate limit check [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests in last ${GLOBAL_RATE_WINDOW/1000}s`);
+  
+  // Check if limit exceeded
+  if (recentRequests.length >= GLOBAL_RATE_LIMIT) {
+    console.error(`🚫 NETLIFY GLOBAL RATE LIMIT EXCEEDED [${key}]: ${recentRequests.length} requests in ${GLOBAL_RATE_WINDOW/1000}s (limit: ${GLOBAL_RATE_LIMIT})`);
+    return false;
+  }
+  
+  // Add current request timestamp
+  recentRequests.push(now);
+  GLOBAL_REQUEST_TRACKING.set(key, recentRequests);
+  
+  console.log(`✅ Netlify Global rate limit OK [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests`);
+  return true;
+}
+
+/**
+ * Clean up old rate limit entries to prevent memory leaks
+ */
+function cleanupGlobalRateLimit() {
+  const now = Date.now();
+  const keysToDelete = [];
+  
+  for (const [key, timestamps] of GLOBAL_REQUEST_TRACKING.entries()) {
+    const recentRequests = timestamps.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
+    if (recentRequests.length === 0) {
+      keysToDelete.push(key);
+    } else {
+      GLOBAL_REQUEST_TRACKING.set(key, recentRequests);
+    }
+  }
+  
+  keysToDelete.forEach(key => GLOBAL_REQUEST_TRACKING.delete(key));
+  
+  if (keysToDelete.length > 0) {
+    console.log(`🧹 Netlify Global rate limit cleanup: Removed ${keysToDelete.length} expired entries`);
+  }
+}
+
 /**
  * Circuit breaker system to prevent infinite retry loops (Netlify version)
  * @param {string} requestId - Unique request identifier
@@ -311,7 +372,36 @@ exports.handler = async (event, context) => {
   try {
     console.log(`📧 Processing email download [${requestId}]:`, { eventId, email });
 
-    // Circuit breaker check to prevent infinite loops
+    // GLOBAL RATE LIMITING - Check BEFORE any processing to prevent infinite loops
+    const clientIP = event.headers['x-forwarded-for']?.split(',')[0] || 
+                     event.headers['x-real-ip'] || 
+                     event.requestContext?.identity?.sourceIp || 
+                     'unknown';
+    
+    if (!checkGlobalRateLimit(email, clientIP)) {
+      console.error(`🚫 NETLIFY GLOBAL RATE LIMIT blocking request [${requestId}] for ${email}:${clientIP}`);
+      
+      // Cleanup old entries to prevent memory leaks
+      cleanupGlobalRateLimit();
+      
+      return {
+        statusCode: 429, // Too Many Requests
+        headers: {
+          ...headers,
+          'Retry-After': '60'
+        },
+        body: JSON.stringify({
+          error: 'Too many requests',
+          reason: 'Rate limit exceeded: maximum 5 requests per minute',
+          requestId,
+          action: 'Stop retrying. Wait 1 minute before submitting a new request.',
+          email: email,
+          clientIP: clientIP
+        }),
+      };
+    }
+
+    // Circuit breaker check to prevent infinite loops (backup protection)
     try {
       checkCircuitBreaker(requestId);
     } catch (circuitBreakerError) {
