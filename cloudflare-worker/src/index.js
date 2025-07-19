@@ -6,6 +6,7 @@
 
 import { WeddingZipProcessor } from './wedding-zip-processor';
 import { sendEmail, sendErrorEmail } from './email';
+import { handleQueueBatch } from './queue-processor';
 
 // Circuit breaker configuration to prevent infinite loops
 const REQUEST_TRACKING = new Map();
@@ -497,6 +498,101 @@ async function createStreamingZipArchive(photos, requestId) {
 }
 
 /**
+ * Smart processing strategy determination for enterprise architecture
+ * Automatically routes to best processing method based on collection analysis
+ * @param {Array} photos - Array of photo objects
+ * @param {object} memoryAnalysis - Memory analysis from analyzeMemoryRequirements
+ * @param {string} requestId - Request identifier
+ * @returns {object} - Routing decision with strategy and reasoning
+ */
+function determineProcessingStrategy(photos, memoryAnalysis, requestId) {
+  const LARGE_COLLECTION_THRESHOLD = 75; // 75+ files = enterprise queue
+  const LARGE_TOTAL_SIZE_THRESHOLD = 2048; // 2GB+ total = enterprise queue  
+  const LARGE_FILE_THRESHOLD = 200; // 200MB+ individual files = enterprise queue
+  const HIGH_VIDEO_COUNT_THRESHOLD = 10; // 10+ videos = enterprise queue
+  
+  const totalFiles = photos.length;
+  const totalSizeMB = parseFloat(memoryAnalysis.totalEstimatedSizeMB);
+  const largestFileMB = parseFloat(memoryAnalysis.largestFileMB);
+  const videoCount = memoryAnalysis.videoCount;
+  const hasLargeFiles = memoryAnalysis.largeFileCount > 0;
+  const riskLevel = memoryAnalysis.riskLevel;
+  
+  // Factors that favor enterprise queue processing
+  const enterpriseFactors = [];
+  
+  // Check for large collection size
+  if (totalFiles >= LARGE_COLLECTION_THRESHOLD) {
+    enterpriseFactors.push(`Large collection: ${totalFiles} files (≥${LARGE_COLLECTION_THRESHOLD})`);
+  }
+  
+  // Check for large total size
+  if (totalSizeMB >= LARGE_TOTAL_SIZE_THRESHOLD) {
+    enterpriseFactors.push(`Large total size: ${totalSizeMB}MB (≥${LARGE_TOTAL_SIZE_THRESHOLD}MB)`);
+  }
+  
+  // Check for individual large files
+  if (largestFileMB >= LARGE_FILE_THRESHOLD) {
+    enterpriseFactors.push(`Large individual file: ${largestFileMB}MB (≥${LARGE_FILE_THRESHOLD}MB)`);
+  }
+  
+  // Check for high video count
+  if (videoCount >= HIGH_VIDEO_COUNT_THRESHOLD) {
+    enterpriseFactors.push(`High video count: ${videoCount} videos (≥${HIGH_VIDEO_COUNT_THRESHOLD})`);
+  }
+  
+  // Check for high-risk collections
+  if (riskLevel === 'high') {
+    enterpriseFactors.push(`High risk level: ${riskLevel} (file size constraints)`);
+  }
+  
+  // Check for files that exceed Worker limits
+  if (memoryAnalysis.tooLargeFiles && memoryAnalysis.tooLargeFiles.length > 0) {
+    enterpriseFactors.push(`Files exceed Worker limits: ${memoryAnalysis.tooLargeFiles.length} files >500MB`);
+  }
+  
+  console.log(`🧠 Smart routing analysis [${requestId}]:`, {
+    totalFiles,
+    totalSizeMB,
+    largestFileMB,
+    videoCount,
+    riskLevel,
+    enterpriseFactors: enterpriseFactors.length,
+    factors: enterpriseFactors
+  });
+  
+  // Decision logic: Use enterprise queue if any major factors are present
+  if (enterpriseFactors.length > 0) {
+    // Determine best queue strategy based on characteristics
+    let queueStrategy = 'stream-to-r2'; // Default
+    
+    if (videoCount > 20 || largestFileMB > 400) {
+      queueStrategy = 'progressive-zip'; // Better for very large files
+    } else if (totalFiles > 150) {
+      queueStrategy = 'parallel-processing'; // Better for many files
+    }
+    
+    return {
+      strategy: 'enterprise-queue',
+      queueStrategy,
+      reason: `Enterprise processing required: ${enterpriseFactors.join(', ')}`,
+      factors: enterpriseFactors,
+      estimatedProcessingTime: totalFiles > 100 ? '10-20 minutes' : '5-15 minutes',
+      capabilities: 'Unlimited file sizes and processing time'
+    };
+  }
+  
+  // Use Durable Object for standard collections
+  return {
+    strategy: 'durable-object',
+    reason: `Standard collection: ${totalFiles} files, ${totalSizeMB}MB total, ${videoCount} videos - within Durable Object limits`,
+    factors: [],
+    estimatedProcessingTime: totalFiles > 50 ? '5-10 minutes' : '2-5 minutes',
+    capabilities: 'Fast processing up to 500MB files, 2GB collections'
+  };
+}
+
+/**
  * Sanitize filename for ZIP archive
  */
 function sanitizeFileName(fileName) {
@@ -515,6 +611,12 @@ function sanitizeFileName(fileName) {
 export { WeddingZipProcessor };
 
 export default {
+  async queue(batch, env, ctx) {
+    // Handle queue messages (enterprise background processing)
+    console.log(`🏭 Queue handler triggered: ${batch.messages.length} messages`);
+    return handleQueueBatch(batch, env, ctx);
+  },
+  
   async fetch(request, env, ctx) {
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -586,80 +688,130 @@ export default {
         });
       }
 
-      // Pre-flight memory analysis to prevent crashes
+      // Smart routing analysis for enterprise architecture
       const memoryAnalysis = analyzeMemoryRequirements(photos, requestId);
+      const routingDecision = determineProcessingStrategy(photos, memoryAnalysis, requestId);
       
-      if (!memoryAnalysis.canUseWorker) {
-        console.warn(`⚠️ Worker rejected due to memory constraints [${requestId}]:`, {
-          memoryNeededMB: memoryAnalysis.memoryNeededMB,
-          safeMemoryLimitMB: memoryAnalysis.safeMemoryLimitMB,
-          largeFileCount: memoryAnalysis.largeFileCount,
-          riskLevel: memoryAnalysis.riskLevel
+      console.log(`🎯 Smart routing decision [${requestId}]:`, {
+        strategy: routingDecision.strategy,
+        reason: routingDecision.reason,
+        totalFiles: photos.length,
+        totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
+        largestFileMB: memoryAnalysis.largestFileMB,
+        videoCount: memoryAnalysis.videoCount
+      });
+
+      // Route based on smart analysis
+      if (routingDecision.strategy === 'enterprise-queue') {
+        console.log(`🏭 Routing to enterprise queue [${requestId}]: Large collection detected`);
+        
+        // Send to background queue for unlimited processing time
+        await env.PHOTO_QUEUE.send({
+          eventId,
+          email, 
+          photos,
+          requestId,
+          strategy: routingDecision.queueStrategy || 'stream-to-r2'
         });
         
-        // Record this as a "soft failure" - not the Worker's fault
+        console.log(`✅ Job queued for enterprise processing [${requestId}]`);
+        
+        // Record circuit breaker success for orchestration
+        recordCircuitBreakerSuccess(requestId);
+        
         return new Response(JSON.stringify({
-          error: 'Collection too large for Worker processing',
-          memoryAnalysis,
+          success: true,
+          message: `Processing ${photos.length} files with enterprise background system. Email will be sent when complete.`,
           requestId,
-          recommendation: 'Use Netlify background processing for large collections'
+          estimatedTime: photos.length > 100 ? '10-20 minutes' : '5-15 minutes',
+          processing: 'enterprise-queue-background',
+          collectionAnalysis: {
+            totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
+            videoCount: memoryAnalysis.videoCount,
+            largeFileCount: memoryAnalysis.largeFileCount,
+            riskLevel: memoryAnalysis.riskLevel
+          },
+          capabilities: {
+            maxVideoSize: 'Unlimited',
+            maxCollectionSize: 'Unlimited', 
+            supportedFiles: 'All wedding media formats',
+            processingType: 'Background queue with unlimited time'
+          }
         }), {
-          status: 413, // Payload Too Large
+          status: 200,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          },
+        });
+        
+      } else if (routingDecision.strategy === 'durable-object') {
+        console.log(`🎯 Routing to Durable Object [${requestId}]: Standard collection size`);
+        
+        // Route to Durable Object for fast processing
+        const objectId = env.WEDDING_ZIP_PROCESSOR.idFromName(requestId);
+        const durableObject = env.WEDDING_ZIP_PROCESSOR.get(objectId);
+
+        // Send request to Durable Object
+        const durableObjectResponse = await durableObject.fetch(new Request('https://dummy.url/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId, email, photos, requestId })
+        }));
+
+        if (!durableObjectResponse.ok) {
+          const errorData = await durableObjectResponse.json();
+          console.error(`❌ Durable Object error [${requestId}]:`, errorData);
+          throw new Error(`Durable Object processing failed: ${errorData.error || 'Unknown error'}`);
+        }
+
+        const durableResult = await durableObjectResponse.json();
+        console.log(`✅ Durable Object started [${requestId}]:`, durableResult.status);
+
+        // Record circuit breaker success for orchestration
+        recordCircuitBreakerSuccess(requestId);
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `Processing ${photos.length} files with professional wedding-scale system. Email will be sent when complete.`,
+          requestId,
+          estimatedTime: photos.length > 50 ? '5-10 minutes' : '2-5 minutes',
+          processing: 'durable-object-streaming',
+          collectionAnalysis: {
+            totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
+            videoCount: memoryAnalysis.videoCount,
+            largeFileCount: memoryAnalysis.largeFileCount,
+            riskLevel: memoryAnalysis.riskLevel
+          },
+          capabilities: {
+            maxVideoSize: '500MB+',
+            maxCollectionSize: 'Up to 2GB efficiently',
+            supportedFiles: 'All wedding media formats',
+            processingType: 'Fast Durable Object processing'
+          }
+        }), {
+          status: 200,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          },
+        });
+        
+      } else {
+        // Fallback - should not happen with proper routing
+        console.error(`❌ Invalid routing strategy [${requestId}]:`, routingDecision.strategy);
+        
+        return new Response(JSON.stringify({
+          error: 'Unable to determine processing strategy',
+          memoryAnalysis,
+          routingDecision,
+          requestId,
+          recommendation: 'Please try again or contact support'
+        }), {
+          status: 500,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-
-      console.log(`🎯 Routing to Durable Object [${requestId}]: ${photos.length} files for ${email}`);
-      console.log(`📊 Collection analysis [${requestId}]: ${memoryAnalysis.totalEstimatedSizeMB}MB total, ${memoryAnalysis.videoCount} videos`);
-
-      // Route to Durable Object for professional-scale processing
-      const objectId = env.WEDDING_ZIP_PROCESSOR.idFromName(requestId);
-      const durableObject = env.WEDDING_ZIP_PROCESSOR.get(objectId);
-
-      // Send request to Durable Object
-      const durableObjectResponse = await durableObject.fetch(new Request('https://dummy.url/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventId, email, photos, requestId })
-      }));
-
-      if (!durableObjectResponse.ok) {
-        const errorData = await durableObjectResponse.json();
-        console.error(`❌ Durable Object error [${requestId}]:`, errorData);
-        throw new Error(`Durable Object processing failed: ${errorData.error || 'Unknown error'}`);
-      }
-
-      const durableResult = await durableObjectResponse.json();
-      console.log(`✅ Durable Object started [${requestId}]:`, durableResult.status);
-
-      // Record circuit breaker success for orchestration
-      recordCircuitBreakerSuccess(requestId);
-
-      // Return immediate response
-      return new Response(JSON.stringify({
-        success: true,
-        message: `Processing ${photos.length} files with professional wedding-scale system. Email will be sent when complete.`,
-        requestId,
-        estimatedTime: photos.length > 50 ? '5-10 minutes' : '2-5 minutes',
-        processing: 'durable-object-streaming',
-        collectionAnalysis: {
-          totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
-          videoCount: memoryAnalysis.videoCount,
-          largeFileCount: memoryAnalysis.largeFileCount,
-          riskLevel: memoryAnalysis.riskLevel
-        },
-        capabilities: {
-          maxVideoSize: '500MB+',
-          maxCollectionSize: 'Unlimited',
-          supportedFiles: 'All wedding media formats'
-        }
-      }), {
-        status: 200,
-        headers: { 
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      });
 
     } catch (error) {
       console.error('Worker error:', error);

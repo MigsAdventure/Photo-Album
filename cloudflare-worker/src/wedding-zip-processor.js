@@ -270,8 +270,17 @@ export class WeddingZipProcessor {
           const contentLength = parseInt(response.headers.get('content-length') || '0');
           console.log(`📥 Starting download [${requestId}]: ${photo.fileName} (${contentLength ? (contentLength/1024/1024).toFixed(2) + 'MB' : 'unknown size'})`);
           
-          // For large files, stream the download to avoid memory issues
-          const buffer = await response.arrayBuffer();
+          // Stream large files to avoid memory limits
+          const isLargeFile = fileSizeMB > 50; // Stream files larger than 50MB
+          let buffer;
+          
+          if (isLargeFile) {
+            console.log(`🌊 Using streaming download [${requestId}]: ${photo.fileName} (${fileSizeMB.toFixed(2)}MB)`);
+            buffer = await this.streamToBuffer(response, requestId, photo.fileName);
+          } else {
+            console.log(`💾 Using direct download [${requestId}]: ${photo.fileName} (${fileSizeMB.toFixed(2)}MB)`);
+            buffer = await response.arrayBuffer();
+          }
           
           console.log(`✅ File downloaded [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB)`);
           
@@ -339,6 +348,78 @@ export class WeddingZipProcessor {
       .replace(/\s+/g, '_')
       .replace(/_+/g, '_')
       .trim() || 'unnamed_file';
+  }
+
+  async streamToBuffer(response, requestId, fileName) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalSize = 0;
+    let bytesRead = 0;
+    let progressLogged = 0;
+    
+    console.log(`📡 Starting optimized streaming read [${requestId}]: ${fileName}`);
+    
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          console.log(`🏁 Streaming complete [${requestId}]: ${fileName} (${(totalSize/1024/1024).toFixed(2)}MB)`);
+          break;
+        }
+        
+        // Add chunk to collection
+        chunks.push(value);
+        totalSize += value.byteLength;
+        bytesRead += value.byteLength;
+        
+        // Log progress every 50MB (reduced frequency)
+        if (bytesRead >= 50 * 1024 * 1024) {
+          progressLogged++;
+          console.log(`📊 Streaming progress [${requestId}]: ${fileName} - ${(totalSize/1024/1024).toFixed(2)}MB downloaded`);
+          bytesRead = 0; // Reset counter
+        }
+        
+        // Memory safety - combine chunks at 80MB threshold (respects 128MB limit)
+        if (chunks.length > 200) { // ~200 chunks = ~78MB (safe under 128MB limit)
+          console.log(`🔄 Memory optimization [${requestId}]: ${fileName} - combining ${chunks.length} chunks at ${(totalSize/1024/1024).toFixed(2)}MB`);
+          
+          // Efficient chunk combining
+          const combinedChunk = new Uint8Array(totalSize);
+          let offset = 0;
+          for (const chunk of chunks) {
+            combinedChunk.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          chunks.length = 0; // Clear array
+          chunks.push(combinedChunk);
+          
+          // Force garbage collection after major operations
+          if (typeof global !== 'undefined' && global.gc) {
+            global.gc();
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Streaming read failed [${requestId}]: ${fileName} - ${error.message}`);
+      throw new Error(`Streaming download failed: ${error.message}`);
+    } finally {
+      reader.releaseLock();
+    }
+    
+    // Final assembly
+    console.log(`🔧 Assembling final buffer [${requestId}]: ${fileName} from ${chunks.length} chunks (${progressLogged} progress logs)`);
+    const finalBuffer = new ArrayBuffer(totalSize);
+    const finalView = new Uint8Array(finalBuffer);
+    let offset = 0;
+    
+    for (const chunk of chunks) {
+      finalView.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    
+    console.log(`✅ Streaming buffer complete [${requestId}]: ${fileName} (${(finalBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+    return finalBuffer;
   }
 
   async updateProcessingProgress(processed, total, failed) {
