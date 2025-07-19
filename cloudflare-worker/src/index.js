@@ -96,204 +96,132 @@ async function downloadSmallFile(response, requestId, fileName) {
 }
 
 /**
- * Create ZIP archive with TRUE streaming using archiver
- * Industry-standard solution for 350MB+ videos
+ * Create ZIP archive using the existing proven archiver.js solution
+ * Downloads files to memory and processes them with fflate zipSync
+ * Handles large files intelligently to avoid memory issues
  * @param {Array} photos - Array of photo objects with {fileName, url}
  * @param {string} requestId - Request ID for logging  
  * @returns {Promise<Object>} - { zipBuffer, stats }
  */
 async function createStreamingZipArchive(photos, requestId) {
-  console.log(`🌊 Creating archiver-based streaming ZIP [${requestId}] with ${photos.length} files`);
+  console.log(`🌊 Creating memory-efficient ZIP [${requestId}] with ${photos.length} files`);
   
   try {
-    const archiver = (await import('archiver')).default;
-    
     let totalOriginalSize = 0;
     let processedFileCount = 0;
+    let skippedFileCount = 0;
     let compressionStats = {
       photosCompressed: 0,
       videosProcessed: 0,
       compressionRatio: 0
     };
 
-    // Create ZIP chunks collection
-    const zipChunks = [];
-    
-    return new Promise(async (resolve, reject) => {
+    const processedFiles = [];
+
+    // Process each file - download suitable files, skip very large ones
+    for (const photo of photos) {
       try {
-        // Create archiver instance with no compression for speed
-        const archive = archiver('zip', {
-          zlib: { level: 0 }, // No compression for large videos
-          store: true // Store method for maximum speed
+        console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
+        
+        // Download file from Firebase to check size
+        const response = await fetch(photo.url, {
+          headers: { 'User-Agent': 'SharedMoments-Worker/1.0' }
         });
 
-        // Handle archiver events
-        archive.on('error', (err) => {
-          console.error(`❌ Archive error [${requestId}]:`, err);
-          reject(new Error(`Archive creation failed: ${err.message}`));
-        });
-
-        archive.on('warning', (warn) => {
-          console.warn(`⚠️ Archive warning [${requestId}]:`, warn);
-        });
-
-        // Collect ZIP data as it's generated
-        archive.on('data', (chunk) => {
-          zipChunks.push(chunk);
-        });
-
-        archive.on('end', () => {
-          try {
-            // Combine all chunks into final buffer
-            const totalSize = zipChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-            const finalBuffer = new Uint8Array(totalSize);
-            let offset = 0;
-            
-            for (const chunk of zipChunks) {
-              finalBuffer.set(chunk, offset);
-              offset += chunk.length;
-            }
-
-            const finalSizeMB = totalSize / 1024 / 1024;
-            compressionStats.compressionRatio = totalOriginalSize > 0 
-              ? ((totalOriginalSize - totalSize) / totalOriginalSize * 100)
-              : 0;
-
-            console.log(`✅ Archiver ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
-
-            resolve({
-              zipBuffer: finalBuffer.buffer,
-              stats: {
-                processedFileCount,
-                totalOriginalSize,
-                totalCompressedSize: totalSize,
-                compressionStats,
-                finalSizeMB
-              }
-            });
-          } catch (finalizationError) {
-            console.error(`❌ ZIP finalization error [${requestId}]:`, finalizationError);
-            reject(new Error(`ZIP finalization failed: ${finalizationError.message}`));
-          }
-        });
-
-        // Process each file with true streaming
-        for (const photo of photos) {
-          try {
-            console.log(`⬇️ Processing file [${requestId}]: ${photo.fileName}`);
-            
-            // Download file from Firebase
-            const response = await fetch(photo.url, {
-              headers: { 'User-Agent': 'SharedMoments-Worker/1.0' }
-            });
-
-            if (!response.ok) {
-              console.error(`❌ Failed to download [${requestId}]: ${photo.fileName} - HTTP ${response.status}`);
-              continue;
-            }
-
-            // Get file size
-            const contentLength = parseInt(response.headers.get('content-length') || '0');
-            const contentLengthMB = contentLength / 1024 / 1024;
-            
-            console.log(`📊 File size [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
-            totalOriginalSize += contentLength;
-
-            // Determine file type
-            const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
-            const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
-            
-            const sanitizedName = sanitizeFileName(photo.fileName);
-
-            // For large files: Stream directly using archiver's true streaming
-            if (contentLength > 80 * 1024 * 1024) { // Large files: stream
-              console.log(`🌊 Streaming large file with archiver [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
-              
-              // Create readable stream from response body
-              const readableStream = new ReadableStream({
-                start(controller) {
-                  const reader = response.body.getReader();
-                  
-                  function pump() {
-                    return reader.read().then(({ done, value }) => {
-                      if (done) {
-                        controller.close();
-                        return;
-                      }
-                      controller.enqueue(value);
-                      return pump();
-                    });
-                  }
-                  
-                  return pump();
-                }
-              });
-
-              // Stream directly to archive (TRUE STREAMING!)
-              archive.append(readableStream, { name: sanitizedName });
-              
-              if (isVideo) {
-                compressionStats.videosProcessed++;
-              }
-              
-              console.log(`✅ Large file streamed to archive [${requestId}]: ${photo.fileName}`);
-              
-            } else { // Small files: process with compression
-              const buffer = await downloadSmallFile(response, requestId, photo.fileName);
-              
-              let processedBuffer = buffer;
-
-              // Compress photos if beneficial
-              if (isPhoto && buffer.byteLength > 500 * 1024) {
-                try {
-                  processedBuffer = await compress(buffer, photo.fileName);
-                  compressionStats.photosCompressed++;
-                  console.log(`📸 Compressed photo [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB → ${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
-                } catch (compressionError) {
-                  console.error(`❌ Compression failed [${requestId}]: ${photo.fileName}`, compressionError);
-                  processedBuffer = buffer;
-                }
-              } else if (isVideo) {
-                compressionStats.videosProcessed++;
-              }
-
-              // Add buffer to archive
-              archive.append(processedBuffer, { name: sanitizedName });
-              
-              console.log(`📁 Added to archive [${requestId}]: ${photo.fileName} (${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
-            }
-
-            processedFileCount++;
-
-            // Memory cleanup
-            if (typeof global !== 'undefined' && global.gc) {
-              global.gc();
-            }
-
-          } catch (fileError) {
-            console.error(`❌ Failed to process file [${requestId}]: ${photo.fileName}`, fileError);
-            continue;
-          }
+        if (!response.ok) {
+          console.error(`❌ Failed to download [${requestId}]: ${photo.fileName} - HTTP ${response.status}`);
+          continue;
         }
 
-        if (processedFileCount === 0) {
-          reject(new Error('No files were successfully processed'));
-          return;
+        // Get file size
+        const contentLength = parseInt(response.headers.get('content-length') || '0');
+        const contentLengthMB = contentLength / 1024 / 1024;
+        
+        console.log(`📊 File size [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB)`);
+        totalOriginalSize += contentLength;
+
+        // Determine file type
+        const isVideo = /\.(mp4|mov|avi|webm)$/i.test(photo.fileName);
+        const isPhoto = /\.(jpg|jpeg|png|webp|heic)$/i.test(photo.fileName);
+
+        // Memory-safe limits: Skip extremely large files to prevent Worker crashes
+        if (contentLength > 150 * 1024 * 1024) { // 150MB limit for individual files
+          console.warn(`⚠️ Skipping large file [${requestId}]: ${photo.fileName} (${contentLengthMB.toFixed(2)}MB - exceeds 150MB memory limit)`);
+          skippedFileCount++;
+          continue;
         }
 
-        // Finalize the archive
-        console.log(`📦 Finalizing archive [${requestId}] with ${processedFileCount} files...`);
-        archive.finalize();
+        // Download file to buffer
+        const buffer = await downloadSmallFile(response, requestId, photo.fileName);
+        let processedBuffer = buffer;
 
-      } catch (setupError) {
-        console.error(`❌ Archive setup error [${requestId}]:`, setupError);
-        reject(new Error(`Archive setup failed: ${setupError.message}`));
+        // Compress photos if beneficial
+        if (isPhoto && buffer.byteLength > 500 * 1024) {
+          try {
+            processedBuffer = await compress(buffer, photo.fileName);
+            compressionStats.photosCompressed++;
+            console.log(`📸 Compressed photo [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB → ${(processedBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
+          } catch (compressionError) {
+            console.error(`❌ Compression failed [${requestId}]: ${photo.fileName}`, compressionError);
+            processedBuffer = buffer;
+          }
+        } else if (isVideo) {
+          compressionStats.videosProcessed++;
+        }
+
+        // Add to processed files for ZIP creation
+        processedFiles.push({
+          fileName: photo.fileName,
+          buffer: processedBuffer,
+          originalSize: buffer.byteLength,
+          compressedSize: processedBuffer.byteLength
+        });
+
+        processedFileCount++;
+
+        // Memory cleanup after processing each file
+        if (typeof global !== 'undefined' && global.gc) {
+          global.gc();
+        }
+
+      } catch (fileError) {
+        console.error(`❌ Failed to process file [${requestId}]: ${photo.fileName}`, fileError);
+        continue;
       }
-    });
+    }
+
+    if (processedFileCount === 0) {
+      throw new Error('No files were successfully processed');
+    }
+
+    console.log(`📦 Creating ZIP with ${processedFileCount} files, ${skippedFileCount} files skipped [${requestId}]`);
+
+    // Use existing proven archiver.js solution
+    const { createZipArchive } = await import('./archiver.js');
+    const zipBuffer = await createZipArchive(processedFiles, requestId);
+
+    const finalSizeMB = zipBuffer.byteLength / 1024 / 1024;
+    compressionStats.compressionRatio = totalOriginalSize > 0 
+      ? ((totalOriginalSize - zipBuffer.byteLength) / totalOriginalSize * 100)
+      : 0;
+
+    console.log(`✅ Memory-efficient ZIP created [${requestId}]: ${finalSizeMB.toFixed(2)}MB with ${processedFileCount} files`);
+
+    return {
+      zipBuffer,
+      stats: {
+        processedFileCount,
+        skippedFileCount,
+        totalOriginalSize,
+        totalCompressedSize: zipBuffer.byteLength,
+        compressionStats,
+        finalSizeMB
+      }
+    };
 
   } catch (error) {
-    console.error(`❌ Archiver ZIP creation failed [${requestId}]:`, error);
-    throw new Error(`Failed to create archiver ZIP: ${error.message}`);
+    console.error(`❌ Memory-efficient ZIP creation failed [${requestId}]:`, error);
+    throw new Error(`Failed to create ZIP: ${error.message}`);
   }
 }
 
