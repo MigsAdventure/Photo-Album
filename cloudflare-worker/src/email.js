@@ -10,6 +10,7 @@
  */
 export async function sendEmail(data, env) {
   const {
+    eventId,
     email,
     requestId,
     fileCount,
@@ -27,6 +28,7 @@ export async function sendEmail(data, env) {
     const netlifyEmailUrl = env.NETLIFY_EMAIL_FUNCTION_URL || 'https://main--sharedmoments.netlify.app/.netlify/functions/email-download';
     
     const emailPayload = {
+      eventId,
       email,
       requestId,
       fileCount,
@@ -63,12 +65,13 @@ export async function sendEmail(data, env) {
 
 /**
  * Send error notification email
+ * @param {string} eventId - Event ID
  * @param {string} email - Recipient email
  * @param {string} requestId - Request ID for tracking
  * @param {string} errorMessage - Error details
  * @param {Object} env - Environment variables
  */
-export async function sendErrorEmail(email, requestId, errorMessage, env) {
+export async function sendErrorEmail(eventId, email, requestId, errorMessage, env) {
   console.log(`📧 Sending error email [${requestId}] to: ${email}`);
 
   try {
@@ -76,6 +79,7 @@ export async function sendErrorEmail(email, requestId, errorMessage, env) {
     const netlifyEmailUrl = env.NETLIFY_EMAIL_FUNCTION_URL || 'https://main--sharedmoments.netlify.app/.netlify/functions/email-download';
     
     const errorPayload = {
+      eventId,
       email,
       requestId,
       errorMessage,

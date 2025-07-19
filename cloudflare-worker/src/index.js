@@ -208,6 +208,7 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
 
     // Send success email
     await sendEmail({
+      eventId,
       email,
       requestId,
       fileCount: processedFiles.length,
@@ -225,7 +226,7 @@ async function processCollectionInBackground(eventId, email, photos, requestId, 
     console.error(`❌ Background processing failed [${requestId}]:`, error);
     
     try {
-      await sendErrorEmail(email, requestId, error.message, env);
+      await sendErrorEmail(eventId, email, requestId, error.message, env);
     } catch (emailError) {
       console.error(`❌ Failed to send error email [${requestId}]:`, emailError);
     }
