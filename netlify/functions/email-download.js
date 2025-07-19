@@ -420,7 +420,7 @@ async function uploadToR2AndSendEmail(zipBuffer, eventId, email, requestId, file
 async function sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloadUrl) {
   console.log(`📧 Sending success email [${requestId}] to: ${email}`);
   
-  const transporter = nodemailer.createTransporter({
+  const transporter = nodemailer.createTransport({
     host: 'smtp.mailgun.org',
     port: 587,
     secure: false,
@@ -554,7 +554,7 @@ async function sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloa
 async function sendErrorEmail(email, requestId, errorMessage) {
   console.log(`📧 Sending error email [${requestId}] to: ${email}`);
   
-  const transporter = nodemailer.createTransporter({
+  const transporter = nodemailer.createTransport({
     host: 'smtp.mailgun.org',
     port: 587,
     secure: false,
