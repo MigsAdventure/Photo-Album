@@ -1,55 +1,71 @@
-/**
- * Durable Object for Wedding ZIP Processing
- * Handles large file collections with streaming architecture
- * Supports 500MB+ videos and unlimited collection sizes
- */
-
-import { sendEmail, sendErrorEmail } from './email';
+// 🎯 Durable Object for Professional Wedding Photo Processing
+// Each wedding gets its own dedicated stateful processor
 
 export class WeddingZipProcessor {
   constructor(state, env) {
     this.state = state;
     this.env = env;
+    this.storage = this.state.storage;
   }
 
   async fetch(request) {
     const url = new URL(request.url);
     
-    if (request.method === 'POST') {
-      return await this.handleZipRequest(request);
+    if (url.pathname === '/process') {
+      return this.processWeddingPhotos(request);
+    } else if (url.pathname === '/status') {
+      return this.getProcessingStatus();
+    } else if (url.pathname === '/resume') {
+      return this.resumeProcessing();
     }
     
-    // Handle status checks
-    if (url.pathname === '/status') {
-      return await this.getProcessingStatus();
-    }
-    
-    return new Response('Durable Object ready', { status: 200 });
+    return new Response('Wedding Processor Ready', { status: 200 });
   }
 
-  async handleZipRequest(request) {
+  async processWeddingPhotos(request) {
     try {
-      const { eventId, email, photos, requestId } = await request.json();
+      const { eventId, files, customerEmail } = await request.json();
       
-      console.log(`🎯 Durable Object processing [${requestId}]: ${photos.length} files for ${email}`);
+      console.log(`🎥 Starting wedding processing for ${eventId} with ${files.length} files`);
       
-      // Start background processing (don't await - return immediately)
-      this.processCollectionWithStreaming(eventId, email, photos, requestId);
+      // Store processing state
+      await this.storage.put('eventId', eventId);
+      await this.storage.put('customerEmail', customerEmail);
+      await this.storage.put('status', 'processing');
+      await this.storage.put('totalFiles', files.length);
+      await this.storage.put('processedFiles', 0);
+      await this.storage.put('fileList', JSON.stringify(files));
+      await this.storage.put('startTime', Date.now());
       
-      return new Response(JSON.stringify({
-        success: true,
-        status: 'processing_started',
-        requestId,
-        message: 'Durable Object processing started'
+      // Start streaming zip process
+      const zipUrl = await this.createStreamingZip(files, eventId);
+      
+      // Send completion email
+      await this.sendCompletionEmail(eventId, customerEmail, zipUrl);
+      
+      await this.storage.put('status', 'completed');
+      await this.storage.put('downloadUrl', zipUrl);
+      await this.storage.put('completedTime', Date.now());
+      
+      console.log(`✅ Wedding ${eventId} completed successfully`);
+      
+      return new Response(JSON.stringify({ 
+        success: true, 
+        downloadUrl: zipUrl,
+        eventId,
+        processedFiles: files.length
       }), {
         headers: { 'Content-Type': 'application/json' }
       });
       
     } catch (error) {
-      console.error('Durable Object request error:', error);
-      return new Response(JSON.stringify({
-        error: 'Failed to start processing',
-        details: error.message
+      console.error('❌ Wedding processing error:', error);
+      await this.storage.put('status', 'error');
+      await this.storage.put('error', error.message);
+      
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: error.message 
       }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
@@ -57,441 +73,345 @@ export class WeddingZipProcessor {
     }
   }
 
-  async processCollectionWithStreaming(eventId, email, photos, requestId) {
-    const startTime = Date.now();
-    console.log(`🚀 Durable Object streaming processing started [${requestId}]`);
+  async createStreamingZip(files, eventId) {
+    console.log(`📦 Creating streaming zip for ${files.length} files`);
     
-    try {
-      // Filter files by size - process files ≤80MB, defer larger files
-      const MAX_FILE_SIZE = 80 * 1024 * 1024; // 80MB limit for Cloudflare processing
-      const processableFiles = [];
-      const largeFiles = [];
-      
-      for (const photo of photos) {
-        const fileSize = photo.size || 0;
-        if (fileSize <= MAX_FILE_SIZE) {
-          processableFiles.push(photo);
-        } else {
-          largeFiles.push({
-            fileName: photo.fileName,
-            size: fileSize,
-            sizeMB: (fileSize / 1024 / 1024).toFixed(2)
-          });
-          console.log(`📦 Large file deferred [${requestId}]: ${photo.fileName} (${(fileSize/1024/1024).toFixed(2)}MB) - will process separately`);
-        }
+    // Filter out oversized files (500MB limit)
+    const validFiles = files.filter(file => {
+      if (file.size > 500 * 1024 * 1024) {
+        console.log(`⚠️ Skipping oversized file: ${file.name} (${file.size} bytes)`);
+        return false;
       }
-      
-      console.log(`📊 File processing plan [${requestId}]: ${processableFiles.length} files for immediate ZIP, ${largeFiles.length} large files deferred`);
-      
-      // Initialize processing state
-      await this.state.storage.put('processing_state', {
-        eventId,
-        email,
-        requestId,
-        startTime,
-        status: 'processing',
-        totalFiles: processableFiles.length,
-        processedFiles: 0,
-        failedFiles: [],
-        largeFilesDeferred: largeFiles.length,
-        deferredFiles: largeFiles
-      });
-      
-      // Create streaming ZIP directly to R2 with processable files only
-      const result = await this.createStreamingZipToR2(processableFiles, eventId, requestId);
-      
-      // Add deferred file info to result
-      result.largeFilesDeferred = largeFiles;
-      result.totalOriginalFiles = photos.length;
-      
-      // Update final state
-      await this.state.storage.put('processing_state', {
-        eventId,
-        email,
-        requestId,
-        status: 'completed',
-        result,
-        completedAt: Date.now()
-      });
-      
-      // Send success email
-      await this.sendSuccessEmail(eventId, email, requestId, result, startTime);
-      
-      console.log(`✅ Durable Object processing complete [${requestId}] in ${(Date.now() - startTime) / 1000}s`);
-      
-      // Clean up state after successful completion
-      await this.cleanupState();
-      
-    } catch (error) {
-      console.error(`❌ Durable Object processing failed [${requestId}]:`, error);
-      
-      // Update error state
-      await this.state.storage.put('processing_state', {
-        eventId,
-        email,
-        requestId,
-        status: 'failed',
-        error: error.message,
-        failedAt: Date.now()
-      });
-      
-      // Send error email
-      await this.sendErrorEmail(eventId, email, requestId, error);
-    }
-  }
-
-  async createStreamingZipToR2(photos, eventId, requestId) {
-    console.log(`🌊 Creating streaming ZIP to R2 [${requestId}] with ${photos.length} files`);
-    
-    const { zip } = await import('fflate');
-    
-    let processedFiles = 0;
-    let totalOriginalSize = 0;
-    let totalProcessedSize = 0;
-    const failedFiles = [];
-    const successfulFiles = [];
-    
-    // Create R2 upload stream
-    const zipFileName = `event_${eventId}_wedding_photos_${Date.now()}.zip`;
-    const r2Key = `downloads/${zipFileName}`;
-    
-    console.log(`📦 Initializing R2 stream [${requestId}]: ${r2Key}`);
-    
-    // Process files in small batches to maintain memory efficiency
-    const BATCH_SIZE = 5; // Process 5 files at a time
-    const zipEntries = {};
-    
-    for (let i = 0; i < photos.length; i += BATCH_SIZE) {
-      const batch = photos.slice(i, Math.min(i + BATCH_SIZE, photos.length));
-      console.log(`🔄 Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(photos.length/BATCH_SIZE)} [${requestId}]: ${batch.length} files`);
-      
-      for (const photo of batch) {
-        const fileResult = await this.processFileWithRetry(photo, requestId);
-        
-        if (fileResult.success) {
-          const uniqueFileName = this.generateUniqueFileName(photo.fileName, zipEntries);
-          zipEntries[uniqueFileName] = new Uint8Array(fileResult.buffer);
-          
-          processedFiles++;
-          totalOriginalSize += fileResult.originalSize;
-          totalProcessedSize += fileResult.buffer.byteLength;
-          successfulFiles.push({
-            fileName: uniqueFileName,
-            originalSize: fileResult.originalSize,
-            processedSize: fileResult.buffer.byteLength
-          });
-          
-          console.log(`✅ File processed [${requestId}]: ${uniqueFileName} (${(fileResult.buffer.byteLength/1024/1024).toFixed(2)}MB)`);
-        } else {
-          failedFiles.push({
-            fileName: photo.fileName,
-            reason: fileResult.error,
-            attempts: fileResult.attempts
-          });
-          console.warn(`❌ File failed [${requestId}]: ${photo.fileName} - ${fileResult.error}`);
-        }
-        
-        // Update progress in state
-        await this.updateProcessingProgress(processedFiles, photos.length, failedFiles.length);
-      }
-      
-      // Memory cleanup between batches
-      if (typeof global !== 'undefined' && global.gc) {
-        global.gc();
-      }
-      
-      // Small delay to prevent blocking
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    
-    if (processedFiles === 0) {
-      throw new Error('No files could be processed successfully');
-    }
-    
-    console.log(`🗜️ Creating final ZIP [${requestId}]: ${processedFiles} files, ${(totalProcessedSize/1024/1024).toFixed(2)}MB`);
-    
-    // Create ZIP with async streaming approach
-    const zipBuffer = await new Promise((resolve, reject) => {
-      zip(zipEntries, {
-        level: 0,    // No compression for speed and memory efficiency
-        mem: 1       // Minimal memory usage
-      }, (err, data) => {
-        if (err) {
-          console.error(`❌ ZIP creation failed [${requestId}]:`, err);
-          reject(new Error(`ZIP creation failed: ${err.message}`));
-        } else {
-          console.log(`✅ ZIP created [${requestId}]: ${(data.byteLength/1024/1024).toFixed(2)}MB`);
-          resolve(data.buffer);
-        }
-      });
+      return true;
     });
     
-    // Upload to R2
-    console.log(`⬆️ Uploading to R2 [${requestId}]: ${(zipBuffer.byteLength/1024/1024).toFixed(2)}MB`);
+    // Create readable stream for zip
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
     
-    await this.env.R2_BUCKET.put(r2Key, zipBuffer, {
+    // Process files asynchronously
+    this.processFilesStream(validFiles, writer).catch(error => {
+      console.error('Stream processing error:', error);
+      writer.abort(error);
+    });
+    
+    // Upload stream directly to R2
+    const zipKey = `zips/${eventId}/wedding-photos-${eventId}.zip`;
+    
+    await this.env.R2_BUCKET.put(zipKey, readable, {
       httpMetadata: {
-        contentType: 'application/zip'
-      },
-      customMetadata: {
-        eventId,
-        requestId,
-        createdAt: new Date().toISOString(),
-        processedFiles: processedFiles.toString(),
-        failedFiles: failedFiles.length.toString(),
-        originalSizeMB: (totalOriginalSize / 1024 / 1024).toFixed(2),
-        finalSizeMB: (zipBuffer.byteLength / 1024 / 1024).toFixed(2)
+        contentType: 'application/zip',
+        contentDisposition: `attachment; filename="wedding-photos-${eventId}.zip"`
       }
     });
     
-    const downloadUrl = `${this.env.R2_PUBLIC_URL}/${r2Key}`;
-    console.log(`✅ Uploaded to R2 [${requestId}]: ${downloadUrl}`);
+    const zipUrl = `${this.env.R2_PUBLIC_URL}/${zipKey}`;
+    console.log(`✅ Zip uploaded to: ${zipUrl}`);
     
-    return {
-      downloadUrl,
-      processedFiles,
-      failedFiles,
-      totalOriginalSize,
-      finalSize: zipBuffer.byteLength,
-      successfulFiles,
-      zipFileName
-    };
+    return zipUrl;
   }
 
-  async processFileWithRetry(photo, requestId, maxRetries = 3) {
-    let lastError = null;
+  async processFilesStream(files, writer) {
+    let processedCount = 0;
+    const zipEntries = [];
     
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Write zip file headers
+    const encoder = new TextEncoder();
+    
+    for (const file of files) {
       try {
-        console.log(`⬇️ Downloading file [${requestId}] attempt ${attempt}/${maxRetries}: ${photo.fileName}`);
+        console.log(`📁 Processing: ${file.name} (${file.size} bytes)`);
         
-        // Determine appropriate timeout based on file size and type
-        const isVideo = /\.(mp4|mov|avi|webm|mkv)$/i.test(photo.fileName);
-        const fileSizeMB = (photo.size || 10 * 1024 * 1024) / 1024 / 1024;
-        
-        // Dynamic timeout: 2 minutes for large videos, 1 minute for others
-        const baseTimeout = isVideo && fileSizeMB > 100 ? 120000 : 60000; // 120s for large videos, 60s for others
-        const timeoutMs = baseTimeout + (attempt - 1) * 30000; // Add 30s per retry
-        
-        console.log(`📊 File details [${requestId}]: ${photo.fileName} (${fileSizeMB.toFixed(2)}MB, ${isVideo ? 'video' : 'photo'}, timeout: ${timeoutMs/1000}s)`);
-        
-        // Create abort controller for timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          console.warn(`⏰ Download timeout [${requestId}]: ${photo.fileName} (${timeoutMs/1000}s)`);
-          controller.abort();
-        }, timeoutMs);
-        
-        try {
-          const response = await fetch(photo.url, {
-            headers: { 'User-Agent': 'SharedMoments-DurableObject/1.0' },
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          
-          const contentLength = parseInt(response.headers.get('content-length') || '0');
-          console.log(`📥 Starting download [${requestId}]: ${photo.fileName} (${contentLength ? (contentLength/1024/1024).toFixed(2) + 'MB' : 'unknown size'})`);
-          
-          // Stream large files to avoid memory limits
-          const isLargeFile = fileSizeMB > 50; // Stream files larger than 50MB
-          let buffer;
-          
-          if (isLargeFile) {
-            console.log(`🌊 Using streaming download [${requestId}]: ${photo.fileName} (${fileSizeMB.toFixed(2)}MB)`);
-            buffer = await this.streamToBuffer(response, requestId, photo.fileName);
-          } else {
-            console.log(`💾 Using direct download [${requestId}]: ${photo.fileName} (${fileSizeMB.toFixed(2)}MB)`);
-            buffer = await response.arrayBuffer();
-          }
-          
-          console.log(`✅ File downloaded [${requestId}]: ${photo.fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB)`);
-          
-          return {
-            success: true,
-            buffer,
-            originalSize: contentLength || buffer.byteLength,
-            attempts: attempt,
-            downloadTimeMs: Date.now() - (Date.now() - timeoutMs + (attempt - 1) * 30000)
-          };
-          
-        } catch (fetchError) {
-          clearTimeout(timeoutId);
-          throw fetchError;
+        // Get file from R2
+        const response = await this.env.R2_BUCKET.get(file.key);
+        if (!response) {
+          console.log(`⚠️ File not found in R2: ${file.key}`);
+          continue;
         }
+        
+        const fileData = await response.arrayBuffer();
+        
+        // Create zip entry
+        const entry = await this.createZipEntry(file.name, new Uint8Array(fileData));
+        zipEntries.push(entry);
+        
+        // Write entry to stream
+        await writer.write(entry.data);
+        
+        processedCount++;
+        await this.storage.put('processedFiles', processedCount);
+        await this.notifyProgress(processedCount, files.length);
+        
+        console.log(`✅ Processed ${processedCount}/${files.length}: ${file.name}`);
         
       } catch (error) {
-        lastError = error;
-        const errorType = error.name === 'AbortError' ? 'TIMEOUT' : 'ERROR';
-        console.warn(`⚠️ File download attempt ${attempt} ${errorType} [${requestId}]: ${photo.fileName} - ${error.message}`);
-        
-        if (attempt < maxRetries) {
-          // Exponential backoff: 2s, 5s, 10s for better handling of large files
-          const backoffMs = Math.min(Math.pow(2, attempt) * 1000, 10000);
-          console.log(`⏳ Retrying in ${backoffMs/1000}s [${requestId}]: ${photo.fileName}`);
-          await new Promise(resolve => setTimeout(resolve, backoffMs));
-        }
+        console.error(`❌ Error processing ${file.name}:`, error);
+        // Continue with other files - don't fail entire wedding!
       }
     }
     
-    console.error(`💥 File download failed after ${maxRetries} attempts [${requestId}]: ${photo.fileName} - ${lastError?.message}`);
+    // Write central directory and end record
+    const centralDir = await this.createCentralDirectory(zipEntries);
+    await writer.write(centralDir);
+    
+    await writer.close();
+    console.log(`📦 Zip stream completed with ${processedCount} files`);
+  }
+
+  async createZipEntry(filename, data) {
+    // Simple ZIP entry creation (local file header + data + data descriptor)
+    const encoder = new TextEncoder();
+    const filenameBytes = encoder.encode(filename);
+    
+    // Local file header (30 bytes + filename length)
+    const header = new ArrayBuffer(30 + filenameBytes.length);
+    const view = new DataView(header);
+    
+    view.setUint32(0, 0x04034b50, true); // Local file header signature
+    view.setUint16(4, 20, true); // Version needed to extract
+    view.setUint16(6, 0, true); // General purpose bit flag
+    view.setUint16(8, 0, true); // Compression method (stored)
+    view.setUint16(10, 0, true); // Last mod file time
+    view.setUint16(12, 0, true); // Last mod file date
+    view.setUint32(14, this.crc32(data), true); // CRC-32
+    view.setUint32(18, data.length, true); // Compressed size
+    view.setUint32(22, data.length, true); // Uncompressed size
+    view.setUint16(26, filenameBytes.length, true); // Filename length
+    view.setUint16(28, 0, true); // Extra field length
+    
+    // Combine header + filename + data
+    const entryData = new Uint8Array(header.byteLength + filenameBytes.length + data.length);
+    entryData.set(new Uint8Array(header), 0);
+    entryData.set(filenameBytes, header.byteLength);
+    entryData.set(data, header.byteLength + filenameBytes.length);
     
     return {
-      success: false,
-      error: lastError?.message || 'Unknown download error',
-      attempts: maxRetries
+      filename,
+      data: entryData,
+      crc32: this.crc32(data),
+      compressedSize: data.length,
+      uncompressedSize: data.length,
+      headerOffset: 0 // Will be set when building central directory
     };
   }
 
-  generateUniqueFileName(originalFileName, existingEntries) {
-    let fileName = this.sanitizeFileName(originalFileName);
-    let counter = 1;
-    
-    const originalName = fileName;
-    const lastDotIndex = fileName.lastIndexOf('.');
-    const nameWithoutExt = lastDotIndex > -1 ? fileName.substring(0, lastDotIndex) : fileName;
-    const extension = lastDotIndex > -1 ? fileName.substring(lastDotIndex) : '';
-    
-    while (existingEntries[fileName]) {
-      fileName = `${nameWithoutExt}_${counter}${extension}`;
-      counter++;
-    }
-    
-    return fileName;
-  }
-
-  sanitizeFileName(fileName) {
-    if (!fileName) return 'unnamed_file';
-    
-    return fileName
-      .replace(/[<>:"/\\|?*]/g, '_')
-      .replace(/[\x00-\x1f\x80-\x9f]/g, '')
-      .replace(/^\.+/, '')
-      .replace(/\.+$/, '')
-      .replace(/\s+/g, '_')
-      .replace(/_+/g, '_')
-      .trim() || 'unnamed_file';
-  }
-
-  async streamToBuffer(response, requestId, fileName) {
-    const reader = response.body.getReader();
-    const chunks = [];
-    let totalSize = 0;
-    let bytesRead = 0;
-    let progressLogged = 0;
-    
-    console.log(`📡 Starting optimized streaming read [${requestId}]: ${fileName}`);
-    
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) {
-          console.log(`🏁 Streaming complete [${requestId}]: ${fileName} (${(totalSize/1024/1024).toFixed(2)}MB)`);
-          break;
-        }
-        
-        // Add chunk to collection
-        chunks.push(value);
-        totalSize += value.byteLength;
-        bytesRead += value.byteLength;
-        
-        // Log progress every 50MB (reduced frequency)
-        if (bytesRead >= 50 * 1024 * 1024) {
-          progressLogged++;
-          console.log(`📊 Streaming progress [${requestId}]: ${fileName} - ${(totalSize/1024/1024).toFixed(2)}MB downloaded`);
-          bytesRead = 0; // Reset counter
-        }
-        
-        // Memory safety - combine chunks at 80MB threshold (respects 128MB limit)
-        if (chunks.length > 200) { // ~200 chunks = ~78MB (safe under 128MB limit)
-          console.log(`🔄 Memory optimization [${requestId}]: ${fileName} - combining ${chunks.length} chunks at ${(totalSize/1024/1024).toFixed(2)}MB`);
-          
-          // Efficient chunk combining
-          const combinedChunk = new Uint8Array(totalSize);
-          let offset = 0;
-          for (const chunk of chunks) {
-            combinedChunk.set(chunk, offset);
-            offset += chunk.byteLength;
-          }
-          chunks.length = 0; // Clear array
-          chunks.push(combinedChunk);
-          
-          // Force garbage collection after major operations
-          if (typeof global !== 'undefined' && global.gc) {
-            global.gc();
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`❌ Streaming read failed [${requestId}]: ${fileName} - ${error.message}`);
-      throw new Error(`Streaming download failed: ${error.message}`);
-    } finally {
-      reader.releaseLock();
-    }
-    
-    // Final assembly
-    console.log(`🔧 Assembling final buffer [${requestId}]: ${fileName} from ${chunks.length} chunks (${progressLogged} progress logs)`);
-    const finalBuffer = new ArrayBuffer(totalSize);
-    const finalView = new Uint8Array(finalBuffer);
+  async createCentralDirectory(entries) {
+    const encoder = new TextEncoder();
+    let centralDirData = new Uint8Array(0);
     let offset = 0;
     
-    for (const chunk of chunks) {
-      finalView.set(chunk, offset);
-      offset += chunk.byteLength;
+    // Central directory file headers
+    for (const entry of entries) {
+      const filenameBytes = encoder.encode(entry.filename);
+      const header = new ArrayBuffer(46 + filenameBytes.length);
+      const view = new DataView(header);
+      
+      view.setUint32(0, 0x02014b50, true); // Central directory file header signature
+      view.setUint16(4, 20, true); // Version made by
+      view.setUint16(6, 20, true); // Version needed to extract
+      view.setUint16(8, 0, true); // General purpose bit flag
+      view.setUint16(10, 0, true); // Compression method
+      view.setUint16(12, 0, true); // Last mod file time
+      view.setUint16(14, 0, true); // Last mod file date
+      view.setUint32(16, entry.crc32, true); // CRC-32
+      view.setUint32(20, entry.compressedSize, true); // Compressed size
+      view.setUint32(24, entry.uncompressedSize, true); // Uncompressed size
+      view.setUint16(28, filenameBytes.length, true); // Filename length
+      view.setUint16(30, 0, true); // Extra field length
+      view.setUint16(32, 0, true); // File comment length
+      view.setUint16(34, 0, true); // Disk number start
+      view.setUint16(36, 0, true); // Internal file attributes
+      view.setUint32(38, 0, true); // External file attributes
+      view.setUint32(42, offset, true); // Relative offset of local header
+      
+      const headerData = new Uint8Array(header.byteLength + filenameBytes.length);
+      headerData.set(new Uint8Array(header), 0);
+      headerData.set(filenameBytes, header.byteLength);
+      
+      // Append to central directory
+      const newCentralDirData = new Uint8Array(centralDirData.length + headerData.length);
+      newCentralDirData.set(centralDirData, 0);
+      newCentralDirData.set(headerData, centralDirData.length);
+      centralDirData = newCentralDirData;
+      
+      offset += entry.data.length;
     }
     
-    console.log(`✅ Streaming buffer complete [${requestId}]: ${fileName} (${(finalBuffer.byteLength/1024/1024).toFixed(2)}MB)`);
-    return finalBuffer;
-  }
-
-  async updateProcessingProgress(processed, total, failed) {
-    const currentState = await this.state.storage.get('processing_state');
-    if (currentState) {
-      currentState.processedFiles = processed;
-      currentState.failedFiles = failed;
-      currentState.progress = ((processed + failed) / total * 100).toFixed(1);
-      await this.state.storage.put('processing_state', currentState);
-    }
-  }
-
-  async sendSuccessEmail(eventId, email, requestId, result, startTime) {
-    const processingTimeSeconds = (Date.now() - startTime) / 1000;
+    // End of central directory record
+    const endRecord = new ArrayBuffer(22);
+    const endView = new DataView(endRecord);
     
-    await sendEmail({
-      eventId,
-      email,
-      requestId,
-      fileCount: result.processedFiles,
-      originalSizeMB: result.totalOriginalSize / 1024 / 1024,
-      finalSizeMB: result.finalSize / 1024 / 1024,
-      downloadUrl: result.downloadUrl,
-      failedFiles: result.failedFiles,
-      processingTimeSeconds,
-      processingMethod: 'durable-object-streaming',
-      largeFilesDeferred: result.largeFilesDeferred || [],
-      totalOriginalFiles: result.totalOriginalFiles || result.processedFiles
-    }, this.env);
+    endView.setUint32(0, 0x06054b50, true); // End of central dir signature
+    endView.setUint16(4, 0, true); // Number of this disk
+    endView.setUint16(6, 0, true); // Disk where central directory starts
+    endView.setUint16(8, entries.length, true); // Number of central directory records on this disk
+    endView.setUint16(10, entries.length, true); // Total number of central directory records
+    endView.setUint32(12, centralDirData.length, true); // Size of central directory
+    endView.setUint32(16, offset, true); // Offset of start of central directory
+    endView.setUint16(20, 0, true); // Comment length
+    
+    // Combine central directory + end record
+    const finalData = new Uint8Array(centralDirData.length + endRecord.byteLength);
+    finalData.set(centralDirData, 0);
+    finalData.set(new Uint8Array(endRecord), centralDirData.length);
+    
+    return finalData;
   }
 
-  async sendErrorEmail(eventId, email, requestId, error) {
-    await sendErrorEmail(eventId, email, requestId, error.message, this.env);
+  // Simple CRC32 implementation
+  crc32(data) {
+    const table = this.getCrc32Table();
+    let crc = 0xFFFFFFFF;
+    
+    for (let i = 0; i < data.length; i++) {
+      crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  getCrc32Table() {
+    if (!this.crc32Table) {
+      this.crc32Table = new Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let j = 0; j < 8; j++) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        this.crc32Table[i] = c;
+      }
+    }
+    return this.crc32Table;
+  }
+
+  async notifyProgress(processed, total) {
+    const progress = Math.round((processed / total) * 100);
+    console.log(`📊 Progress: ${progress}% (${processed}/${total})`);
+    
+    // Store progress for status checks
+    await this.storage.put('progress', progress);
+    await this.storage.put('lastUpdate', Date.now());
+  }
+
+  async sendCompletionEmail(eventId, customerEmail, zipUrl) {
+    try {
+      console.log(`📧 Sending completion email to ${customerEmail}`);
+      
+      const emailData = {
+        to: customerEmail,
+        subject: `🎉 Your Wedding Photos Are Ready! - Event ${eventId}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2c3e50;">🎉 Your Wedding Photos Are Ready!</h2>
+            <p>Your beautiful wedding memories have been processed and are ready for download.</p>
+            
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <h3 style="margin-top: 0;">📋 Event Details</h3>
+              <p><strong>Event ID:</strong> ${eventId}</p>
+              <p><strong>Download expires:</strong> 7 days from now</p>
+            </div>
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${zipUrl}" 
+                 style="background: #3498db; color: white; padding: 15px 30px; 
+                        text-decoration: none; border-radius: 5px; font-weight: bold;">
+                📥 Download Your Photos
+              </a>
+            </div>
+            
+            <p style="color: #7f8c8d; font-size: 14px;">
+              💡 <strong>Tip:</strong> This is a large file. We recommend downloading on a stable Wi-Fi connection.
+            </p>
+            
+            <hr style="border: none; border-top: 1px solid #ecf0f1; margin: 30px 0;">
+            <p style="color: #7f8c8d; font-size: 12px;">
+              This link will expire in 7 days for security. Please download your photos soon!
+            </p>
+          </div>
+        `
+      };
+      
+      // Send via email service
+      const response = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_id: this.env.EMAILJS_SERVICE_ID,
+          template_id: this.env.EMAILJS_TEMPLATE_ID,
+          user_id: this.env.EMAILJS_USER_ID,
+          template_params: emailData
+        })
+      });
+      
+      if (response.ok) {
+        console.log(`✅ Email sent successfully to ${customerEmail}`);
+      } else {
+        console.error('❌ Email sending failed:', await response.text());
+      }
+      
+    } catch (error) {
+      console.error('❌ Email sending error:', error);
+    }
   }
 
   async getProcessingStatus() {
-    const state = await this.state.storage.get('processing_state');
-    return new Response(JSON.stringify(state || { status: 'idle' }), {
+    const status = await this.storage.get('status') || 'idle';
+    const eventId = await this.storage.get('eventId');
+    const totalFiles = await this.storage.get('totalFiles') || 0;
+    const processedFiles = await this.storage.get('processedFiles') || 0;
+    const progress = await this.storage.get('progress') || 0;
+    const startTime = await this.storage.get('startTime');
+    const lastUpdate = await this.storage.get('lastUpdate');
+    const downloadUrl = await this.storage.get('downloadUrl');
+    const error = await this.storage.get('error');
+    
+    const elapsedTime = startTime ? Date.now() - startTime : 0;
+    
+    return new Response(JSON.stringify({
+      eventId,
+      status,
+      totalFiles,
+      processedFiles,
+      progress,
+      elapsedTime,
+      lastUpdate,
+      downloadUrl,
+      error
+    }), {
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  async cleanupState() {
-    // Clean up processing state after successful completion
-    await this.state.storage.delete('processing_state');
-    console.log('🧹 Durable Object state cleaned up');
+  async resumeProcessing() {
+    const status = await this.storage.get('status');
+    
+    if (status === 'processing') {
+      const processedFiles = await this.storage.get('processedFiles') || 0;
+      const fileList = JSON.parse(await this.storage.get('fileList') || '[]');
+      const eventId = await this.storage.get('eventId');
+      
+      console.log(`🔄 Resuming processing from file ${processedFiles}/${fileList.length}`);
+      
+      // Resume from where we left off
+      const remainingFiles = fileList.slice(processedFiles);
+      
+      if (remainingFiles.length > 0) {
+        const zipUrl = await this.createStreamingZip(remainingFiles, eventId);
+        
+        await this.storage.put('status', 'completed');
+        await this.storage.put('downloadUrl', zipUrl);
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          resumed: true,
+          downloadUrl: zipUrl 
+        }));
+      }
+    }
+    
+    return new Response(JSON.stringify({ 
+      success: false, 
+      message: 'No processing to resume' 
+    }));
   }
 }
