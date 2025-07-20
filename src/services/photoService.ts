@@ -16,6 +16,15 @@ import { db } from '../firebase';
 import { Photo, Event } from '../types';
 import { getCurrentSessionId, addOwnedPhoto, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
 
+// Interface for photo analysis data
+interface PhotoAnalysisData {
+  id: string;
+  fileName: string;
+  size: number;
+  sizeMB: number;
+  mediaType: string;
+}
+
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
   return text
@@ -233,22 +242,183 @@ export const downloadPhoto = async (photoId: string): Promise<void> => {
   }
 };
 
-// Professional bulk download with email delivery - enhanced with background processing
+// Professional bulk download with email delivery - enhanced with smart routing
 export const requestEmailDownload = async (
   eventId: string,
   email: string
 ): Promise<{
   success: boolean;
-  processing: 'immediate' | 'background';
+  processing: 'immediate' | 'background' | 'google-cloud';
   message: string;
   fileCount?: number;
   estimatedSizeMB?: number;
   videoCount?: number;
   estimatedWaitTime?: string;
   requestId: string;
+  processingEngine?: string;
 }> => {
   try {
     console.log('📧 Requesting email download for event:', eventId, 'to:', email);
+    
+    // Step 1: Analyze collection to determine optimal processing route
+    console.log('🔍 Analyzing collection for smart routing...');
+    const q = query(
+      collection(db, 'photos'),
+      where('eventId', '==', eventId)
+    );
+    
+    const snapshot = await getDocs(q);
+    const photos: PhotoAnalysisData[] = [];
+    let totalSizeMB = 0;
+    let videoCount = 0;
+    let largeVideoCount = 0;
+    let maxVideoSizeMB = 0;
+    
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const fileSizeMB = (data.size || 0) / 1024 / 1024;
+      totalSizeMB += fileSizeMB;
+      
+      photos.push({
+        id: doc.id,
+        fileName: data.fileName || `photo_${doc.id}.jpg`,
+        size: data.size || 0,
+        sizeMB: fileSizeMB,
+        mediaType: data.mediaType || 'photo'
+      });
+      
+      // Check for videos
+      const isVideo = data.mediaType === 'video' || 
+                     /\.(mp4|mov|avi|webm|mkv)$/i.test(data.fileName || '');
+      if (isVideo) {
+        videoCount++;
+        maxVideoSizeMB = Math.max(maxVideoSizeMB, fileSizeMB);
+        
+        // Check for large videos (80MB+ threshold)
+        if (fileSizeMB > 80) {
+          largeVideoCount++;
+        }
+      }
+    });
+
+    console.log('📊 Collection analysis:', {
+      totalFiles: photos.length,
+      totalSizeMB: totalSizeMB.toFixed(2),
+      videoCount,
+      largeVideoCount,
+      maxVideoSizeMB: maxVideoSizeMB.toFixed(2)
+    });
+
+    // Step 2: Smart routing decision
+    let shouldUseGoogleCloud = false;
+    let routingReason = '';
+
+    if (largeVideoCount > 0) {
+      shouldUseGoogleCloud = true;
+      routingReason = `${largeVideoCount} video(s) above 80MB detected`;
+    } else if (totalSizeMB > 500) {
+      shouldUseGoogleCloud = true;
+      routingReason = `Collection size ${totalSizeMB.toFixed(0)}MB exceeds 500MB limit`;
+    } else if (videoCount > 10) {
+      shouldUseGoogleCloud = true;
+      routingReason = `${videoCount} videos require enhanced processing`;
+    }
+
+    console.log(`🎯 Routing decision: ${shouldUseGoogleCloud ? 'Google Cloud Run' : 'Netlify/Cloudflare'}`);
+    if (shouldUseGoogleCloud) {
+      console.log(`📋 Reason: ${routingReason}`);
+    }
+
+    // Step 3: Route to appropriate processing engine
+    if (shouldUseGoogleCloud) {
+      console.log('🚀 Routing to Google Cloud Run for large video processing...');
+      return await routeToGoogleCloudRun(eventId, email, photos, routingReason);
+    } else {
+      console.log('⚡ Using standard Netlify/Cloudflare processing...');
+      return await routeToNetlifyCloudflare(eventId, email);
+    }
+    
+  } catch (error) {
+    console.error('❌ Email download request failed:', error);
+    throw error;
+  }
+};
+
+// Route to Google Cloud Run for large video processing
+const routeToGoogleCloudRun = async (
+  eventId: string, 
+  email: string, 
+  photos: any[], 
+  reason: string
+): Promise<any> => {
+  try {
+    console.log('☁️ Calling Google Cloud Run processor...');
+    
+    const CLOUD_RUN_URL = 'https://wedding-photo-processor-767610841427.us-west1.run.app';
+    
+    const response = await fetch(`${CLOUD_RUN_URL}/process-photos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'SharedMoments/1.0',
+      },
+      body: JSON.stringify({
+        eventId,
+        email,
+        photos: photos.slice(0, 100), // Limit to first 100 for payload size
+        source: 'frontend-smart-routing',
+        routingReason: reason
+      }),
+      // 30 second timeout for Cloud Run communication
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!response.ok) {
+      let errorMessage = `Google Cloud Run responded with ${response.status}`;
+      try {
+        const errorText = await response.text();
+        if (errorText) {
+          errorMessage += `: ${errorText}`;
+        }
+      } catch (e) {
+        // Ignore text parsing errors
+      }
+      throw new Error(errorMessage);
+    }
+
+    const result = await response.json();
+    console.log('✅ Google Cloud Run accepted request:', result);
+    
+    return {
+      success: true,
+      processing: 'google-cloud' as const,
+      message: result.message || `Processing ${photos.length} files with Google Cloud Run. Large videos detected - using enhanced processing engine. You'll receive an email in 3-8 minutes.`,
+      fileCount: photos.length,
+      estimatedSizeMB: Math.round(photos.reduce((sum, p) => sum + p.sizeMB, 0)),
+      videoCount: photos.filter(p => p.mediaType === 'video' || /\.(mp4|mov|avi|webm)$/i.test(p.fileName)).length,
+      estimatedWaitTime: '3-8 minutes',
+      requestId: result.requestId || `gcr-${Date.now()}`,
+      processingEngine: 'google-cloud-run'
+    };
+    
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('❌ Google Cloud Run routing failed:', errorMessage);
+    console.log('🔄 Falling back to Netlify/Cloudflare...');
+    
+    // Fallback to standard processing
+    return await routeToNetlifyCloudflare(eventId, email, true);
+  }
+};
+
+// Route to Netlify/Cloudflare for standard processing
+const routeToNetlifyCloudflare = async (
+  eventId: string, 
+  email: string, 
+  isFallback: boolean = false
+): Promise<any> => {
+  try {
+    console.log(isFallback ? '🔄 Using Netlify fallback processing...' : '⚡ Using standard Netlify/Cloudflare processing...');
     
     const response = await fetch('/.netlify/functions/email-download', {
       method: 'POST',
@@ -257,12 +427,12 @@ export const requestEmailDownload = async (
       },
       body: JSON.stringify({
         eventId,
-        email
+        email,
+        source: isFallback ? 'fallback-from-cloud-run' : 'standard-routing'
       }),
     });
 
     if (!response.ok) {
-      // Try to parse error response - read as text first to avoid "body stream already read" error
       let errorMessage = 'Failed to request email download';
       try {
         const responseText = await response.text();
@@ -270,7 +440,6 @@ export const requestEmailDownload = async (
           const errorData = JSON.parse(responseText);
           errorMessage = errorData.error || errorData.details || errorMessage;
         } catch (parseError) {
-          // If JSON parsing fails, it might be an HTML error page
           if (responseText.includes('DOCTYPE')) {
             errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
           } else {
@@ -278,34 +447,21 @@ export const requestEmailDownload = async (
           }
         }
       } catch (textError) {
-        // If we can't even read the response as text
         errorMessage = `Server error (${response.status}): ${response.statusText}`;
       }
       throw new Error(errorMessage);
     }
 
     const result = await response.json();
-    console.log('✅ Email download requested successfully:', result);
+    console.log('✅ Netlify/Cloudflare processing requested:', result);
     
-    // Log different processing types
-    if (result.processing === 'background') {
-      console.log(`🚀 Background processing initiated:`, {
-        fileCount: result.fileCount,
-        sizeMB: result.estimatedSizeMB,
-        videoCount: result.videoCount,
-        waitTime: result.estimatedWaitTime
-      });
-    } else {
-      console.log(`⚡ Immediate processing completed:`, {
-        fileCount: result.photoCount || result.fileCount,
-        sizeMB: result.fileSizeMB
-      });
-    }
+    // Add processing engine info
+    result.processingEngine = isFallback ? 'netlify-fallback' : 'netlify-cloudflare';
     
     return result;
     
   } catch (error) {
-    console.error('❌ Email download request failed:', error);
+    console.error('❌ Netlify/Cloudflare processing failed:', error);
     throw error;
   }
 };
