@@ -26,17 +26,6 @@ class_name = "WeddingZipProcessor"
 tag = "v1"
 new_sqlite_classes = [ "WeddingZipProcessor" ]
 
-# Cloudflare Queues for enterprise background processing
-[[queues.producers]]
-queue = "wedding-photo-processor"
-binding = "PHOTO_QUEUE"
-
-[[queues.consumers]]
-queue = "wedding-photo-processor"
-max_batch_size = 1
-max_retries = 5
-dead_letter_queue = "wedding-photo-processor-dlq"
-
 # Environment variables (set these via wrangler secret put)
 # EMAIL_USER = "noreply@sharedmoments.socialboostai.com"
 # EMAIL_PASSWORD = "your-smtp-password"

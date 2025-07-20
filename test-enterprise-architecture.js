@@ -166,7 +166,7 @@ async function runEnterpriseTests() {
   console.log('Based on collection size, file sizes, and complexity\n');
   
   // Use your actual Worker URL here
-  const workerUrl = 'https://sharedmoments-photo-processor.your-subdomain.workers.dev';
+  const workerUrl = 'https://sharedmoments-photo-processor.migsub77.workers.dev';
   
   console.log(`🌐 Worker URL: ${workerUrl}`);
   console.log(`📋 Testing ${testCollections.length} different collection types...\n`);
