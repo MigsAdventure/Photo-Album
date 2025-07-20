@@ -20,7 +20,9 @@ export async function sendEmail(data, env) {
     compressionStats,
     processingTimeSeconds,
     failedFiles,
-    processingMethod
+    processingMethod,
+    largeFilesDeferred,
+    totalOriginalFiles
   } = data;
 
   console.log(`📧 Sending success email [${requestId}] to: ${email}`);
@@ -47,6 +49,8 @@ export async function sendEmail(data, env) {
       processingTimeSeconds,
       failedFiles: failedFiles || [],
       processingMethod: processingMethod || 'worker-streaming',
+      largeFilesDeferred: largeFilesDeferred || [],
+      totalOriginalFiles: totalOriginalFiles || fileCount,
       source: 'cloudflare-worker'
     };
 

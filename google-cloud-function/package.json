@@ -1,0 +1,29 @@
+{
+  "name": "wedding-photo-processor",
+  "version": "1.0.0",
+  "description": "Google Cloud Function for processing large wedding photo/video collections",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "gcloud functions deploy processWeddingPhotos --runtime nodejs18 --trigger http --allow-unauthenticated --memory 8GB --timeout 900s",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.0.0",
+    "@google-cloud/storage": "^7.0.0",
+    "archiver": "^5.3.1",
+    "node-fetch": "^3.3.0",
+    "sharp": "^0.32.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "google-cloud-functions",
+    "wedding-photos",
+    "video-processing",
+    "zip-compression"
+  ],
+  "author": "SharedMoments",
+  "license": "ISC"
+}

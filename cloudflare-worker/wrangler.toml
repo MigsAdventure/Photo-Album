@@ -32,6 +32,8 @@ new_sqlite_classes = [ "WeddingZipProcessor" ]
 # EMAIL_HOST = "smtp.mailgun.org"
 # R2_PUBLIC_URL = "https://sharedmomentsphotos.socialboostai.com"
 # NETLIFY_EMAIL_FUNCTION_URL = "your-netlify-site/.netlify/functions/email-download"
+# GOOGLE_CLOUD_FUNCTION_URL = "https://your-region-your-project.cloudfunctions.net/processWeddingPhotos"
+# GOOGLE_CLOUD_SERVICE_ACCOUNT_KEY = "your-service-account-token"
 
 # Limits for Unbound Workers (handles large processing tasks)
 limits = { cpu_ms = 900000 }  # 15 minutes CPU time - maximum allowed

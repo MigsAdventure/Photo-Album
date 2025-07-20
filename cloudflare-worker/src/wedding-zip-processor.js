@@ -62,6 +62,27 @@ export class WeddingZipProcessor {
     console.log(`🚀 Durable Object streaming processing started [${requestId}]`);
     
     try {
+      // Filter files by size - process files ≤80MB, defer larger files
+      const MAX_FILE_SIZE = 80 * 1024 * 1024; // 80MB limit for Cloudflare processing
+      const processableFiles = [];
+      const largeFiles = [];
+      
+      for (const photo of photos) {
+        const fileSize = photo.size || 0;
+        if (fileSize <= MAX_FILE_SIZE) {
+          processableFiles.push(photo);
+        } else {
+          largeFiles.push({
+            fileName: photo.fileName,
+            size: fileSize,
+            sizeMB: (fileSize / 1024 / 1024).toFixed(2)
+          });
+          console.log(`📦 Large file deferred [${requestId}]: ${photo.fileName} (${(fileSize/1024/1024).toFixed(2)}MB) - will process separately`);
+        }
+      }
+      
+      console.log(`📊 File processing plan [${requestId}]: ${processableFiles.length} files for immediate ZIP, ${largeFiles.length} large files deferred`);
+      
       // Initialize processing state
       await this.state.storage.put('processing_state', {
         eventId,
@@ -69,13 +90,19 @@ export class WeddingZipProcessor {
         requestId,
         startTime,
         status: 'processing',
-        totalFiles: photos.length,
+        totalFiles: processableFiles.length,
         processedFiles: 0,
-        failedFiles: []
+        failedFiles: [],
+        largeFilesDeferred: largeFiles.length,
+        deferredFiles: largeFiles
       });
       
-      // Create streaming ZIP directly to R2
-      const result = await this.createStreamingZipToR2(photos, eventId, requestId);
+      // Create streaming ZIP directly to R2 with processable files only
+      const result = await this.createStreamingZipToR2(processableFiles, eventId, requestId);
+      
+      // Add deferred file info to result
+      result.largeFilesDeferred = largeFiles;
+      result.totalOriginalFiles = photos.length;
       
       // Update final state
       await this.state.storage.put('processing_state', {
@@ -445,7 +472,9 @@ export class WeddingZipProcessor {
       downloadUrl: result.downloadUrl,
       failedFiles: result.failedFiles,
       processingTimeSeconds,
-      processingMethod: 'durable-object-streaming'
+      processingMethod: 'durable-object-streaming',
+      largeFilesDeferred: result.largeFilesDeferred || [],
+      totalOriginalFiles: result.totalOriginalFiles || result.processedFiles
     }, this.env);
   }
 

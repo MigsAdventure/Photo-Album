@@ -123,33 +123,35 @@ function checkGlobalRateLimit(email, clientIP) {
 }
 
 /**
- * Pre-flight memory check to prevent Worker crashes
+ * Analyze collection and determine routing strategy
  */
-function analyzeMemoryRequirements(photos, requestId) {
-  const MAX_SINGLE_FILE_SIZE = 500 * 1024 * 1024; // 500MB max per individual file
+function analyzeCollectionForRouting(photos, requestId) {
+  const GOOGLE_CLOUD_THRESHOLD = 200 * 1024 * 1024; // 200MB threshold for Google Cloud routing
   
   let totalEstimatedSize = 0;
   let largeFileCount = 0;
   let videoCount = 0;
   let maxSingleFileSize = 0;
-  const tooLargeFiles = [];
+  const largeFiles = [];
+  let hasVeryLargeFile = false;
   
   for (const photo of photos) {
     const estimatedSize = photo.size || 5 * 1024 * 1024; // Default 5MB if unknown
     totalEstimatedSize += estimatedSize;
     maxSingleFileSize = Math.max(maxSingleFileSize, estimatedSize);
     
-    // Track files over 600MB as "large" but still processable
-    if (estimatedSize > 600 * 1024 * 1024) {
-      largeFileCount++;
-    }
-    
-    // Track files over 500MB as potentially too large for Worker
-    if (estimatedSize > MAX_SINGLE_FILE_SIZE) {
-      tooLargeFiles.push({
+    // Check if this file exceeds Google Cloud threshold
+    if (estimatedSize > GOOGLE_CLOUD_THRESHOLD) {
+      hasVeryLargeFile = true;
+      largeFiles.push({
         fileName: photo.fileName,
         sizeMB: (estimatedSize / 1024 / 1024).toFixed(2)
       });
+    }
+    
+    // Track files over 80MB as "large" 
+    if (estimatedSize > 80 * 1024 * 1024) {
+      largeFileCount++;
     }
     
     if (/\.(mp4|mov|avi|webm)$/i.test(photo.fileName)) {
@@ -158,7 +160,9 @@ function analyzeMemoryRequirements(photos, requestId) {
   }
   
   const largestFileMB = maxSingleFileSize / 1024 / 1024;
-  const canProcessLargestFile = maxSingleFileSize <= MAX_SINGLE_FILE_SIZE;
+  
+  // Routing decision: If ANY file >200MB, route entire collection to Google Cloud
+  const shouldUseGoogleCloud = hasVeryLargeFile;
   
   const analysis = {
     totalFiles: photos.length,
@@ -166,20 +170,72 @@ function analyzeMemoryRequirements(photos, requestId) {
     largestFileMB: largestFileMB.toFixed(2),
     largeFileCount,
     videoCount,
-    tooLargeFiles,
-    canProcessLargestFile,
-    canUseWorker: canProcessLargestFile,
-    riskLevel: !canProcessLargestFile ? 'high' : largestFileMB > 300 ? 'medium' : 'low'
+    largeFiles,
+    hasVeryLargeFile,
+    shouldUseGoogleCloud,
+    routingDecision: shouldUseGoogleCloud ? 'google-cloud' : 'cloudflare-worker',
+    riskLevel: shouldUseGoogleCloud ? 'high' : largestFileMB > 80 ? 'medium' : 'low'
   };
   
-  console.log(`🔍 Memory analysis [${requestId}]:`, {
+  console.log(`🎯 Collection analysis [${requestId}]:`, {
     totalSizeMB: analysis.totalEstimatedSizeMB,
     largestFileMB: analysis.largestFileMB,
-    canUseWorker: analysis.canUseWorker,
+    routing: analysis.routingDecision,
+    reason: shouldUseGoogleCloud ? `File(s) >200MB detected` : `All files ≤200MB`,
     risk: analysis.riskLevel
   });
   
   return analysis;
+}
+
+/**
+ * Route request to Google Cloud Function for large file processing
+ */
+async function routeToGoogleCloud(eventId, email, photos, requestId, env) {
+  console.log(`🚀 Routing to Google Cloud [${requestId}]: Large files detected`);
+  
+  try {
+    // Prepare payload for Google Cloud Function
+    const payload = {
+      eventId,
+      email,
+      photos,
+      requestId,
+      timestamp: Date.now(),
+      source: 'cloudflare-worker'
+    };
+    
+    // Call Google Cloud Function
+    const googleCloudUrl = env.GOOGLE_CLOUD_FUNCTION_URL;
+    if (!googleCloudUrl) {
+      throw new Error('Google Cloud Function URL not configured');
+    }
+    
+    console.log(`📡 Calling Google Cloud Function [${requestId}]: ${googleCloudUrl}`);
+    
+    const response = await fetch(googleCloudUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${env.GOOGLE_CLOUD_SERVICE_ACCOUNT_KEY || ''}`
+      },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Google Cloud Function error: ${response.status} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log(`✅ Google Cloud Function accepted [${requestId}]:`, result);
+    
+    return result;
+    
+  } catch (error) {
+    console.error(`❌ Google Cloud routing failed [${requestId}]:`, error);
+    throw new Error(`Google Cloud processing failed: ${error.message}`);
+  }
 }
 
 export { WeddingZipProcessor };
@@ -257,11 +313,56 @@ export default {
       }
 
       // Analyze collection for smart routing
-      const memoryAnalysis = analyzeMemoryRequirements(photos, requestId);
+      const routingAnalysis = analyzeCollectionForRouting(photos, requestId);
       
-      console.log(`🎯 Processing [${requestId}]: ${photos.length} files, ${memoryAnalysis.totalEstimatedSizeMB}MB total`);
+      console.log(`🎯 Processing [${requestId}]: ${photos.length} files, ${routingAnalysis.totalEstimatedSizeMB}MB total`);
       
-      // Route to Durable Object for professional processing
+      // SMART ROUTING: Check if we should use Google Cloud for large files
+      if (routingAnalysis.shouldUseGoogleCloud) {
+        console.log(`🌤️ Routing to Google Cloud [${requestId}]: Files >200MB detected`);
+        
+        try {
+          const googleCloudResult = await routeToGoogleCloud(eventId, email, photos, requestId, env);
+          
+          // Record circuit breaker success for Google Cloud routing
+          recordCircuitBreakerSuccess(requestId);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            message: `Processing ${photos.length} files with Google Cloud for large video support. Email will be sent when complete.`,
+            requestId,
+            estimatedTime: '5-15 minutes',
+            processing: 'google-cloud-functions',
+            collectionAnalysis: {
+              totalSizeMB: routingAnalysis.totalEstimatedSizeMB,
+              videoCount: routingAnalysis.videoCount,
+              largeFileCount: routingAnalysis.largeFileCount,
+              riskLevel: routingAnalysis.riskLevel,
+              routingReason: `Large files detected: ${routingAnalysis.largeFiles.map(f => `${f.fileName} (${f.sizeMB}MB)`).join(', ')}`
+            },
+            capabilities: {
+              maxVideoSize: '500MB+ per file',
+              maxCollectionSize: 'Unlimited (Google Cloud)',
+              supportedFiles: 'All wedding media formats',
+              processingType: 'Google Cloud Functions with high memory'
+            }
+          }), {
+            status: 200,
+            headers: { 
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            },
+          });
+          
+        } catch (googleCloudError) {
+          console.error(`❌ Google Cloud routing failed [${requestId}], falling back to Cloudflare:`, googleCloudError);
+          // Fall through to Cloudflare processing as backup
+        }
+      }
+      
+      // Route to Cloudflare Durable Object for standard processing
+      console.log(`⚡ Using Cloudflare processing [${requestId}]: All files ≤200MB`);
+      
       const objectId = env.WEDDING_ZIP_PROCESSOR.idFromName(requestId);
       const durableObject = env.WEDDING_ZIP_PROCESSOR.get(objectId);
 
@@ -296,13 +397,13 @@ export default {
         estimatedTime,
         processing: 'durable-object-streaming',
         collectionAnalysis: {
-          totalSizeMB: memoryAnalysis.totalEstimatedSizeMB,
-          videoCount: memoryAnalysis.videoCount,
-          largeFileCount: memoryAnalysis.largeFileCount,
-          riskLevel: memoryAnalysis.riskLevel
+          totalSizeMB: routingAnalysis.totalEstimatedSizeMB,
+          videoCount: routingAnalysis.videoCount,
+          largeFileCount: routingAnalysis.largeFileCount,
+          riskLevel: routingAnalysis.riskLevel
         },
         capabilities: {
-          maxVideoSize: '500MB per file',
+          maxVideoSize: '200MB per file (Cloudflare)',
           maxCollectionSize: 'Professional scale',
           supportedFiles: 'All wedding media formats',
           processingType: 'Professional Durable Object processing'
