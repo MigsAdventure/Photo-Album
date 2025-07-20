@@ -26,7 +26,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .vercel
-
+code
+cloud-run-processor
 # Local Netlify folder
 .netlify
 
