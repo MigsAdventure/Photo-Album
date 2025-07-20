@@ -294,8 +294,8 @@ export const requestEmailDownload = async (
         videoCount++;
         maxVideoSizeMB = Math.max(maxVideoSizeMB, fileSizeMB);
         
-        // Check for large videos (80MB+ threshold)
-        if (fileSizeMB > 80) {
+        // Check for large videos (80MB+ threshold) 
+        if ((data.size || 0) > 80 * 1024 * 1024) {
           largeVideoCount++;
         }
       }
