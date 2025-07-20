@@ -9,7 +9,7 @@
 const functions = require('@google-cloud/functions-framework');
 const { Storage } = require('@google-cloud/storage');
 const archiver = require('archiver');
-const fetch = require('node-fetch');
+// Note: Using built-in fetch in Node.js 20+
 const sharp = require('sharp');
 const stream = require('stream');
 const { promisify } = require('util');
@@ -126,6 +126,12 @@ function analyzeCollection(photos, requestId) {
   const fileTypes = new Map();
 
   for (const photo of photos) {
+    // Ensure required fields exist
+    if (!photo || typeof photo !== 'object') {
+      console.warn(`⚠️ Invalid photo object [${requestId}]:`, photo);
+      continue;
+    }
+
     const size = photo.size || 5 * 1024 * 1024; // Default 5MB
     totalSize += size;
     maxFileSize = Math.max(maxFileSize, size);
@@ -134,7 +140,12 @@ function analyzeCollection(photos, requestId) {
       largeFileCount++;
     }
 
-    const extension = photo.fileName.split('.').pop().toLowerCase();
+    // Safely extract file extension
+    const fileName = photo.fileName || photo.name || 'unknown.jpg';
+    const extension = fileName.includes('.') 
+      ? fileName.split('.').pop().toLowerCase() 
+      : 'unknown';
+      
     if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(extension)) {
       videoCount++;
     }
@@ -203,7 +214,8 @@ async function processFilesWithStreaming(photos, eventId, requestId, analysis) {
 
       if (result.status === 'fulfilled' && result.value.success) {
         const fileData = result.value;
-        const uniqueFileName = generateUniqueFileName(photo.fileName, processedFiles);
+        const safeFileName = photo.fileName || photo.name || `file_${processedFiles + 1}.jpg`;
+        const uniqueFileName = generateUniqueFileName(safeFileName, processedFiles);
         
         // Add to ZIP archive
         archive.append(fileData.buffer, { name: uniqueFileName });
@@ -214,12 +226,13 @@ async function processFilesWithStreaming(photos, eventId, requestId, analysis) {
         console.log(`✅ File added to ZIP [${requestId}]: ${uniqueFileName} (${(fileData.buffer.length/1024/1024).toFixed(2)}MB)`);
       } else {
         const error = result.reason || result.value?.error || 'Unknown error';
+        const safeFileName = photo.fileName || photo.name || 'unknown_file';
         failedFiles.push({
-          fileName: photo.fileName,
+          fileName: safeFileName,
           reason: error.toString(),
           size: photo.size
         });
-        console.error(`❌ File failed [${requestId}]: ${photo.fileName} - ${error}`);
+        console.error(`❌ File failed [${requestId}]: ${safeFileName} - ${error}`);
       }
     }
 
@@ -270,13 +283,17 @@ async function processFilesWithStreaming(photos, eventId, requestId, analysis) {
 async function processFileForZip(photo, requestId) {
   const maxRetries = 3;
   let lastError = null;
+  
+  // Safely get filename
+  const fileName = photo.fileName || photo.name || 'unknown_file.jpg';
+  const fileSize = photo.size || 5 * 1024 * 1024; // Default 5MB
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`⬇️ Downloading [${requestId}] attempt ${attempt}/${maxRetries}: ${photo.fileName} (${(photo.size/1024/1024).toFixed(2)}MB)`);
+      console.log(`⬇️ Downloading [${requestId}] attempt ${attempt}/${maxRetries}: ${fileName} (${(fileSize/1024/1024).toFixed(2)}MB)`);
 
       // Dynamic timeout based on file size
-      const timeoutMs = Math.min(Math.max(photo.size / 1024 / 1024 * 2000, 30000), 300000); // 2s per MB, min 30s, max 5min
+      const timeoutMs = Math.min(Math.max(fileSize / 1024 / 1024 * 2000, 30000), 300000); // 2s per MB, min 30s, max 5min
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -294,22 +311,22 @@ async function processFileForZip(photo, requestId) {
         }
 
         // Stream large files to buffer with memory management
-        const isLargeFile = photo.size > 100 * 1024 * 1024; // 100MB threshold
+        const isLargeFile = fileSize > 100 * 1024 * 1024; // 100MB threshold
         let buffer;
 
         if (isLargeFile) {
-          console.log(`🌊 Streaming large file [${requestId}]: ${photo.fileName}`);
-          buffer = await streamToBuffer(response.body, requestId, photo.fileName);
+          console.log(`🌊 Streaming large file [${requestId}]: ${fileName}`);
+          buffer = await streamToBuffer(response.body, requestId, fileName);
         } else {
           buffer = Buffer.from(await response.arrayBuffer());
         }
 
-        console.log(`✅ Downloaded [${requestId}]: ${photo.fileName} (${(buffer.length/1024/1024).toFixed(2)}MB)`);
+        console.log(`✅ Downloaded [${requestId}]: ${fileName} (${(buffer.length/1024/1024).toFixed(2)}MB)`);
 
         return {
           success: true,
           buffer,
-          originalSize: photo.size || buffer.length
+          originalSize: fileSize
         };
 
       } catch (fetchError) {
@@ -319,11 +336,11 @@ async function processFileForZip(photo, requestId) {
 
     } catch (error) {
       lastError = error;
-      console.warn(`⚠️ Download attempt ${attempt} failed [${requestId}]: ${photo.fileName} - ${error.message}`);
+      console.warn(`⚠️ Download attempt ${attempt} failed [${requestId}]: ${fileName} - ${error.message}`);
 
       if (attempt < maxRetries) {
         const backoffMs = Math.pow(2, attempt) * 1000; // Exponential backoff
-        console.log(`⏳ Retrying in ${backoffMs/1000}s [${requestId}]: ${photo.fileName}`);
+        console.log(`⏳ Retrying in ${backoffMs/1000}s [${requestId}]: ${fileName}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
       }
     }
@@ -370,7 +387,9 @@ async function streamToBuffer(responseBody, requestId, fileName) {
  * Generate unique filename to avoid conflicts
  */
 function generateUniqueFileName(originalFileName, index) {
-  const sanitized = originalFileName.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_');
+  // Handle undefined or null filenames
+  const safeName = originalFileName || `file_${index + 1}.jpg`;
+  const sanitized = safeName.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_');
   return sanitized;
 }
 
