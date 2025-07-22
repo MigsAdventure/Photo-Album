@@ -36,12 +36,14 @@ import {
   Star,
   Security,
   Delete,
-  Download
+  Download,
+  CloudSync
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
+import { R2MigrationPanel } from './R2MigrationPanel';
 
 interface EnhancedPhotoGalleryProps {
   eventId: string;
@@ -88,6 +90,9 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   // Long-press detection for mobile
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
   const [ownedPhotos, setOwnedPhotos] = useState<Set<string>>(new Set());
+  
+  // R2 Migration state
+  const [showR2Migration, setShowR2Migration] = useState(false);
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -463,6 +468,28 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 }}
               >
                 Upgrade
+              </Button>
+            )}
+            
+            {/* R2 Migration Button (Admin Tool) */}
+            {photos.length > 0 && (
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => setShowR2Migration(true)}
+                startIcon={<CloudSync />}
+                sx={{
+                  textTransform: 'none',
+                  fontWeight: 'bold',
+                  borderColor: 'info.main',
+                  color: 'info.main',
+                  '&:hover': {
+                    borderColor: 'info.dark',
+                    backgroundColor: alpha(theme.palette.info.main, 0.1)
+                  }
+                }}
+              >
+                R2 Migration
               </Button>
             )}
           </Box>
@@ -1236,6 +1263,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               window.location.reload();
             }
           }}
+        />
+      )}
+
+      {/* R2 Migration Panel */}
+      {showR2Migration && (
+        <R2MigrationPanel
+          eventId={eventId}
+          onClose={() => setShowR2Migration(false)}
         />
       )}
     </Container>

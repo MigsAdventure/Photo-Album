@@ -103,7 +103,7 @@ export const uploadPhoto = async (
     uploadTask.on(
       'state_changed',
       (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 85; // Reserve 15% for R2 copy
         console.log(`🔥 Firebase upload progress: ${Math.round(progress)}%`);
         onProgress?.(progress);
       },
@@ -132,7 +132,21 @@ export const uploadPhoto = async (
           // Add to user's owned photos list
           addOwnedPhoto(docRef.id);
           
-          console.log('✅ Firebase upload completed with ownership:', file.name, 'by session:', sessionId);
+          console.log('✅ Firebase upload completed, starting R2 copy...');
+          onProgress?.(90); // 90% - R2 copy starting
+          
+          // Copy to R2 in background (don't block user experience)
+          copyToR2InBackground(docRef.id, downloadURL, file.name, eventId, file.type)
+            .then(() => {
+              console.log('✅ R2 copy completed for:', file.name);
+              onProgress?.(100); // 100% - everything done
+            })
+            .catch((error) => {
+              console.warn('⚠️ R2 copy failed (continuing with Firebase-only):', error);
+              onProgress?.(100); // Still complete the upload
+            });
+          
+          console.log('✅ Upload completed with ownership:', file.name, 'by session:', sessionId);
           resolve(downloadURL);
         } catch (error) {
           console.error('❌ Firebase metadata save error:', error);
@@ -141,6 +155,40 @@ export const uploadPhoto = async (
       }
     );
   });
+};
+
+// Background R2 copy function (non-blocking)
+const copyToR2InBackground = async (
+  photoId: string,
+  firebaseUrl: string, 
+  fileName: string,
+  eventId: string,
+  contentType: string
+): Promise<void> => {
+  try {
+    // Import R2 service dynamically to avoid bundling issues
+    const { copyFirebaseToR2 } = await import('./r2Service');
+    
+    console.log('📦 Starting background R2 copy for:', fileName);
+    
+    // Copy to R2
+    const r2Key = await copyFirebaseToR2(firebaseUrl, fileName, eventId, contentType);
+    
+    // Update Firestore with R2 key
+    const docRef = doc(db, 'photos', photoId);
+    await updateDoc(docRef, {
+      r2Key: r2Key,
+      migratedToR2: true,
+      r2MigrationDate: new Date(),
+      originalFirebaseUrl: firebaseUrl // Keep for backup
+    });
+    
+    console.log('✅ Background R2 copy completed:', photoId, '→', r2Key);
+    
+  } catch (error) {
+    console.error('❌ Background R2 copy failed for', photoId, ':', error);
+    // Don't throw - this is background operation
+  }
 };
 
 export const subscribeToPhotos = (
