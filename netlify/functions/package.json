@@ -1,8 +1,5 @@
 {
   "name": "netlify-functions",
   "version": "1.0.0",
-  "description": "Netlify Functions for Wedding Photo App",
-  "dependencies": {
-    "firebase-admin": "^13.4.0"
-  }
+  "description": "Netlify Functions for Wedding Photo App"
 }

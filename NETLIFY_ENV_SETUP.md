@@ -1,116 +1,57 @@
-# Netlify Environment Variable Setup for Firebase Admin SDK
+# Netlify Environment Variable Fix for 4KB Limit Issue
 
-## Prerequisites
+## 🚨 URGENT: Remove Large Environment Variable
 
-Make sure there's a `package.json` in the `netlify/functions` directory with firebase-admin dependency:
+The `FIREBASE_SERVICE_ACCOUNT_KEY` environment variable is too large and is causing Netlify deployments to fail with the error:
+> "Your environment variables exceed the 4KB limit imposed by AWS Lambda"
 
-```json
-{
-  "name": "netlify-functions",
-  "version": "1.0.0",
-  "description": "Netlify Functions for Wedding Photo App",
-  "dependencies": {
-    "firebase-admin": "^13.4.0"
-  }
-}
-```
+## Steps to Fix:
 
-This ensures Netlify installs the required dependencies for your functions.
+### 1. Remove FIREBASE_SERVICE_ACCOUNT_KEY from Netlify
 
-## Steps to Configure FIREBASE_SERVICE_ACCOUNT_KEY
+1. Go to [Netlify Dashboard](https://app.netlify.com)
+2. Navigate to your site
+3. Go to **Site Configuration** → **Environment variables**
+4. Find `FIREBASE_SERVICE_ACCOUNT_KEY`
+5. Click the **Delete** button (trash icon)
+6. Confirm deletion
 
-### 1. Prepare the JSON Value
+### 2. Deploy the Updated Code
 
-The service account JSON needs to be stored as a single-line string in Netlify's environment variables.
-
-You have two options:
-
-#### Option A: Use the Netlify CLI (Recommended)
-```bash
-# Install Netlify CLI if you haven't already
-npm install -g netlify-cli
-
-# Login to Netlify
-netlify login
-
-# Set the environment variable
-netlify env:set FIREBASE_SERVICE_ACCOUNT_KEY "$(cat wedding-photo-240c9-firebase-adminsdk-fbsvc-a11f1c3b6e.json)"
-```
-
-#### Option B: Manual Setup via Netlify Dashboard
-
-1. Open your service account JSON file (`wedding-photo-240c9-firebase-adminsdk-fbsvc-a11f1c3b6e.json`)
-2. Copy the ENTIRE contents
-3. Go to [Netlify Dashboard](https://app.netlify.com)
-4. Navigate to your site
-5. Go to **Site Configuration** → **Environment variables**
-6. Click **Add a variable**
-7. Set:
-   - **Key**: `FIREBASE_SERVICE_ACCOUNT_KEY`
-   - **Values**: Paste the entire JSON content
-   - **Scopes**: Select all deploy contexts (Production, Preview, Branch deploys)
-8. Click **Create variable**
-
-### 2. Deploy Your Site
-
-After setting the environment variable, you need to trigger a new deployment for the changes to take effect:
+The new solution doesn't require Firebase Admin SDK and works by:
+- Adding download parameters directly to Firebase Storage URLs
+- Using Firebase's built-in `response-content-disposition` parameter
+- No large environment variables needed
 
 ```bash
-# If using Git
 git add .
-git commit -m "Add Firebase Admin SDK download functionality"
+git commit -m "Fix environment variable size issue - remove Firebase Admin SDK dependency"
 git push
-
-# Or manually trigger a deploy in Netlify Dashboard
 ```
 
-### 3. Test the Download Feature
+## How the New Download Solution Works:
 
-Once deployed:
-1. Open your app
+Instead of using Firebase Admin SDK (which required the large service account JSON), we now:
+
+1. **Modify Firebase URLs directly** by adding download parameters
+2. **Use Firebase's built-in download support** with `response-content-disposition`
+3. **Force downloads** with proper filenames
+4. **No environment variables needed** - much simpler!
+
+## Benefits of This Approach:
+
+- ✅ **No 4KB limit issues** - No large environment variables
+- ✅ **Simpler deployment** - No Firebase Admin SDK dependency
+- ✅ **Still forces downloads** - Files download with correct filenames
+- ✅ **Works with any file size** - Videos and large images download properly
+- ✅ **Secure** - Uses Firebase's own download mechanism
+
+## Testing After Deployment:
+
+1. Open your wedding photo app
 2. Navigate to the photo gallery
 3. Click on a photo/video to open it
 4. Click the download button
-5. The file should download with the correct filename
+5. File should download with the correct filename
 
-## Troubleshooting
-
-### If downloads aren't working:
-
-1. **Check Netlify Function logs**:
-   - Go to Netlify Dashboard → Functions tab
-   - Look for `media-download` function
-   - Check the logs for any errors
-
-2. **Common Issues**:
-   - Environment variable not set correctly
-   - JSON format issues (must be valid JSON)
-   - Service account permissions (needs Storage Admin role)
-
-3. **Verify Environment Variable**:
-   - In Netlify Dashboard, go to Environment variables
-   - Make sure `FIREBASE_SERVICE_ACCOUNT_KEY` exists
-   - Check that it contains the full JSON content
-
-## Security Notes
-
-- ✅ The service account key is stored securely in Netlify's environment
-- ✅ It's never exposed to the client-side code
-- ✅ The `.gitignore` file prevents accidental commits
-- ✅ Signed URLs expire after 1 hour for security
-
-## Benefits of This Approach
-
-1. **Works with any file size** - No Netlify function timeout issues
-2. **Forces download** - Files download instead of opening in browser
-3. **Preserves filename** - Downloads use the original filename
-4. **Secure** - Uses Firebase's signed URL mechanism
-5. **No bandwidth costs** - Files are served directly from Firebase
-
-## Next Steps
-
-After successful setup:
-1. Test with both small and large files
-2. Verify videos download properly
-3. Check that filenames are preserved
-4. Monitor function logs for any issues
+The download functionality will work exactly the same for users, but without the deployment issues!
