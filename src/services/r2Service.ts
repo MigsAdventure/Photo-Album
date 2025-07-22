@@ -72,66 +72,6 @@ export const copyFirebaseToR2 = async (
   }
 };
 
-// Copy a photo and update Firestore with R2 key
-export const migratePhotoToR2 = async (photoId: string, photoData: any): Promise<void> => {
-  try {
-    console.log('🔄 Migrating photo to R2:', photoId);
-    
-    // Skip if already has R2 key
-    if (photoData.r2Key) {
-      console.log('⏭️ Photo already has R2 key, skipping:', photoId);
-      return;
-    }
-    
-    // Copy to R2
-    const r2Key = await copyFirebaseToR2(
-      photoData.url,
-      photoData.fileName || `photo_${photoId}`,
-      photoData.eventId,
-      photoData.contentType || 'image/jpeg'
-    );
-    
-    // Update Firestore with R2 key
-    const docRef = doc(db, 'photos', photoId);
-    await updateDoc(docRef, {
-      r2Key: r2Key,
-      migratedToR2: true,
-      r2MigrationDate: new Date(),
-      originalFirebaseUrl: photoData.url // Keep for backup
-    });
-    
-    console.log('✅ Photo migration completed:', photoId, '→', r2Key);
-    
-  } catch (error) {
-    console.error('❌ Photo migration failed for', photoId, ':', error);
-    // Don't throw - we want to continue with other photos
-  }
-};
-
-// Batch migrate multiple photos
-export const migrateBatchToR2 = async (photos: any[]): Promise<{ success: number; failed: number }> => {
-  console.log(`🚀 Starting batch migration of ${photos.length} photos to R2`);
-  
-  let success = 0;
-  let failed = 0;
-  
-  for (const photo of photos) {
-    try {
-      await migratePhotoToR2(photo.id, photo);
-      success++;
-      
-      // Small delay to avoid overwhelming the services
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-    } catch (error) {
-      console.error('❌ Failed to migrate photo:', photo.id, error);
-      failed++;
-    }
-  }
-  
-  console.log(`✅ Batch migration completed: ${success} success, ${failed} failed`);
-  return { success, failed };
-};
 
 // Test R2 connectivity
 export const testR2Connection = async (): Promise<boolean> => {
