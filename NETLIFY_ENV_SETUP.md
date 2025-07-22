@@ -1,5 +1,22 @@
 # Netlify Environment Variable Setup for Firebase Admin SDK
 
+## Prerequisites
+
+Make sure there's a `package.json` in the `netlify/functions` directory with firebase-admin dependency:
+
+```json
+{
+  "name": "netlify-functions",
+  "version": "1.0.0",
+  "description": "Netlify Functions for Wedding Photo App",
+  "dependencies": {
+    "firebase-admin": "^13.4.0"
+  }
+}
+```
+
+This ensures Netlify installs the required dependencies for your functions.
+
 ## Steps to Configure FIREBASE_SERVICE_ACCOUNT_KEY
 
 ### 1. Prepare the JSON Value
