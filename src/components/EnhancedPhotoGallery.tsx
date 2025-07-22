@@ -336,10 +336,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       
       // Fetch the file directly from Firebase
       const response = await fetch(media.url, {
-        method: 'GET',
-        headers: {
-          'Cache-Control': 'no-cache'
-        }
+        method: 'GET'
       });
       
       if (!response.ok) {
