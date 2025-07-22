@@ -126,7 +126,7 @@ function checkGlobalRateLimit(email, clientIP) {
  * Analyze collection and determine routing strategy
  */
 function analyzeCollectionForRouting(photos, requestId) {
-  const GOOGLE_CLOUD_THRESHOLD = 200 * 1024 * 1024; // 200MB threshold for Google Cloud routing
+  const AWS_THRESHOLD = 80 * 1024 * 1024; // 80MB threshold for AWS routing
   
   let totalEstimatedSize = 0;
   let largeFileCount = 0;
@@ -140,8 +140,8 @@ function analyzeCollectionForRouting(photos, requestId) {
     totalEstimatedSize += estimatedSize;
     maxSingleFileSize = Math.max(maxSingleFileSize, estimatedSize);
     
-    // Check if this file exceeds Google Cloud threshold
-    if (estimatedSize > GOOGLE_CLOUD_THRESHOLD) {
+    // Check if this file exceeds AWS threshold
+    if (estimatedSize > AWS_THRESHOLD) {
       hasVeryLargeFile = true;
       largeFiles.push({
         fileName: photo.fileName,
@@ -160,28 +160,29 @@ function analyzeCollectionForRouting(photos, requestId) {
   }
   
   const largestFileMB = maxSingleFileSize / 1024 / 1024;
+  const totalSizeMB = totalEstimatedSize / 1024 / 1024;
   
-  // Routing decision: If ANY file >200MB, route entire collection to Google Cloud
-  const shouldUseGoogleCloud = hasVeryLargeFile;
+  // Routing decision: If ANY file >80MB OR total collection >80MB, route to AWS
+  const shouldUseAWS = hasVeryLargeFile || totalSizeMB > 80;
   
   const analysis = {
     totalFiles: photos.length,
-    totalEstimatedSizeMB: (totalEstimatedSize / 1024 / 1024).toFixed(2),
+    totalEstimatedSizeMB: totalSizeMB.toFixed(2),
     largestFileMB: largestFileMB.toFixed(2),
     largeFileCount,
     videoCount,
     largeFiles,
     hasVeryLargeFile,
-    shouldUseGoogleCloud,
-    routingDecision: shouldUseGoogleCloud ? 'google-cloud' : 'cloudflare-worker',
-    riskLevel: shouldUseGoogleCloud ? 'high' : largestFileMB > 80 ? 'medium' : 'low'
+    shouldUseAWS,
+    routingDecision: shouldUseAWS ? 'aws-ec2-spot' : 'cloudflare-worker',
+    riskLevel: shouldUseAWS ? 'high' : largestFileMB > 40 ? 'medium' : 'low'
   };
   
   console.log(`🎯 Collection analysis [${requestId}]:`, {
     totalSizeMB: analysis.totalEstimatedSizeMB,
     largestFileMB: analysis.largestFileMB,
     routing: analysis.routingDecision,
-    reason: shouldUseGoogleCloud ? `File(s) >200MB detected` : `All files ≤200MB`,
+    reason: shouldUseAWS ? `Large files/collection detected (>80MB)` : `All files and collection ≤80MB`,
     risk: analysis.riskLevel
   });
   
@@ -189,13 +190,13 @@ function analyzeCollectionForRouting(photos, requestId) {
 }
 
 /**
- * Route request to Google Cloud Function for large file processing
+ * Route request to AWS Lambda for large file processing
  */
-async function routeToGoogleCloud(eventId, email, photos, requestId, env) {
-  console.log(`🚀 Routing to Google Cloud [${requestId}]: Large files detected`);
+async function routeToAWS(eventId, email, photos, requestId, env) {
+  console.log(`🚀 Routing to AWS EC2 Spot [${requestId}]: Large files detected`);
   
   try {
-    // Prepare payload for Google Cloud Function
+    // Prepare payload for AWS Lambda
     const payload = {
       eventId,
       email,
@@ -205,36 +206,32 @@ async function routeToGoogleCloud(eventId, email, photos, requestId, env) {
       source: 'cloudflare-worker'
     };
     
-    // Call Google Cloud Function
-    const googleCloudUrl = env.GOOGLE_CLOUD_FUNCTION_URL;
-    if (!googleCloudUrl) {
-      throw new Error('Google Cloud Function URL not configured');
-    }
+    // Call AWS Lambda Function URL
+    const awsLambdaUrl = env.AWS_LAMBDA_URL || 'https://szfs7ixxp34s6nbeonngs726om0ihnqx.lambda-url.us-east-1.on.aws/';
     
-    console.log(`📡 Calling Google Cloud Function [${requestId}]: ${googleCloudUrl}`);
+    console.log(`📡 Calling AWS Lambda [${requestId}]: ${awsLambdaUrl}`);
     
-    const response = await fetch(googleCloudUrl, {
+    const response = await fetch(awsLambdaUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${env.GOOGLE_CLOUD_SERVICE_ACCOUNT_KEY || ''}`
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Google Cloud Function error: ${response.status} - ${errorText}`);
+      throw new Error(`AWS Lambda error: ${response.status} - ${errorText}`);
     }
     
     const result = await response.json();
-    console.log(`✅ Google Cloud Function accepted [${requestId}]:`, result);
+    console.log(`✅ AWS Lambda accepted [${requestId}]:`, result);
     
     return result;
     
   } catch (error) {
-    console.error(`❌ Google Cloud routing failed [${requestId}]:`, error);
-    throw new Error(`Google Cloud processing failed: ${error.message}`);
+    console.error(`❌ AWS routing failed [${requestId}]:`, error);
+    throw new Error(`AWS processing failed: ${error.message}`);
   }
 }
 
@@ -317,22 +314,22 @@ export default {
       
       console.log(`🎯 Processing [${requestId}]: ${photos.length} files, ${routingAnalysis.totalEstimatedSizeMB}MB total`);
       
-      // SMART ROUTING: Check if we should use Google Cloud for large files
-      if (routingAnalysis.shouldUseGoogleCloud) {
-        console.log(`🌤️ Routing to Google Cloud [${requestId}]: Files >200MB detected`);
+      // SMART ROUTING: Check if we should use AWS for large files
+      if (routingAnalysis.shouldUseAWS) {
+        console.log(`🚀 Routing to AWS EC2 Spot [${requestId}]: Large files/collection >80MB detected`);
         
         try {
-          const googleCloudResult = await routeToGoogleCloud(eventId, email, photos, requestId, env);
+          const awsResult = await routeToAWS(eventId, email, photos, requestId, env);
           
-          // Record circuit breaker success for Google Cloud routing
+          // Record circuit breaker success for AWS routing
           recordCircuitBreakerSuccess(requestId);
           
           return new Response(JSON.stringify({
             success: true,
-            message: `Processing ${photos.length} files with Google Cloud for large video support. Email will be sent when complete.`,
+            message: `Processing ${photos.length} files with AWS EC2 Spot for ultra cost-efficient 500MB+ video support. Email will be sent when complete.`,
             requestId,
-            estimatedTime: '5-15 minutes',
-            processing: 'google-cloud-functions',
+            estimatedTime: '2-3 minutes',
+            processing: 'aws-ec2-spot',
             collectionAnalysis: {
               totalSizeMB: routingAnalysis.totalEstimatedSizeMB,
               videoCount: routingAnalysis.videoCount,
@@ -342,9 +339,10 @@ export default {
             },
             capabilities: {
               maxVideoSize: '500MB+ per file',
-              maxCollectionSize: 'Unlimited (Google Cloud)',
+              maxCollectionSize: 'Unlimited (AWS EC2)',
               supportedFiles: 'All wedding media formats',
-              processingType: 'Google Cloud Functions with high memory'
+              processingType: 'AWS EC2 Spot Instance (95% cost savings)',
+              estimatedCost: '$0.01-0.02 per job'
             }
           }), {
             status: 200,
@@ -354,20 +352,20 @@ export default {
             },
           });
           
-        } catch (googleCloudError) {
-          console.error(`❌ Google Cloud routing failed [${requestId}], falling back to Cloudflare:`, googleCloudError);
+        } catch (awsError) {
+          console.error(`❌ AWS routing failed [${requestId}], falling back to Cloudflare:`, awsError);
           // Fall through to Cloudflare processing as backup
         }
       }
       
       // Route to Cloudflare Durable Object for standard processing
-      console.log(`⚡ Using Cloudflare processing [${requestId}]: All files ≤200MB`);
+      console.log(`⚡ Using Cloudflare processing [${requestId}]: All files and collection ≤80MB`);
       
       const objectId = env.WEDDING_ZIP_PROCESSOR.idFromName(requestId);
       const durableObject = env.WEDDING_ZIP_PROCESSOR.get(objectId);
 
       // Send request to Durable Object
-      const durableObjectResponse = await durableObject.fetch(new Request('https://dummy.url/', {
+      const durableObjectResponse = await durableObject.fetch(new Request('https://dummy.url/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ eventId, email, photos, requestId })
@@ -403,9 +401,9 @@ export default {
           riskLevel: routingAnalysis.riskLevel
         },
         capabilities: {
-          maxVideoSize: '200MB per file (Cloudflare)',
-          maxCollectionSize: 'Professional scale',
-          supportedFiles: 'All wedding media formats',
+          maxVideoSize: '80MB per file (Cloudflare)',
+          maxCollectionSize: '80MB total (Cloudflare)',
+          supportedFiles: 'Standard wedding media formats',
           processingType: 'Professional Durable Object processing'
         }
       }), {

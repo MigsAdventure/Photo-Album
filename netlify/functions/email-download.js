@@ -471,88 +471,8 @@ exports.handler = async (event, context) => {
       processingStrategy: isLargeCollection ? 'background' : 'immediate'
     });
 
-    // Step 2: Smart routing - check for 80MB+ videos first
-    const largeVideoCount = photos.filter(photo => {
-      const isVideo = photo.mediaType === 'video' || /\.(mp4|mov|avi|webm|mkv)$/i.test(photo.fileName);
-      return isVideo && (photo.size || 0) > 80 * 1024 * 1024; // 80MB threshold
-    }).length;
-
-    if (largeVideoCount > 0 || fileSizeMB > 500 || videoCount > 10) {
-      console.log(`🚀 Large video collection detected [${requestId}] - Routing to Google Cloud Run`);
-      console.log(`📊 Routing reason: ${largeVideoCount} videos >80MB, ${fileSizeMB.toFixed(0)}MB total, ${videoCount} videos`);
-      
-      try {
-        // Route 80MB+ videos to Google Cloud Run (unlimited processing time!)
-        const cloudRunResult = await routeToGoogleCloudRun(photos, eventId, email, requestId);
-        
-        console.log(`✅ Google Cloud Run routing successful [${requestId}]:`, cloudRunResult.message);
-        
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            success: true,
-            processing: 'google-cloud',
-            message: `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with Google Cloud Run. Large videos detected - using enhanced processing engine. You'll receive an email in 3-8 minutes.`,
-            fileCount: photos.length,
-            estimatedSizeMB: Math.round(fileSizeMB),
-            videoCount,
-            largeVideoCount,
-            estimatedWaitTime: '3-8 minutes',
-            requestId,
-            processingEngine: 'google-cloud-run'
-          }),
-        };
-        
-      } catch (cloudRunError) {
-        console.warn(`⚠️ Google Cloud Run routing failed [${requestId}]:`, cloudRunError.message);
-        console.log(`🔄 Falling back to Cloudflare Worker [${requestId}]`);
-        
-        try {
-          // Fallback to Cloudflare Worker
-          const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
-          
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify({
-              success: true,
-              processing: 'cloudflare-fallback',
-              message: `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with Cloudflare Worker fallback. You'll receive an email in 3-8 minutes.`,
-              fileCount: photos.length,
-              estimatedSizeMB: Math.round(fileSizeMB),
-              videoCount,
-              estimatedWaitTime: '3-8 minutes',
-              requestId,
-              processingEngine: 'cloudflare-worker-fallback'
-            }),
-          };
-          
-        } catch (workerError) {
-          console.warn(`⚠️ Worker fallback also failed [${requestId}]:`, workerError.message);
-          console.log(`🔄 Using Netlify background processing [${requestId}]`);
-          
-          // Final fallback to Netlify background processing
-          processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
-          
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify({
-              success: true,
-              processing: 'netlify-fallback',
-              message: `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with backup processing. You'll receive an email in 4-10 minutes.`,
-              fileCount: photos.length,
-              estimatedSizeMB: Math.round(fileSizeMB),
-              videoCount,
-              estimatedWaitTime: '4-10 minutes',
-              requestId,
-              processingEngine: 'netlify-final-fallback'
-            }),
-          };
-        }
-      }
-    } else if (isLargeCollection) {
+    // Step 2: Smart routing - Route large collections directly to Cloudflare Worker
+    if (isLargeCollection) {
       console.log(`🚀 Large collection detected [${requestId}] - Routing to Cloudflare Worker (no large videos)`);
       
       try {
@@ -1190,62 +1110,6 @@ async function sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloa
   console.log(`✅ Success email sent [${requestId}]`);
 }
 
-// Route 80MB+ videos to Google Cloud Run for unlimited processing time
-async function routeToGoogleCloudRun(photos, eventId, email, requestId) {
-  console.log(`☁️ Routing to Google Cloud Run [${requestId}]`);
-  
-  const CLOUD_RUN_URL = 'https://wedding-photo-processor-767610841427.us-west1.run.app';
-  
-  try {
-    const response = await fetch(`${CLOUD_RUN_URL}/process-photos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'SharedMoments/1.0',
-      },
-      body: JSON.stringify({
-        eventId,
-        email,
-        photos: photos.slice(0, 100), // Limit to first 100 for payload size
-        source: 'netlify-smart-routing',
-        routingReason: 'Large video processing via Netlify smart routing'
-      }),
-      // 30 second timeout for Cloud Run communication
-      signal: AbortSignal.timeout(30000)
-    });
-    
-    if (!response.ok) {
-      let errorMessage = `Google Cloud Run responded with ${response.status}`;
-      try {
-        const errorText = await response.text();
-        if (errorText) {
-          errorMessage += `: ${errorText}`;
-        }
-      } catch (e) {
-        // Ignore text parsing errors
-      }
-      throw new Error(errorMessage);
-    }
-    
-    const result = await response.json();
-    console.log(`✅ Google Cloud Run accepted request [${requestId}]:`, result);
-    
-    return {
-      success: true,
-      processing: 'google-cloud-background',
-      message: result.message || `Processing ${photos.length} files with Google Cloud Run enhanced engine`,
-      fileCount: photos.length,
-      estimatedSizeMB: Math.round(photos.reduce((sum, p) => sum + (p.size || 0), 0) / 1024 / 1024),
-      estimatedTime: '3-8 minutes',
-      requestId: result.requestId || requestId
-    };
-    
-  } catch (error) {
-    console.warn(`⚠️ Google Cloud Run routing failed [${requestId}]:`, error.message);
-    throw error;
-  }
-}
-
 // Route large collections to Cloudflare Worker for enhanced processing
 async function routeToCloudflareWorker(photos, eventId, email, requestId) {
   console.log(`🚀 Routing to Cloudflare Worker [${requestId}]`);
@@ -1298,7 +1162,7 @@ async function routeToCloudflareWorker(photos, eventId, email, requestId) {
 
 // Send error email to user
 async function sendErrorEmail(email, requestId, errorMessage) {
-  console.log(`📧 Sending error email [${requestId}] to: ${email}`);
+  console.log(`� Sending error email [${requestId}] to: ${email}`);
   
   const transporter = nodemailer.createTransport({
     host: 'smtp.mailgun.org',

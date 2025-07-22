@@ -1,0 +1,16 @@
+{
+  "name": "wedding-photo-spot-launcher",
+  "version": "1.0.0",
+  "description": "AWS Lambda to launch EC2 spot instances for 500MB wedding video processing",
+  "main": "lambda-function.js",
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.600.0",
+    "@aws-sdk/client-sqs": "^3.600.0"
+  },
+  "scripts": {
+    "deploy": "npm install && zip -r lambda-deployment.zip . -x '*.git*' 'node_modules/.cache/*' && aws lambda update-function-code --function-name wedding-photo-spot-launcher --zip-file fileb://lambda-deployment.zip"
+  },
+  "keywords": ["aws", "lambda", "ec2", "spot", "wedding", "video", "processing"],
+  "author": "Wedding Photo Processor",
+  "license": "MIT"
+}

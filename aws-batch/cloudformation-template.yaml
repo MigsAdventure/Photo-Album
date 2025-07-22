@@ -1,0 +1,320 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'High-Performance Wedding Photo Processing with AWS Batch'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'wedding-photo-processor'
+    Description: Name prefix for all resources
+
+Resources:
+  # VPC for networking
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet for Batch instances
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+
+  # Route Table
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
+  # Security Group for Batch instances
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for wedding photo batch processing
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sg'
+
+  # IAM Role for Batch Service
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-batch-service-role'
+
+  # IAM Role for EC2 instances (Batch Compute Environment)
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-instance-role'
+
+  # Instance Profile
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # IAM Role for Batch Jobs (high permissions for processing)
+  JobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WeddingProcessorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Firebase access (for downloading)
+              - Effect: Allow
+                Action:
+                  - 'sts:AssumeRole'
+                Resource: '*'
+              # S3 access (for R2-compatible operations)
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource: '*'
+              # SQS access (for job queuing)
+              - Effect: Allow
+                Action:
+                  - 'sqs:*'
+                Resource: '*'
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-job-role'
+
+  # Execution Role for ECS tasks
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-execution-role'
+
+  # SQS Queue for job coordination
+  JobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-jobs'
+      VisibilityTimeoutSeconds: 3600  # 1 hour for long processing
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-queue'
+
+  # Batch Compute Environment (Network-Optimized instances)
+  ComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      State: ENABLED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeEnvironmentName: !Sub '${ProjectName}-compute-env'
+      ComputeResources:
+        Type: EC2
+        MinvCpus: 0
+        MaxvCpus: 100
+        DesiredvCpus: 0
+        InstanceTypes:
+          - c5n.large    # Network optimized
+          - c5n.xlarge   # Network optimized
+          - m5n.large    # Network optimized
+        InstanceRole: !GetAtt InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+        Subnets:
+          - !Ref PublicSubnet
+        Tags:
+          Name: !Sub '${ProjectName}-batch-instance'
+
+  # Batch Job Queue
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: !Sub '${ProjectName}-job-queue'
+      State: ENABLED
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref ComputeEnvironment
+
+  # ECR Repository for our container
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectName}'
+      ImageScanningConfiguration:
+        ScanOnPush: false
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 5 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # Batch Job Definition
+  JobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub '${ProjectName}-job-def'
+      Type: container
+      PlatformCapabilities:
+        - EC2
+      ContainerProperties:
+        Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}:latest'
+        Vcpus: 2
+        Memory: 4096
+        JobRoleArn: !GetAtt JobRole.Arn
+        ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+        Environment:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: SQS_QUEUE_URL
+            Value: !Ref JobQueue
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Sub '/aws/batch/${ProjectName}'
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: 'wedding-processor'
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/batch/${ProjectName}'
+      RetentionInDays: 14
+
+Outputs:
+  JobQueueArn:
+    Description: ARN of the Batch Job Queue
+    Value: !Ref BatchJobQueue
+    Export:
+      Name: !Sub '${ProjectName}-job-queue-arn'
+
+  JobDefinitionArn:
+    Description: ARN of the Batch Job Definition
+    Value: !Ref JobDefinition
+    Export:
+      Name: !Sub '${ProjectName}-job-definition-arn'
+
+  SQSQueueUrl:
+    Description: URL of the SQS Queue
+    Value: !Ref JobQueue
+    Export:
+      Name: !Sub '${ProjectName}-sqs-queue-url'
+
+  ECRRepositoryUri:
+    Description: URI of the ECR Repository
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}'
+    Export:
+      Name: !Sub '${ProjectName}-ecr-uri'
+
+  VPCId:
+    Description: ID of the VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${ProjectName}-vpc-id'

@@ -1,0 +1,11 @@
+{
+  "eventId": "test",
+  "email": "test@example.com",
+  "photos": [
+    {
+      "fileName": "test.mp4",
+      "size": 524288000
+    }
+  ],
+  "requestId": "test-123"
+}

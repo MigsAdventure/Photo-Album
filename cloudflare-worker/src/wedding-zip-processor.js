@@ -24,7 +24,11 @@ export class WeddingZipProcessor {
 
   async processWeddingPhotos(request) {
     try {
-      const { eventId, files, customerEmail } = await request.json();
+      const { eventId, email, photos, requestId } = await request.json();
+      
+      // Map to expected variables
+      const files = photos || [];
+      const customerEmail = email;
       
       console.log(`🎥 Starting wedding processing for ${eventId} with ${files.length} files`);
       
@@ -122,14 +126,32 @@ export class WeddingZipProcessor {
       try {
         console.log(`📁 Processing: ${file.name} (${file.size} bytes)`);
         
-        // Get file from R2
-        const response = await this.env.R2_BUCKET.get(file.key);
-        if (!response) {
-          console.log(`⚠️ File not found in R2: ${file.key}`);
+        // Get file from R2 or Firebase
+        let fileData;
+        if (file.key) {
+          // R2 storage
+          const response = await this.env.R2_BUCKET.get(file.key);
+          if (!response) {
+            console.log(`⚠️ File not found in R2: ${file.key}`);
+            continue;
+          }
+          fileData = await response.arrayBuffer();
+        } else if (file.downloadURL || file.url) {
+          // Firebase storage URL
+          const fileUrl = file.downloadURL || file.url;
+          console.log(`📁 Downloading from Firebase: ${fileUrl}`);
+          
+          const response = await fetch(fileUrl);
+          if (!response.ok) {
+            console.log(`⚠️ Failed to download from Firebase: ${fileUrl} - ${response.status}`);
+            continue;
+          }
+          
+          fileData = await response.arrayBuffer();
+        } else {
+          console.log(`⚠️ No file key or download URL for: ${file.name}`);
           continue;
         }
-        
-        const fileData = await response.arrayBuffer();
         
         // Create zip entry
         const entry = await this.createZipEntry(file.name, new Uint8Array(fileData));

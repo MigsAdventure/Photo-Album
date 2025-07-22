@@ -1,0 +1,10 @@
+{
+  "eventId": "test",
+  "email": "test@example.com",
+  "photos": [
+    {
+      "fileName": "test.mp4",
+      "size": 100000000
+    }
+  ]
+}

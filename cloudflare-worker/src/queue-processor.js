@@ -286,27 +286,60 @@ async function createParallelProcessedZip(photos, requestId, env) {
 
 /**
  * Stream response to buffer with memory management
- * Handles any file size efficiently
+ * Handles any file size efficiently with multiple fallback methods
  * @param {Response} response - Fetch response object
  * @param {string} requestId - Request identifier
  * @param {string} fileName - File name for logging
  * @returns {ArrayBuffer} - Complete file buffer
  */
 async function streamToBuffer(response, requestId, fileName) {
-  const reader = response.body.getReader();
+  console.log(`📡 Starting download [${requestId}]: ${fileName}`);
+  
+  // Method 1: Try ReadableStream API (preferred for large files)
+  if (response.body && typeof response.body.getReader === 'function') {
+    console.log(`🌊 Using ReadableStream API [${requestId}]: ${fileName}`);
+    return await streamWithReader(response.body, requestId, fileName);
+  }
+  
+  // Method 2: Try async iteration for Cloudflare Workers
+  if (response.body && response.body[Symbol.asyncIterator]) {
+    console.log(`🔄 Using async iteration [${requestId}]: ${fileName}`);
+    return await streamWithAsyncIterator(response.body, requestId, fileName);
+  }
+  
+  // Method 3: Fallback to arrayBuffer for smaller files
+  console.log(`📦 Using arrayBuffer fallback [${requestId}]: ${fileName}`);
+  try {
+    const buffer = await response.arrayBuffer();
+    console.log(`✅ Downloaded via arrayBuffer [${requestId}]: ${fileName} (${(buffer.byteLength/1024/1024).toFixed(2)}MB)`);
+    return buffer;
+  } catch (error) {
+    console.error(`❌ ArrayBuffer failed [${requestId}]: ${fileName}`, error);
+    throw new Error(`All download methods failed: ${error.message}`);
+  }
+}
+
+/**
+ * Stream with ReadableStream reader (Method 1)
+ */
+async function streamWithReader(readableStream, requestId, fileName) {
+  const reader = readableStream.getReader();
   const chunks = [];
   let totalSize = 0;
   let progressLogged = 0;
-  
-  console.log(`📡 Streaming read [${requestId}]: ${fileName}`);
   
   try {
     while (true) {
       const { done, value } = await reader.read();
       
       if (done) {
-        console.log(`🏁 Streaming complete [${requestId}]: ${fileName} (${(totalSize/1024/1024).toFixed(2)}MB)`);
+        console.log(`🏁 Reader streaming complete [${requestId}]: ${fileName} (${(totalSize/1024/1024).toFixed(2)}MB)`);
         break;
+      }
+      
+      if (!value || value.byteLength === 0) {
+        console.warn(`⚠️ Empty chunk received [${requestId}]: ${fileName}`);
+        continue;
       }
       
       chunks.push(value);
@@ -315,7 +348,7 @@ async function streamToBuffer(response, requestId, fileName) {
       // Log progress every 100MB for very large files
       if (totalSize >= (progressLogged + 1) * 100 * 1024 * 1024) {
         progressLogged++;
-        console.log(`📊 Progress [${requestId}]: ${fileName} - ${(totalSize/1024/1024).toFixed(2)}MB downloaded`);
+        console.log(`📊 Reader progress [${requestId}]: ${fileName} - ${(totalSize/1024/1024).toFixed(2)}MB downloaded`);
       }
       
       // Memory optimization - combine chunks at reasonable intervals
@@ -338,8 +371,8 @@ async function streamToBuffer(response, requestId, fileName) {
       }
     }
   } catch (error) {
-    console.error(`❌ Streaming failed [${requestId}]: ${fileName}`, error);
-    throw new Error(`Streaming download failed: ${error.message}`);
+    console.error(`❌ Reader streaming failed [${requestId}]: ${fileName}`, error);
+    throw new Error(`Reader streaming failed: ${error.message}`);
   } finally {
     reader.releaseLock();
   }
@@ -356,6 +389,73 @@ async function streamToBuffer(response, requestId, fileName) {
   }
   
   return finalBuffer;
+}
+
+/**
+ * Stream with async iterator (Method 2)
+ */
+async function streamWithAsyncIterator(readableStream, requestId, fileName) {
+  const chunks = [];
+  let totalSize = 0;
+  let progressLogged = 0;
+  let chunkCount = 0;
+  
+  console.log(`🔄 Starting async iteration [${requestId}]: ${fileName}`);
+  
+  try {
+    for await (const chunk of readableStream) {
+      if (!chunk || chunk.byteLength === 0) {
+        console.warn(`⚠️ Empty chunk via async iterator [${requestId}]: ${fileName} at chunk ${chunkCount}`);
+        continue;
+      }
+      
+      chunks.push(chunk);
+      totalSize += chunk.byteLength;
+      chunkCount++;
+      
+      // Log progress every 100MB for very large files
+      if (totalSize >= (progressLogged + 1) * 100 * 1024 * 1024) {
+        progressLogged++;
+        console.log(`📊 Async iterator progress [${requestId}]: ${fileName} - ${(totalSize/1024/1024).toFixed(2)}MB (${chunkCount} chunks)`);
+      }
+      
+      // Memory optimization
+      if (chunks.length > 300) {
+        console.log(`🔄 Memory optimization [${requestId}]: ${fileName} - combining ${chunks.length} chunks`);
+        
+        const combinedChunk = new Uint8Array(totalSize);
+        let offset = 0;
+        for (const existingChunk of chunks) {
+          combinedChunk.set(existingChunk, offset);
+          offset += existingChunk.byteLength;
+        }
+        chunks.length = 0;
+        chunks.push(combinedChunk);
+        
+        if (typeof global !== 'undefined' && global.gc) {
+          global.gc();
+        }
+      }
+    }
+    
+    console.log(`🏁 Async iterator complete [${requestId}]: ${fileName} (${(totalSize/1024/1024).toFixed(2)}MB, ${chunkCount} chunks)`);
+    
+    // Final assembly
+    const finalBuffer = new ArrayBuffer(totalSize);
+    const finalView = new Uint8Array(finalBuffer);
+    let offset = 0;
+    
+    for (const chunk of chunks) {
+      finalView.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    
+    return finalBuffer;
+    
+  } catch (error) {
+    console.error(`❌ Async iterator failed [${requestId}]: ${fileName}`, error);
+    throw new Error(`Async iterator streaming failed: ${error.message}`);
+  }
 }
 
 /**
