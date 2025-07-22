@@ -319,25 +319,19 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
 
-  // Download handler for individual photos/videos - direct download (no CORS issues)
+  // Download handler for individual photos/videos - server-side proxy with proper headers
   const handleDownloadSingle = (media: Media) => {
     try {
-      console.log('📥 Starting download for:', media.fileName);
+      console.log('📥 Starting server-side download for:', media.fileName);
       
       // Add to downloading set to show loading state briefly
       setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
-      // Use the original filename or generate one based on type
-      const extension = isVideo(media) ? 'mp4' : 'jpg';
-      const timestamp = new Date(media.uploadedAt).getTime();
-      const filename = media.fileName || `${eventId}_${timestamp}.${extension}`;
+      console.log('🔗 Using server proxy for download...');
       
-      console.log('🔗 Creating direct download link...');
-      
-      // Create temporary anchor element for direct download
+      // Create temporary anchor element for server-side download
       const a = document.createElement('a');
-      a.href = media.url;
-      a.download = filename;
+      a.href = `/api/download/${media.id}`;
       a.style.display = 'none';
       
       // Add to DOM, click, and remove
@@ -345,7 +339,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       a.click();
       document.body.removeChild(a);
       
-      console.log('✅ Download initiated successfully');
+      console.log('✅ Server download initiated successfully');
       
       // Remove loading state after brief delay
       setTimeout(() => {

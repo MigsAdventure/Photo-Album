@@ -92,11 +92,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log('Photo does not have R2 key - this is a Firebase Storage photo');
       console.log('Firebase Storage URL:', url);
       
-      // For Firebase Storage photos, redirect to the original URL
-      // This allows the browser to download the file directly
+      // For Firebase Storage photos, fetch and proxy with proper download headers
       if (url) {
-        console.log('Redirecting to Firebase Storage URL for download');
-        return res.redirect(302, url);
+        console.log('Proxying Firebase Storage download with proper headers');
+        
+        try {
+          // Fetch from Firebase Storage
+          const firebaseResponse = await fetch(url);
+          
+          if (!firebaseResponse.ok) {
+            throw new Error(`Firebase Storage fetch failed: ${firebaseResponse.status}`);
+          }
+          
+          // Get the file as a buffer
+          const buffer = Buffer.from(await firebaseResponse.arrayBuffer());
+          console.log('Firebase file fetched, size:', buffer.length);
+          
+          // Set proper download headers
+          res.setHeader('Content-Type', contentType || 'application/octet-stream');
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+          res.setHeader('Content-Length', buffer.length);
+          res.setHeader('Cache-Control', 'no-cache');
+          
+          console.log(`Firebase download initiated for: ${fileName}`);
+          
+          // Send the file as download
+          return res.status(200).send(buffer);
+          
+        } catch (error) {
+          console.error('Firebase Storage proxy error:', error);
+          return res.status(500).json({ 
+            error: 'Failed to fetch file from Firebase Storage',
+            details: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
       } else {
         return res.status(400).json({ 
           error: 'Photo URL not found',
