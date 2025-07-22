@@ -319,12 +319,12 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
 
-  // Download handler for individual photos/videos - client-side download
-  const handleDownloadSingle = async (media: Media) => {
+  // Download handler for individual photos/videos - direct download (no CORS issues)
+  const handleDownloadSingle = (media: Media) => {
     try {
       console.log('📥 Starting download for:', media.fileName);
       
-      // Add to downloading set to show loading state
+      // Add to downloading set to show loading state briefly
       setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
       // Use the original filename or generate one based on type
@@ -332,31 +332,13 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       const timestamp = new Date(media.uploadedAt).getTime();
       const filename = media.fileName || `${eventId}_${timestamp}.${extension}`;
       
-      console.log('🌐 Fetching file from Firebase...');
+      console.log('🔗 Creating direct download link...');
       
-      // Fetch the file directly from Firebase
-      const response = await fetch(media.url, {
-        method: 'GET'
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-      }
-      
-      console.log('📦 Creating blob from response...');
-      
-      // Create blob from response
-      const blob = await response.blob();
-      
-      console.log('🔗 Creating download URL...');
-      
-      // Create object URL for download
-      const downloadUrl = URL.createObjectURL(blob);
-      
-      // Create temporary anchor element for download
+      // Create temporary anchor element for direct download
       const a = document.createElement('a');
-      a.href = downloadUrl;
+      a.href = media.url;
       a.download = filename;
+      a.target = '_blank'; // Important for cross-origin downloads
       a.style.display = 'none';
       
       // Add to DOM, click, and remove
@@ -364,16 +346,22 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       a.click();
       document.body.removeChild(a);
       
-      // Clean up the object URL
-      URL.revokeObjectURL(downloadUrl);
+      console.log('✅ Download initiated successfully');
       
-      console.log('✅ Download completed successfully');
+      // Remove loading state after brief delay
+      setTimeout(() => {
+        setDownloadingIds(prev => {
+          const updated = new Set(prev);
+          updated.delete(media.id);
+          return updated;
+        });
+      }, 1000);
       
     } catch (error) {
       console.error('❌ Download failed:', error);
       alert(`Failed to download ${isVideo(media) ? 'video' : 'image'}. Please try again.`);
-    } finally {
-      // Remove from downloading set
+      
+      // Remove from downloading set on error
       setDownloadingIds(prev => {
         const updated = new Set(prev);
         updated.delete(media.id);
