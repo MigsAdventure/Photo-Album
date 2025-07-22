@@ -33,3 +33,7 @@ cloud-run-processor
 
 # Test media files (large videos/images)
 test-media/
+
+# Firebase service account keys
+wedding-photo-240c9-firebase-adminsdk-*.json
+*firebase-adminsdk*.json

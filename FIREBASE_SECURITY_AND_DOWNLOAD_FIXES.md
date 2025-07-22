@@ -54,25 +54,32 @@ service firebase.storage {
 ## 2. Download Fix for Large Files
 
 ### Problem Solved:
-- Netlify Functions have a 6MB response limit and 512MB memory limit
-- Your 300MB videos exceeded these limits
+- Netlify Functions have a 10-second timeout limit
+- Videos don't download properly, they open in new tabs
+- Need to force download behavior with proper filenames
 
 ### Solution Implemented:
-- Instead of proxying files through Netlify, we now:
-  1. Use Firebase Storage's `response-content-disposition` parameter
-  2. Return a 302 redirect to the modified URL
-  3. This forces download behavior without passing data through Netlify
+- Using Firebase Admin SDK to generate signed URLs
+- Signed URLs include custom headers that force download
+- Files are served directly from Firebase Storage
+- No data passes through Netlify (avoids timeouts)
 
 ### Code Changes Made:
 
 #### `netlify/functions/media-download.js`
-- Changed from fetching and returning file data
-- Now creates a redirect URL with proper download headers
-- Works for any file size (tested with 300MB+ videos)
+- Implemented Firebase Admin SDK initialization
+- Extracts storage path from Firebase URL
+- Generates signed URLs with 1-hour expiration
+- Sets `responseDisposition: attachment` to force download
+- Returns 302 redirect to the signed URL
 
 #### `src/services/photoService.ts`
 - Added sessionId to upload metadata for security compliance
 - Existing functionality remains unchanged
+
+#### `.gitignore`
+- Added patterns to exclude Firebase service account files
+- Prevents accidental commit of sensitive credentials
 
 ## 3. Testing the Fixes
 
