@@ -1,0 +1,24 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /events/{eventId}/{allPaths=**} {
+      // Allow anyone to read/download photos and videos
+      allow read: if true;
+      
+      // Allow writes (uploads) only if:
+      // 1. User is authenticated with Firebase Auth, OR
+      // 2. The upload includes a valid sessionId in metadata (for anonymous uploads)
+      allow create: if request.auth != null 
+        || (request.resource != null && 
+            request.resource.metadata != null && 
+            request.resource.metadata.sessionId != null);
+      
+      // Allow updates only from authenticated users
+      allow update: if request.auth != null;
+      
+      // Prevent all deletes from client side
+      // (only allow through admin SDK or Firebase Console)
+      allow delete: if false;
+    }
+  }
+}

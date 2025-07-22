@@ -17,42 +17,37 @@ exports.handler = async (event) => {
   }
 
   try {
-    console.log('📥 Proxying download for:', filename || 'media file');
+    console.log('📥 Creating download redirect for:', filename || 'media file');
     
-    // Fetch the media from Firebase Storage
-    const response = await fetch(url);
+    // Parse the URL to modify it
+    const parsedUrl = new URL(url);
     
-    if (!response.ok) {
-      throw new Error(`Failed to fetch media: ${response.status}`);
-    }
-
-    // Get the content type from the response
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    // Add response-content-disposition parameter to force download
+    // This tells Firebase Storage to set the Content-Disposition header
+    const encodedFilename = encodeURIComponent(filename || 'download');
+    parsedUrl.searchParams.set('response-content-disposition', `attachment; filename="${encodedFilename}"`);
     
-    // Convert the response to a buffer
-    const buffer = await response.arrayBuffer();
+    // Create the modified URL
+    const downloadUrl = parsedUrl.toString();
     
-    // Set headers to force download
-    const headers = {
-      'Content-Type': contentType,
-      'Content-Disposition': `attachment; filename="${filename || 'download'}"`,
-      'Cache-Control': 'no-cache'
-    };
-
-    console.log('✅ Download proxy successful');
+    console.log('✅ Redirecting to download URL');
     
+    // Return a redirect response
+    // This avoids proxying the file through Netlify
     return {
-      statusCode: 200,
-      headers,
-      body: Buffer.from(buffer).toString('base64'),
-      isBase64Encoded: true
+      statusCode: 302,
+      headers: {
+        'Location': downloadUrl,
+        'Cache-Control': 'no-cache'
+      },
+      body: ''
     };
   } catch (error) {
-    console.error('❌ Download proxy failed:', error);
+    console.error('❌ Download redirect failed:', error);
     
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: 'Failed to download media' })
+      body: JSON.stringify({ error: 'Failed to create download URL' })
     };
   }
 };

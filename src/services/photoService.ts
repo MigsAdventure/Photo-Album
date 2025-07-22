@@ -89,7 +89,15 @@ export const uploadPhoto = async (
   // Get current session ID for ownership tracking
   const sessionId = getCurrentSessionId();
   
-  const uploadTask = uploadBytesResumable(storageRef, file);
+  // Add metadata with sessionId for security rules compliance
+  const metadata = {
+    customMetadata: {
+      sessionId: sessionId,
+      uploadedAt: new Date().toISOString()
+    }
+  };
+  
+  const uploadTask = uploadBytesResumable(storageRef, file, metadata);
   
   return new Promise((resolve, reject) => {
     uploadTask.on(
