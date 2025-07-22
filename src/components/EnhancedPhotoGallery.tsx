@@ -320,37 +320,28 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     try {
       console.log('📥 Starting download for:', media.fileName);
       
-      // Fetch the file as a blob
-      const response = await fetch(media.url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch media');
-      }
-      
-      const blob = await response.blob();
-      
-      // Create a temporary anchor element to trigger download
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      
       // Use the original filename or generate one based on type
       const extension = isVideo(media) ? 'mp4' : 'jpg';
       const timestamp = new Date(media.uploadedAt).getTime();
-      a.download = media.fileName || `${eventId}_${timestamp}.${extension}`;
+      const filename = media.fileName || `${eventId}_${timestamp}.${extension}`;
       
-      // Trigger download without opening new tab
+      // Use our backend proxy to download the file
+      const proxyUrl = `/.netlify/functions/media-download?url=${encodeURIComponent(media.url)}&filename=${encodeURIComponent(filename)}`;
+      
+      // Create a temporary anchor element to trigger download
+      const a = document.createElement('a');
+      a.href = proxyUrl;
+      a.download = filename;
+      
+      // Trigger download
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       
-      // Clean up the blob URL
-      setTimeout(() => URL.revokeObjectURL(url), 100);
-      
       console.log('✅ Download initiated successfully');
     } catch (error) {
       console.error('❌ Download failed:', error);
-      // Note: This will fail on localhost due to CORS, but works in production
-      alert('Download is only available in production. For local testing, right-click and save instead.');
+      alert('Failed to download media. Please try again.');
     }
   };
 
