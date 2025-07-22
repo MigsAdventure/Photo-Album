@@ -88,8 +88,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { r2Key, fileName, contentType, url } = photoData;
 
-    if (!r2Key) {
+    // Check if this is a Firebase Storage photo (r2Key is null, undefined, or empty string)
+    if (!r2Key || r2Key.trim() === '') {
       console.log('Photo does not have R2 key - this is a Firebase Storage photo');
+      console.log('r2Key value:', r2Key);
       console.log('Firebase Storage URL:', url);
       
       // For Firebase Storage photos, fetch and proxy with proper download headers
