@@ -9,6 +9,11 @@ const util = require('util');
 const sqs = new AWS.SQS({ region: 'us-east-1' });
 const queueUrl = 'https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue';
 
+// Auto-termination settings
+let lastActivity = Date.now();
+const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+let isProcessing = false;
+
 // Configure R2 client with better SSL settings
 const r2Client = new S3Client({
   region: 'auto',
@@ -284,12 +289,34 @@ async function pollQueue() {
       }).promise();
 
       if (result.Messages && result.Messages.length > 0) {
+        lastActivity = Date.now();
+        isProcessing = true;
+        
         const message = result.Messages[0];
         const messageData = JSON.parse(message.Body);
         const fileCount = messageData.photos?.length || messageData.files?.length || 0;
         console.log(`📦 Received job for eventId: ${messageData.eventId} (${fileCount} files)`);
         
         await processMessage(message);
+        
+        isProcessing = false;
+      }
+
+      // Check for idle timeout
+      if (Date.now() - lastActivity > IDLE_TIMEOUT) {
+        console.log('⏰ Idle timeout reached, shutting down...');
+        console.log(`🕐 Last activity: ${new Date(lastActivity).toISOString()}`);
+        console.log(`⏱️ Idle for: ${Math.round((Date.now() - lastActivity) / 1000 / 60)} minutes`);
+        
+        // Gracefully shutdown the instance
+        require('child_process').exec('sudo shutdown -h now', (error) => {
+          if (error) {
+            console.error('❌ Failed to shutdown:', error);
+          }
+        });
+        
+        // Exit the process
+        process.exit(0);
       }
     } catch (error) {
       console.error('❌ Queue polling error:', error);
