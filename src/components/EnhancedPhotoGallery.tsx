@@ -316,6 +316,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   };
 
   // Download state
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
 
   // Download handler for individual photos/videos - client-side download
@@ -759,8 +760,13 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   onClick={() => handleDownloadSingle(currentPhoto)} 
                   sx={{ color: 'white' }} 
                   title="Download"
+                  disabled={downloadingIds.has(currentPhoto.id)}
                 >
-                  <Download />
+                  {downloadingIds.has(currentPhoto.id) ? (
+                    <CircularProgress size={24} sx={{ color: 'white' }} />
+                  ) : (
+                    <Download />
+                  )}
                 </IconButton>
                 <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
                   <Close />
