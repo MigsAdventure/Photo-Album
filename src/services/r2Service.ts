@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 
@@ -41,7 +41,6 @@ export const copyFirebaseToR2 = async (
     console.log(`✅ Downloaded ${buffer.byteLength} bytes from Firebase`);
     
     // 2. Generate R2 key
-    const extension = fileName.split('.').pop() || 'jpg';
     const timestamp = Date.now();
     const r2Key = `events/${eventId}/${timestamp}_${fileName}`;
     

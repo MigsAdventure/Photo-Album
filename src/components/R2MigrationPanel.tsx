@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { migrateEventToR2, getEventMigrationStatus } from '../utils/r2Migration';
 import { testR2Connection } from '../services/r2Service';
 
@@ -44,7 +44,7 @@ export const R2MigrationPanel: React.FC<Props> = ({ eventId, onClose }) => {
   };
 
   // Check migration status
-  const checkMigrationStatus = async () => {
+  const checkMigrationStatus = useCallback(async () => {
     setIsLoading(true);
     try {
       const status = await getEventMigrationStatus(eventId);
@@ -54,7 +54,7 @@ export const R2MigrationPanel: React.FC<Props> = ({ eventId, onClose }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [eventId]);
 
   // Start migration
   const startMigration = async () => {
@@ -82,7 +82,7 @@ export const R2MigrationPanel: React.FC<Props> = ({ eventId, onClose }) => {
   React.useEffect(() => {
     checkMigrationStatus();
     checkR2Connection();
-  }, [eventId]);
+  }, [eventId, checkMigrationStatus]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
