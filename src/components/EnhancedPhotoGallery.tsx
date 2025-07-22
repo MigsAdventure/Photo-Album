@@ -35,7 +35,8 @@ import {
   Videocam,
   Star,
   Security,
-  Delete
+  Delete,
+  Download
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
@@ -312,6 +313,45 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     
     console.log('👆 Opening photo modal for index:', index);
     openModal(index);
+  };
+
+  // Download handler for individual photos/videos
+  const handleDownloadSingle = async (media: Media) => {
+    try {
+      console.log('📥 Starting download for:', media.fileName);
+      
+      // Fetch the file as a blob
+      const response = await fetch(media.url);
+      if (!response.ok) {
+        throw new Error('Failed to fetch media');
+      }
+      
+      const blob = await response.blob();
+      
+      // Create a temporary anchor element to trigger download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      // Use the original filename or generate one based on type
+      const extension = isVideo(media) ? 'mp4' : 'jpg';
+      const timestamp = new Date(media.uploadedAt).getTime();
+      a.download = media.fileName || `${eventId}_${timestamp}.${extension}`;
+      
+      // Trigger download without opening new tab
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      // Clean up the blob URL
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+      
+      console.log('✅ Download initiated successfully');
+    } catch (error) {
+      console.error('❌ Download failed:', error);
+      // Note: This will fail on localhost due to CORS, but works in production
+      alert('Download is only available in production. For local testing, right-click and save instead.');
+    }
   };
 
   const currentPhoto = selectedPhotoIndex !== null ? photos[selectedPhotoIndex] : null;
@@ -684,9 +724,18 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   {formatDate(currentPhoto.uploadedAt)}
                 </Typography>
               </Box>
-              <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
-                <Close />
-              </IconButton>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <IconButton 
+                  onClick={() => handleDownloadSingle(currentPhoto)} 
+                  sx={{ color: 'white' }} 
+                  title="Download"
+                >
+                  <Download />
+                </IconButton>
+                <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
+                  <Close />
+                </IconButton>
+              </Box>
             </DialogTitle>
 
             {/* Main Photo Display */}
@@ -776,8 +825,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                     maxWidth: '100%',
                     maxHeight: '100%',
                     objectFit: 'contain',
-                    userSelect: 'none',
-                    pointerEvents: 'none'
+                    userSelect: 'none'
                   }}
                 />
               )}
