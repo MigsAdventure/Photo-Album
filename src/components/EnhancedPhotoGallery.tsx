@@ -338,7 +338,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       const a = document.createElement('a');
       a.href = media.url;
       a.download = filename;
-      a.target = '_blank'; // Important for cross-origin downloads
       a.style.display = 'none';
       
       // Add to DOM, click, and remove
