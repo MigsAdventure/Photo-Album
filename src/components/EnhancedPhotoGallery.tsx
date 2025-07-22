@@ -315,33 +315,72 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     openModal(index);
   };
 
-  // Download handler for individual photos/videos
+  // Download state
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
+
+  // Download handler for individual photos/videos - client-side download
   const handleDownloadSingle = async (media: Media) => {
     try {
       console.log('📥 Starting download for:', media.fileName);
+      
+      // Add to downloading set to show loading state
+      setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
       // Use the original filename or generate one based on type
       const extension = isVideo(media) ? 'mp4' : 'jpg';
       const timestamp = new Date(media.uploadedAt).getTime();
       const filename = media.fileName || `${eventId}_${timestamp}.${extension}`;
       
-      // Use our backend proxy to download the file
-      const proxyUrl = `/.netlify/functions/media-download?url=${encodeURIComponent(media.url)}&filename=${encodeURIComponent(filename)}`;
+      console.log('🌐 Fetching file from Firebase...');
       
-      // Create a temporary anchor element to trigger download
+      // Fetch the file directly from Firebase
+      const response = await fetch(media.url, {
+        method: 'GET',
+        headers: {
+          'Cache-Control': 'no-cache'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
+      }
+      
+      console.log('📦 Creating blob from response...');
+      
+      // Create blob from response
+      const blob = await response.blob();
+      
+      console.log('🔗 Creating download URL...');
+      
+      // Create object URL for download
+      const downloadUrl = URL.createObjectURL(blob);
+      
+      // Create temporary anchor element for download
       const a = document.createElement('a');
-      a.href = proxyUrl;
+      a.href = downloadUrl;
       a.download = filename;
+      a.style.display = 'none';
       
-      // Trigger download
+      // Add to DOM, click, and remove
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       
-      console.log('✅ Download initiated successfully');
+      // Clean up the object URL
+      URL.revokeObjectURL(downloadUrl);
+      
+      console.log('✅ Download completed successfully');
+      
     } catch (error) {
       console.error('❌ Download failed:', error);
-      alert('Failed to download media. Please try again.');
+      alert(`Failed to download ${isVideo(media) ? 'video' : 'image'}. Please try again.`);
+    } finally {
+      // Remove from downloading set
+      setDownloadingIds(prev => {
+        const updated = new Set(prev);
+        updated.delete(media.id);
+        return updated;
+      });
     }
   };
 
