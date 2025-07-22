@@ -151,7 +151,7 @@ exports.handler = async (event) => {
                     InstanceInterruptionBehavior: 'terminate'
                 }
             },
-            UserData: fs.readFileSync(path.join(__dirname, 'user-data.sh')).toString('base64'),
+            UserData: fs.readFileSync(path.join(__dirname, process.env.USER_DATA_SCRIPT === 'STREAMING' ? 'user-data-streaming.sh' : 'user-data.sh')).toString('base64'),
             TagSpecifications: [{
                 ResourceType: 'instance',
                 Tags: [

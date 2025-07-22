@@ -6,6 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # Worker configuration
 [vars]
 ENVIRONMENT = "production"
+AWS_LAMBDA_URL = "https://szfs7ixxp34s6nbeonngs726om0ihnqx.lambda-url.us-east-1.on.aws/"
 
 # Enable observability and logging
 [observability]

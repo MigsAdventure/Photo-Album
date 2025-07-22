@@ -89,20 +89,25 @@ export class WeddingZipProcessor {
       return true;
     });
     
-    // Create readable stream for zip
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
+    // Create an array to collect all zip data chunks
+    const zipChunks = [];
     
-    // Process files asynchronously
-    this.processFilesStream(validFiles, writer).catch(error => {
-      console.error('Stream processing error:', error);
-      writer.abort(error);
-    });
+    // Process files and collect data
+    await this.processFilesIntoBuffer(validFiles, zipChunks);
     
-    // Upload stream directly to R2
+    // Combine all chunks into a single buffer
+    const totalLength = zipChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const zipBuffer = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of zipChunks) {
+      zipBuffer.set(chunk, offset);
+      offset += chunk.length;
+    }
+    
+    // Upload complete buffer to R2
     const zipKey = `zips/${eventId}/wedding-photos-${eventId}.zip`;
     
-    await this.env.R2_BUCKET.put(zipKey, readable, {
+    await this.env.R2_BUCKET.put(zipKey, zipBuffer, {
       httpMetadata: {
         contentType: 'application/zip',
         contentDisposition: `attachment; filename="wedding-photos-${eventId}.zip"`
@@ -110,21 +115,20 @@ export class WeddingZipProcessor {
     });
     
     const zipUrl = `${this.env.R2_PUBLIC_URL}/${zipKey}`;
-    console.log(`✅ Zip uploaded to: ${zipUrl}`);
+    console.log(`✅ Zip uploaded to: ${zipUrl} (${(totalLength / 1024 / 1024).toFixed(2)}MB)`);
     
     return zipUrl;
   }
 
-  async processFilesStream(files, writer) {
+  async processFilesIntoBuffer(files, zipChunks) {
     let processedCount = 0;
     const zipEntries = [];
-    
-    // Write zip file headers
-    const encoder = new TextEncoder();
+    let currentOffset = 0;
     
     for (const file of files) {
       try {
-        console.log(`📁 Processing: ${file.name} (${file.size} bytes)`);
+        const fileName = file.name || file.filename || `photo_${processedCount + 1}.jpg`;
+        console.log(`📁 Processing: ${fileName} (${file.size} bytes)`);
         
         // Get file from R2 or Firebase
         let fileData;
@@ -149,35 +153,36 @@ export class WeddingZipProcessor {
           
           fileData = await response.arrayBuffer();
         } else {
-          console.log(`⚠️ No file key or download URL for: ${file.name}`);
+          console.log(`⚠️ No file key or download URL for: ${fileName}`);
           continue;
         }
         
         // Create zip entry
-        const entry = await this.createZipEntry(file.name, new Uint8Array(fileData));
+        const entry = await this.createZipEntry(fileName, new Uint8Array(fileData));
+        entry.headerOffset = currentOffset;
         zipEntries.push(entry);
         
-        // Write entry to stream
-        await writer.write(entry.data);
+        // Add entry data to chunks
+        zipChunks.push(entry.data);
+        currentOffset += entry.data.length;
         
         processedCount++;
         await this.storage.put('processedFiles', processedCount);
         await this.notifyProgress(processedCount, files.length);
         
-        console.log(`✅ Processed ${processedCount}/${files.length}: ${file.name}`);
+        console.log(`✅ Processed ${processedCount}/${files.length}: ${fileName}`);
         
       } catch (error) {
-        console.error(`❌ Error processing ${file.name}:`, error);
+        console.error(`❌ Error processing file:`, error);
         // Continue with other files - don't fail entire wedding!
       }
     }
     
-    // Write central directory and end record
+    // Create and add central directory and end record
     const centralDir = await this.createCentralDirectory(zipEntries);
-    await writer.write(centralDir);
+    zipChunks.push(centralDir);
     
-    await writer.close();
-    console.log(`📦 Zip stream completed with ${processedCount} files`);
+    console.log(`📦 Zip buffer completed with ${processedCount} files`);
   }
 
   async createZipEntry(filename, data) {

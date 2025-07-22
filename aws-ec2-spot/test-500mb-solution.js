@@ -5,7 +5,7 @@
 
 const https = require('https');
 
-const LAMBDA_URL = 'https://4mqe6nubycfx4guuy2joixbama0ceqfi.lambda-url.us-east-1.on.aws/';
+const LAMBDA_URL = 'https://szfs7ixxp34s6nbeonngs726om0ihnqx.lambda-url.us-east-1.on.aws/';
 
 console.log('🚀 Testing AWS EC2 Spot Solution for 500MB Video Processing');
 console.log(`📍 Lambda URL: ${LAMBDA_URL}`);

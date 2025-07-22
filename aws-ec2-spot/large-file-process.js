@@ -167,7 +167,10 @@ async function uploadToR2(buffer, key) {
 }
 
 async function processMessage(message) {
-  const { eventId, customerEmail, files } = JSON.parse(message.Body);
+  const messageData = JSON.parse(message.Body);
+  const { eventId, email, photos } = messageData;
+  const customerEmail = email || messageData.customerEmail; // Handle both formats
+  const files = photos || messageData.files || []; // Handle both formats
   
   console.log(`🎥 REAL PROCESSING STARTED: ${eventId}`);
   console.log(`📧 Customer email: ${customerEmail}`);
@@ -178,11 +181,14 @@ async function processMessage(message) {
     let estimatedSize = 0;
     for (const file of files) {
       try {
-        const headResponse = await fetch(file.downloadUrl, { method: 'HEAD' });
-        const size = parseInt(headResponse.headers.get('content-length') || '0');
+        // Handle different URL field names
+        const fileUrl = file.url || file.downloadUrl || file.downloadURL;
+        const headResponse = await fetch(fileUrl, { method: 'HEAD' });
+        const size = parseInt(headResponse.headers.get('content-length') || file.size || '0');
         estimatedSize += size;
       } catch (err) {
-        console.log(`⚠️ Could not get size for ${file.filename}, continuing...`);
+        const fileName = file.fileName || file.filename || 'unknown';
+        console.log(`⚠️ Could not get size for ${fileName}, continuing...`);
       }
     }
 
@@ -201,19 +207,22 @@ async function processMessage(message) {
     // Download files with size checking
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      console.log(`⬇️ Downloading ${i + 1}/${files.length}: ${file.filename}`);
-      console.log(`📥 Downloading: ${file.downloadUrl.substring(0, 100)}...`);
+      const fileName = file.fileName || file.filename || `file_${i + 1}`;
+      const fileUrl = file.url || file.downloadUrl || file.downloadURL;
+      
+      console.log(`⬇️ Downloading ${i + 1}/${files.length}: ${fileName}`);
+      console.log(`📥 Downloading: ${fileUrl.substring(0, 100)}...`);
       
       try {
-        const buffer = await downloadFile(file.downloadUrl);
+        const buffer = await downloadFile(fileUrl);
         downloadedFiles.push({
-          name: file.filename,
+          name: fileName,
           buffer: buffer
         });
         console.log(`✅ Download complete: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
       } catch (error) {
         if (error.message.includes('File too large')) {
-          console.log(`⚠️ Skipping large file: ${file.filename} - ${error.message}`);
+          console.log(`⚠️ Skipping large file: ${fileName} - ${error.message}`);
           continue; // Skip large files instead of failing entire job
         }
         throw error;
@@ -277,7 +286,8 @@ async function pollQueue() {
       if (result.Messages && result.Messages.length > 0) {
         const message = result.Messages[0];
         const messageData = JSON.parse(message.Body);
-        console.log(`📦 Received job for eventId: ${messageData.eventId} (${messageData.files?.length || 0} files)`);
+        const fileCount = messageData.photos?.length || messageData.files?.length || 0;
+        console.log(`📦 Received job for eventId: ${messageData.eventId} (${fileCount} files)`);
         
         await processMessage(message);
       }

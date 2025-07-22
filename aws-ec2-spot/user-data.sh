@@ -233,10 +233,15 @@ async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      email: email,
-      downloadUrl: downloadUrl,
-      fileCount: fileCount,
-      finalSizeMB: finalSizeMB.toFixed(2)
+      to: email,
+      subject: 'Your Wedding Photos Are Ready!',
+      html: `
+        <h2>Your Wedding Photos Are Ready!</h2>
+        <p>Your wedding photos for event <strong>${eventId}</strong> have been processed and are ready for download!</p>
+        <p><strong>Files:</strong> ${fileCount} photos (${finalSizeMB.toFixed(2)}MB)</p>
+        <p><a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Download Your Photos</a></p>
+        <p>This download link will be available for 7 days.</p>
+      `
     })
   });
 
