@@ -83,15 +83,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('Photo data:', { 
       hasR2Key: !!photoData.r2Key, 
       fileName: photoData.fileName,
-      contentType: photoData.contentType 
+      contentType: photoData.contentType,
+      r2KeyType: typeof photoData.r2Key,
+      r2KeyValue: photoData.r2Key,
+      url: photoData.url
     });
 
     const { r2Key, fileName, contentType, url } = photoData;
 
-    // Check if this is a Firebase Storage photo (r2Key is null, undefined, or empty string)
-    if (!r2Key || r2Key.trim() === '') {
-      console.log('Photo does not have R2 key - this is a Firebase Storage photo');
-      console.log('r2Key value:', r2Key);
+    // Bulletproof check: Only go to R2 if we have a valid, non-empty string r2Key
+    const hasValidR2Key = r2Key && typeof r2Key === 'string' && r2Key.trim().length > 0;
+    
+    console.log('R2 Key Analysis:', {
+      r2Key: r2Key,
+      type: typeof r2Key,
+      hasValidR2Key: hasValidR2Key,
+      willUseFirebaseProxy: !hasValidR2Key
+    });
+
+    if (!hasValidR2Key) {
+      console.log('Using Firebase Storage proxy path');
       console.log('Firebase Storage URL:', url);
       
       // For Firebase Storage photos, fetch and proxy with proper download headers
