@@ -339,7 +339,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           console.log('🎬 Using R2 direct download for video');
           
           // Use R2 custom domain for same-origin downloads (eliminates CORS completely)
-          const r2Url = `https://sharedmomentsmedia.socialboostai.com/${media.r2Key}`;
+          const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
           
           const a = document.createElement('a');
           a.href = r2Url;
