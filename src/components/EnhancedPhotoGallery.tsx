@@ -320,27 +320,48 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
 
-  // Download handler for individual photos/videos - server-side proxy with proper headers
+  // Smart download handler - direct Firebase URLs for videos, server proxy for images
   const handleDownloadSingle = (media: Media) => {
     try {
-      console.log('📥 Starting server-side download for:', media.fileName);
+      console.log('📥 Starting download for:', media.fileName);
       
       // Add to downloading set to show loading state briefly
       setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
-      console.log('🔗 Using server proxy for download...');
+      const mediaIsVideo = isVideo(media);
       
-      // Create temporary anchor element for server-side download
-      const a = document.createElement('a');
-      a.href = `/api/download/${media.id}`;
-      a.style.display = 'none';
-      
-      // Add to DOM, click, and remove
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      console.log('✅ Server download initiated successfully');
+      if (mediaIsVideo) {
+        // Videos: Use direct Firebase URL with native browser download
+        // This leverages the same mechanism as "hold and download" that works perfectly
+        console.log('🎬 Using direct Firebase download for video (native browser capability)');
+        
+        const a = document.createElement('a');
+        a.href = media.url; // Direct Firebase URL
+        a.download = media.fileName || `video_${media.id}.mp4`; // Force download with filename
+        a.style.display = 'none';
+        
+        // Add to DOM, click, and remove
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        console.log('✅ Direct video download initiated successfully');
+        
+      } else {
+        // Images: Use server proxy for proper attachment headers  
+        console.log('🖼️ Using server proxy for image (proper headers)');
+        
+        const a = document.createElement('a');
+        a.href = `/api/download/${media.id}`;
+        a.style.display = 'none';
+        
+        // Add to DOM, click, and remove
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        console.log('✅ Server image download initiated successfully');
+      }
       
       // Remove loading state after brief delay
       setTimeout(() => {
