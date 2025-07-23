@@ -317,35 +317,108 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   };
 
   // Download state
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
+  const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map());
 
-  // Smart download handler - direct Firebase URLs for videos, server proxy for images
-  const handleDownloadSingle = (media: Media) => {
+  // Blob download with progress for videos (fixes cross-origin issue)
+  const downloadVideoAsBlob = async (media: Media): Promise<void> => {
+    console.log('🎬 Starting blob download for video:', media.fileName);
+    
+    try {
+      // Size limit check (500MB max for blob approach to prevent memory issues)
+      const sizeLimit = 500 * 1024 * 1024; // 500MB
+      
+      // Show download preparing state
+      setDownloadProgress(prev => new Map(prev.set(media.id, 0)));
+      
+      console.log('🔄 Fetching video from Firebase...');
+      
+      const response = await fetch(media.url);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch video: ${response.status} ${response.statusText}`);
+      }
+      
+      // Check content length if available
+      const contentLength = response.headers.get('content-length');
+      if (contentLength && parseInt(contentLength) > sizeLimit) {
+        throw new Error('Video too large for browser download (>500MB). Please use bulk email download.');
+      }
+      
+      // Read response as blob with progress if possible
+      const blob = await response.blob();
+      console.log('✅ Video blob created, size:', (blob.size / 1024 / 1024).toFixed(1), 'MB');
+      
+      // Update progress to 50% after blob creation
+      setDownloadProgress(prev => new Map(prev.set(media.id, 50)));
+      
+      // Create same-origin blob URL
+      const blobUrl = URL.createObjectURL(blob);
+      
+      // Create download link with proper filename
+      const filename = media.fileName || `video_${media.id}.mp4`;
+      const a = document.createElement('a');
+      a.href = blobUrl; // Same-origin blob URL!
+      a.download = filename;
+      a.style.display = 'none';
+      
+      console.log('🔗 Creating download with blob URL and filename:', filename);
+      
+      // Add to DOM, click, and remove
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      // Update progress to 100%
+      setDownloadProgress(prev => new Map(prev.set(media.id, 100)));
+      
+      // Clean up blob URL after short delay
+      setTimeout(() => {
+        URL.revokeObjectURL(blobUrl);
+        console.log('🧹 Blob URL cleaned up');
+      }, 1000);
+      
+      console.log('✅ Blob video download initiated successfully');
+      
+    } catch (error: any) {
+      console.error('❌ Blob video download failed:', error);
+      
+      // Clear progress
+      setDownloadProgress(prev => {
+        const updated = new Map(prev);
+        updated.delete(media.id);
+        return updated;
+      });
+      
+      // Show user-friendly error message
+      let errorMessage = 'Failed to download video. ';
+      
+      if (error.message.includes('too large')) {
+        errorMessage += error.message;
+      } else if (error.message.includes('Failed to fetch')) {
+        errorMessage += 'Network error. Please check your connection and try again.';
+      } else {
+        errorMessage += 'Please try again or use bulk email download for large files.';
+      }
+      
+      alert(errorMessage);
+      throw error;
+    }
+  };
+
+  // Smart download handler - blob download for videos, server proxy for images
+  const handleDownloadSingle = async (media: Media) => {
     try {
       console.log('📥 Starting download for:', media.fileName);
       
-      // Add to downloading set to show loading state briefly
+      // Add to downloading set to show loading state
       setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
       const mediaIsVideo = isVideo(media);
       
       if (mediaIsVideo) {
-        // Videos: Use direct Firebase URL with native browser download
-        // This leverages the same mechanism as "hold and download" that works perfectly
-        console.log('🎬 Using direct Firebase download for video (native browser capability)');
-        
-        const a = document.createElement('a');
-        a.href = media.url; // Direct Firebase URL
-        a.download = media.fileName || `video_${media.id}.mp4`; // Force download with filename
-        a.style.display = 'none';
-        
-        // Add to DOM, click, and remove
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        console.log('✅ Direct video download initiated successfully');
+        // Videos: Use blob download to fix cross-origin restriction
+        await downloadVideoAsBlob(media);
         
       } else {
         // Images: Use server proxy for proper attachment headers  
@@ -363,25 +436,28 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
         console.log('✅ Server image download initiated successfully');
       }
       
-      // Remove loading state after brief delay
+    } catch (error) {
+      console.error('❌ Download failed:', error);
+      // Error already handled in downloadVideoAsBlob for videos
+      if (!isVideo(media)) {
+        alert(`Failed to download image. Please try again.`);
+      }
+      
+    } finally {
+      // Remove loading state after delay
       setTimeout(() => {
         setDownloadingIds(prev => {
           const updated = new Set(prev);
           updated.delete(media.id);
           return updated;
         });
-      }, 1000);
-      
-    } catch (error) {
-      console.error('❌ Download failed:', error);
-      alert(`Failed to download ${isVideo(media) ? 'video' : 'image'}. Please try again.`);
-      
-      // Remove from downloading set on error
-      setDownloadingIds(prev => {
-        const updated = new Set(prev);
-        updated.delete(media.id);
-        return updated;
-      });
+        
+        setDownloadProgress(prev => {
+          const updated = new Map(prev);
+          updated.delete(media.id);
+          return updated;
+        });
+      }, 2000); // Longer delay to show completion
     }
   };
 
@@ -759,12 +835,38 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               <Box sx={{ display: 'flex', gap: 1 }}>
                 <IconButton 
                   onClick={() => handleDownloadSingle(currentPhoto)} 
-                  sx={{ color: 'white' }} 
-                  title="Download"
+                  sx={{ color: 'white', position: 'relative' }} 
+                  title={
+                    downloadingIds.has(currentPhoto.id) 
+                      ? (isVideo(currentPhoto) ? 'Preparing video download...' : 'Downloading...') 
+                      : 'Download'
+                  }
                   disabled={downloadingIds.has(currentPhoto.id)}
                 >
                   {downloadingIds.has(currentPhoto.id) ? (
-                    <CircularProgress size={24} sx={{ color: 'white' }} />
+                    <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <CircularProgress 
+                        size={24} 
+                        sx={{ color: 'white' }}
+                        variant={downloadProgress.has(currentPhoto.id) ? 'determinate' : 'indeterminate'}
+                        value={downloadProgress.get(currentPhoto.id) || 0}
+                      />
+                      {downloadProgress.has(currentPhoto.id) && (
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            top: '50%',
+                            left: '50%',
+                            transform: 'translate(-50%, -50%)',
+                            color: 'white',
+                            fontSize: '0.6rem',
+                            fontWeight: 'bold'
+                          }}
+                        >
+                          {Math.round(downloadProgress.get(currentPhoto.id) || 0)}%
+                        </Box>
+                      )}
+                    </Box>
                   ) : (
                     <Download />
                   )}
