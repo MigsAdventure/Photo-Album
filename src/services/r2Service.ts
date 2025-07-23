@@ -1,6 +1,4 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 
 // R2 client configuration
 const createR2Client = () => {
