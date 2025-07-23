@@ -320,7 +320,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map());
 
-  // Smart download handler with proper R2 + fallback chain
+  // Smart download handler with direct R2 URL construction
   const handleDownloadSingle = async (media: Media) => {
     try {
       console.log('📥 Starting download for:', media.fileName);
@@ -331,18 +331,57 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       const mediaIsVideo = isVideo(media);
       const mediaType = mediaIsVideo ? 'video' : 'image';
       
-      // Check if we have R2 key for ANY media type (videos AND images)
+      // OPTION 1: Try R2 direct download (construct URL from photo data)
+      // Pattern: media/${eventId}/${timestamp}_${fileName}
+      try {
+        console.log(`🔗 Attempting R2 direct download for ${mediaType}`);
+        
+        // Construct expected R2 URL from available data
+        const timestamp = media.uploadedAt.getTime();
+        const expectedR2Key = `media/${eventId}/${timestamp}_${media.fileName}`;
+        const r2Url = `https://sharedmomentsphotos.socialboostai.com/${expectedR2Key}`;
+        
+        console.log(`🎯 Trying R2 URL:`, r2Url);
+        
+        // Test if file exists and fetch it
+        const response = await fetch(r2Url);
+        if (!response.ok) {
+          throw new Error(`R2 file not found: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
+        a.style.display = 'none';
+        
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        // Clean up blob URL
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+        
+        console.log(`✅ R2 direct ${mediaType} download successful!`);
+        return; // Success! Exit early
+        
+      } catch (r2Error) {
+        console.warn(`⚠️ R2 direct download failed:`, r2Error);
+        // Continue to fallback options below
+      }
+      
+      // OPTION 2: Check if we have saved R2 key (legacy approach)
       const hasR2Key = media.r2Key && typeof media.r2Key === 'string' && media.r2Key.trim().length > 0;
       
       if (hasR2Key) {
-        // OPTION 1: Use R2 direct download (fetch + blob for forced download)
-        console.log(`🔗 Using R2 direct download for ${mediaType}:`, media.r2Key);
+        // Use saved R2 key
+        console.log(`🔗 Using saved R2 key for ${mediaType}:`, media.r2Key);
         
         try {
-          // Use R2 custom domain for same-origin downloads
           const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
           
-          // Fetch the file and create blob URL for forced download
           const response = await fetch(r2Url);
           if (!response.ok) {
             throw new Error(`R2 fetch failed: ${response.status}`);
@@ -363,14 +402,17 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           // Clean up blob URL
           setTimeout(() => URL.revokeObjectURL(url), 100);
           
-          console.log(`✅ R2 direct ${mediaType} download successful`);
+          console.log(`✅ Saved R2 key ${mediaType} download successful`);
+          return; // Success! Exit early
           
         } catch (r2Error) {
-          console.warn(`⚠️ R2 direct download failed:`, r2Error);
-          throw r2Error; // Let it fall through to next option
+          console.warn(`⚠️ Saved R2 key download failed:`, r2Error);
+          // Continue to server proxy fallback
         }
-        
-      } else {
+      }
+      
+      // OPTION 3: Server proxy fallback (skip for videos due to size limits)
+      if (!mediaIsVideo) { // Skip server proxy for videos entirely due to 10s timeout
         // OPTION 2: Server proxy fallback (for when R2 copy isn't ready yet)
         console.log(`🔄 Using server proxy for ${mediaType} (no R2 key available yet)`);
         
