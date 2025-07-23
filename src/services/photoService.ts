@@ -196,39 +196,6 @@ const copyToR2ViaAPI = async (
   }
 };
 
-// Background R2 copy function (non-blocking) - Legacy, keeping for reference
-const copyToR2InBackground = async (
-  photoId: string,
-  firebaseUrl: string, 
-  fileName: string,
-  eventId: string,
-  contentType: string
-): Promise<void> => {
-  try {
-    // Import R2 service dynamically to avoid bundling issues
-    const { copyFirebaseToR2 } = await import('./r2Service');
-    
-    console.log('📦 Starting background R2 copy for:', fileName);
-    
-    // Copy to R2
-    const r2Key = await copyFirebaseToR2(firebaseUrl, fileName, eventId, contentType);
-    
-    // Update Firestore with R2 key
-    const docRef = doc(db, 'photos', photoId);
-    await updateDoc(docRef, {
-      r2Key: r2Key,
-      migratedToR2: true,
-      r2MigrationDate: new Date(),
-      originalFirebaseUrl: firebaseUrl // Keep for backup
-    });
-    
-    console.log('✅ Background R2 copy completed:', photoId, '→', r2Key);
-    
-  } catch (error: any) {
-    console.error('❌ Background R2 copy failed for', photoId, ':', error);
-    // Don't throw - this is background operation
-  }
-};
 
 export const subscribeToPhotos = (
   eventId: string,
