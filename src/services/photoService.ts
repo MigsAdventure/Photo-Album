@@ -168,8 +168,8 @@ const copyToR2ViaAPI = async (
   try {
     console.log('📦 Starting server-side R2 copy for:', fileName);
     
-    // Create API endpoint for R2 copying
-    const response = await fetch('/api/r2-copy', {
+    // Create Netlify function for R2 copying
+    const response = await fetch('/.netlify/functions/r2-copy', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
