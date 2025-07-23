@@ -106,41 +106,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Download from R2 (preferred for new photos)
       console.log('✅ Using R2 download for migrated photo:', r2Key);
       
-      const getCommand = new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: r2Key,
-      });
+      try {
+        const getCommand = new GetObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: r2Key,
+        });
 
-      const response = await r2Client.send(getCommand);
-      
-      if (!response.Body) {
-        console.log('❌ No body in R2 response');
-        return res.status(404).json({ error: 'File not found in R2 storage' });
+        const response = await r2Client.send(getCommand);
+        
+        if (!response.Body) {
+          console.log('❌ No body in R2 response, falling back to Firebase');
+          throw new Error('No body in R2 response');
+        }
+
+        // Convert stream to buffer
+        const chunks: Buffer[] = [];
+        const stream = response.Body as NodeJS.ReadableStream;
+        
+        for await (const chunk of stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        
+        const buffer = Buffer.concat(chunks);
+        console.log('✅ R2 file loaded, size:', buffer.length);
+
+        // Set headers for download
+        res.setHeader('Content-Type', contentType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Length', buffer.length);
+        res.setHeader('Cache-Control', 'no-cache');
+
+        console.log(`✅ R2 download initiated for: ${fileName}`);
+        return res.status(200).send(buffer);
+        
+      } catch (r2Error) {
+        console.error('❌ R2 download failed, falling back to Firebase:', r2Error);
+        // Continue to Firebase fallback below
       }
-
-      // Convert stream to buffer
-      const chunks: Buffer[] = [];
-      const stream = response.Body as NodeJS.ReadableStream;
-      
-      for await (const chunk of stream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      
-      const buffer = Buffer.concat(chunks);
-      console.log('✅ R2 file loaded, size:', buffer.length);
-
-      // Set headers for download
-      res.setHeader('Content-Type', contentType || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.setHeader('Content-Length', buffer.length);
-      res.setHeader('Cache-Control', 'no-cache');
-
-      console.log(`✅ R2 download initiated for: ${fileName}`);
-      return res.status(200).send(buffer);
-      
-    } else if (url) {
-      // Fallback to Firebase Storage proxy (for legacy photos)
-      console.log('⚡ Using Firebase Storage proxy for legacy photo');
+    }
+    
+    // Firebase Storage proxy fallback (for legacy photos or R2 failures)
+    if (url) {
+      console.log('⚡ Using Firebase Storage proxy fallback');
       
       try {
         const firebaseResponse = await fetch(url);

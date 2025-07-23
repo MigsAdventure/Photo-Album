@@ -135,8 +135,8 @@ export const uploadPhoto = async (
           console.log('✅ Firebase upload completed, starting R2 copy...');
           onProgress?.(90); // 90% - R2 copy starting
           
-          // Copy to R2 in background (don't block user experience)
-          copyToR2InBackground(docRef.id, downloadURL, file.name, eventId, file.type)
+          // Copy to R2 using server-side API (don't block user experience)
+          copyToR2ViaAPI(docRef.id, downloadURL, file.name, eventId, file.type)
             .then(() => {
               console.log('✅ R2 copy completed for:', file.name);
               onProgress?.(100); // 100% - everything done
@@ -157,7 +157,46 @@ export const uploadPhoto = async (
   });
 };
 
-// Background R2 copy function (non-blocking)
+// Server-side R2 copy via API (non-blocking)
+const copyToR2ViaAPI = async (
+  photoId: string,
+  firebaseUrl: string, 
+  fileName: string,
+  eventId: string,
+  contentType: string
+): Promise<void> => {
+  try {
+    console.log('📦 Starting server-side R2 copy for:', fileName);
+    
+    // Create API endpoint for R2 copying
+    const response = await fetch('/api/r2-copy', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        photoId,
+        firebaseUrl,
+        fileName,
+        eventId,
+        contentType
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`R2 copy API failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log('✅ Server-side R2 copy completed:', photoId, '→', result.r2Key);
+    
+  } catch (error: any) {
+    console.error('❌ Server-side R2 copy failed for', photoId, ':', error);
+    // Don't throw - this is background operation
+  }
+};
+
+// Background R2 copy function (non-blocking) - Legacy, keeping for reference
 const copyToR2InBackground = async (
   photoId: string,
   firebaseUrl: string, 
@@ -185,7 +224,7 @@ const copyToR2InBackground = async (
     
     console.log('✅ Background R2 copy completed:', photoId, '→', r2Key);
     
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ Background R2 copy failed for', photoId, ':', error);
     // Don't throw - this is background operation
   }
