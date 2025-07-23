@@ -320,7 +320,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map());
 
-  // Smart download handler - server proxy for all files (CORS prevents client-side fetch)
+  // Smart download handler with proper R2 + fallback chain
   const handleDownloadSingle = async (media: Media) => {
     try {
       console.log('📥 Starting download for:', media.fileName);
@@ -329,58 +329,79 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       setDownloadingIds(prev => new Set(Array.from(prev).concat(media.id)));
       
       const mediaIsVideo = isVideo(media);
+      const mediaType = mediaIsVideo ? 'video' : 'image';
       
-      if (mediaIsVideo) {
-        // Videos: Check if we have R2 URL (same-origin) or need server proxy
-        const hasR2Key = media.r2Key && typeof media.r2Key === 'string' && media.r2Key.trim().length > 0;
+      // Check if we have R2 key for ANY media type (videos AND images)
+      const hasR2Key = media.r2Key && typeof media.r2Key === 'string' && media.r2Key.trim().length > 0;
+      
+      if (hasR2Key) {
+        // OPTION 1: Use R2 direct download (same-origin, no CORS issues)
+        console.log(`🔗 Using R2 direct download for ${mediaType}:`, media.r2Key);
         
-        if (hasR2Key) {
-          // Use R2 direct download (same-origin if using custom domain)
-          console.log('🎬 Using R2 direct download for video');
-          
-          // Use R2 custom domain for same-origin downloads (eliminates CORS completely)
-          const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
-          
-          const a = document.createElement('a');
-          a.href = r2Url;
-          a.download = media.fileName || `video_${media.id}.mp4`;
-          a.style.display = 'none';
-          
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          
-          console.log('✅ R2 direct video download initiated successfully');
-          
-        } else {
-          // Fallback: Server proxy (may timeout for large videos)
-          console.log('🎬 Using server proxy for video (no R2 key available)');
-          console.log('⚠️ Large videos may timeout - consider bulk email download');
-          
-          const a = document.createElement('a');
-          a.href = `/.netlify/functions/download?id=${media.id}`;
-          a.style.display = 'none';
-          
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          
-          console.log('✅ Server video download initiated (may timeout for large files)');
-        }
-        
-      } else {
-        // Images: Use server proxy for proper attachment headers  
-        console.log('🖼️ Using server proxy for image (proper headers)');
+        // Use R2 custom domain for same-origin downloads (eliminates CORS completely)
+        const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
         
         const a = document.createElement('a');
-        a.href = `/.netlify/functions/download?id=${media.id}`;
+        a.href = r2Url;
+        a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
         a.style.display = 'none';
         
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         
-        console.log('✅ Server image download initiated successfully');
+        console.log(`✅ R2 direct ${mediaType} download initiated successfully`);
+        
+      } else {
+        // OPTION 2: Server proxy fallback (for when R2 copy isn't ready yet)
+        console.log(`🔄 Using server proxy for ${mediaType} (no R2 key available yet)`);
+        
+        try {
+          // Use fetch to get proper download instead of navigation
+          const downloadUrl = `/.netlify/functions/download?id=${media.id}`;
+          const response = await fetch(downloadUrl);
+          
+          if (!response.ok) {
+            throw new Error(`Server proxy failed: ${response.status}`);
+          }
+          
+          // Get the blob and create download
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
+          a.style.display = 'none';
+          
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          
+          // Clean up blob URL
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+          
+          console.log(`✅ Server proxy ${mediaType} download successful`);
+          
+        } catch (serverError) {
+          console.warn(`⚠️ Server proxy failed:`, serverError);
+          
+          // OPTION 3: Final fallback - Firebase direct URL (may not work due to CORS)
+          console.log(`🔄 Using Firebase direct URL fallback for ${mediaType}`);
+          
+          // Try Firebase direct download as last resort
+          const a = document.createElement('a');
+          a.href = media.url;
+          a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
+          a.target = '_blank'; // Open in new tab as fallback
+          a.style.display = 'none';
+          
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          
+          console.log(`⚠️ Firebase direct ${mediaType} download attempted (may open in new tab)`);
+        }
       }
       
     } catch (error) {

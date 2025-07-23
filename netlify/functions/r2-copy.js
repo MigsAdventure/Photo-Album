@@ -93,9 +93,9 @@ exports.handler = async (event, context) => {
     const buffer = await response.buffer();
     console.log(`✅ Downloaded ${buffer.length} bytes from Firebase`);
     
-    // 2. Generate R2 key
+    // 2. Generate R2 key (new cleaner structure)
     const timestamp = Date.now();
-    const r2Key = `events/${eventId}/${timestamp}_${fileName}`;
+    const r2Key = `media/${eventId}/${timestamp}_${fileName}`;
     
     console.log('📤 Uploading to R2 with key:', r2Key);
     
