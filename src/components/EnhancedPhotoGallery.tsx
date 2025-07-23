@@ -817,44 +817,47 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 </Typography>
               </Box>
               <Box sx={{ display: 'flex', gap: 1 }}>
-                <IconButton 
-                  onClick={() => handleDownloadSingle(currentPhoto)} 
-                  sx={{ color: 'white', position: 'relative' }} 
-                  title={
-                    downloadingIds.has(currentPhoto.id) 
-                      ? (isVideo(currentPhoto) ? 'Preparing video download...' : 'Downloading...') 
-                      : 'Download'
-                  }
-                  disabled={downloadingIds.has(currentPhoto.id)}
-                >
-                  {downloadingIds.has(currentPhoto.id) ? (
-                    <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <CircularProgress 
-                        size={24} 
-                        sx={{ color: 'white' }}
-                        variant={downloadProgress.has(currentPhoto.id) ? 'determinate' : 'indeterminate'}
-                        value={downloadProgress.get(currentPhoto.id) || 0}
-                      />
-                      {downloadProgress.has(currentPhoto.id) && (
-                        <Box
-                          sx={{
-                            position: 'absolute',
-                            top: '50%',
-                            left: '50%',
-                            transform: 'translate(-50%, -50%)',
-                            color: 'white',
-                            fontSize: '0.6rem',
-                            fontWeight: 'bold'
-                          }}
-                        >
-                          {Math.round(downloadProgress.get(currentPhoto.id) || 0)}%
-                        </Box>
-                      )}
-                    </Box>
-                  ) : (
-                    <Download />
-                  )}
-                </IconButton>
+                {/* Only show download button for images, not videos */}
+                {!isVideo(currentPhoto) && (
+                  <IconButton 
+                    onClick={() => handleDownloadSingle(currentPhoto)} 
+                    sx={{ color: 'white', position: 'relative' }} 
+                    title={
+                      downloadingIds.has(currentPhoto.id) 
+                        ? 'Downloading...' 
+                        : 'Download'
+                    }
+                    disabled={downloadingIds.has(currentPhoto.id)}
+                  >
+                    {downloadingIds.has(currentPhoto.id) ? (
+                      <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <CircularProgress 
+                          size={24} 
+                          sx={{ color: 'white' }}
+                          variant={downloadProgress.has(currentPhoto.id) ? 'determinate' : 'indeterminate'}
+                          value={downloadProgress.get(currentPhoto.id) || 0}
+                        />
+                        {downloadProgress.has(currentPhoto.id) && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              transform: 'translate(-50%, -50%)',
+                              color: 'white',
+                              fontSize: '0.6rem',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            {Math.round(downloadProgress.get(currentPhoto.id) || 0)}%
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Download />
+                    )}
+                  </IconButton>
+                )}
                 <IconButton onClick={closeModal} sx={{ color: 'white' }} title="Close">
                   <Close />
                 </IconButton>
