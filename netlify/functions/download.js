@@ -77,9 +77,8 @@ exports.handler = async (event, context) => {
       };
     }
 
-    // Extract photoId from path
-    const pathParts = event.path.split('/');
-    const photoId = pathParts[pathParts.length - 1];
+    // Extract photoId from query parameters (not path)
+    const photoId = event.queryStringParameters?.id;
 
     console.log('Download requested for photoId:', photoId);
 
@@ -87,7 +86,7 @@ exports.handler = async (event, context) => {
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ error: 'Photo ID is required' }),
+        body: JSON.stringify({ error: 'Photo ID is required in query parameter: ?id=photoId' }),
       };
     }
 

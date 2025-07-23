@@ -335,22 +335,40 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       const hasR2Key = media.r2Key && typeof media.r2Key === 'string' && media.r2Key.trim().length > 0;
       
       if (hasR2Key) {
-        // OPTION 1: Use R2 direct download (same-origin, no CORS issues)
+        // OPTION 1: Use R2 direct download (fetch + blob for forced download)
         console.log(`🔗 Using R2 direct download for ${mediaType}:`, media.r2Key);
         
-        // Use R2 custom domain for same-origin downloads (eliminates CORS completely)
-        const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
-        
-        const a = document.createElement('a');
-        a.href = r2Url;
-        a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
-        a.style.display = 'none';
-        
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        console.log(`✅ R2 direct ${mediaType} download initiated successfully`);
+        try {
+          // Use R2 custom domain for same-origin downloads
+          const r2Url = `https://sharedmomentsphotos.socialboostai.com/${media.r2Key}`;
+          
+          // Fetch the file and create blob URL for forced download
+          const response = await fetch(r2Url);
+          if (!response.ok) {
+            throw new Error(`R2 fetch failed: ${response.status}`);
+          }
+          
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = media.fileName || `${mediaType}_${media.id}${mediaIsVideo ? '.mp4' : '.jpg'}`;
+          a.style.display = 'none';
+          
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          
+          // Clean up blob URL
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+          
+          console.log(`✅ R2 direct ${mediaType} download successful`);
+          
+        } catch (r2Error) {
+          console.warn(`⚠️ R2 direct download failed:`, r2Error);
+          throw r2Error; // Let it fall through to next option
+        }
         
       } else {
         // OPTION 2: Server proxy fallback (for when R2 copy isn't ready yet)

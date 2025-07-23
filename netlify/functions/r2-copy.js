@@ -118,15 +118,29 @@ exports.handler = async (event, context) => {
     console.log('✅ Successfully uploaded to R2');
 
     // 4. Update Firestore with R2 key
-    const docRef = doc(db, 'photos', photoId);
-    await updateDoc(docRef, {
-      r2Key: r2Key,
-      migratedToR2: true,
-      r2MigrationDate: new Date(),
-      originalFirebaseUrl: firebaseUrl // Keep for backup
-    });
-
-    console.log('✅ Updated Firestore with R2 key for photoId:', photoId);
+    console.log('📝 Updating Firestore document for photoId:', photoId);
+    try {
+      const docRef = doc(db, 'photos', photoId);
+      const updateData = {
+        r2Key: r2Key,
+        migratedToR2: true,
+        r2MigrationDate: new Date(),
+        originalFirebaseUrl: firebaseUrl // Keep for backup
+      };
+      
+      console.log('📝 Firestore update data:', updateData);
+      await updateDoc(docRef, updateData);
+      
+      console.log('✅ Successfully updated Firestore with R2 key for photoId:', photoId);
+      console.log('✅ R2 key saved:', r2Key);
+      
+    } catch (firestoreError) {
+      console.error('❌ Firestore update failed:', firestoreError);
+      console.error('❌ Failed to save r2Key to Firestore, but R2 upload succeeded');
+      
+      // Continue anyway - R2 upload succeeded even if Firestore update failed
+      // The server proxy can still serve the file from R2 manually if needed
+    }
     
     return {
       statusCode: 200,
