@@ -338,9 +338,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           // Use R2 direct download (same-origin if using custom domain)
           console.log('🎬 Using R2 direct download for video');
           
-          // Construct R2 URL - you mentioned R2 is whitelisted for your domain
-          // This should be same-origin if configured correctly
-          const r2Url = `https://media.socialboostai.com/${media.r2Key}`; // Adjust based on your R2 setup
+          // Use R2 custom domain for same-origin downloads (eliminates CORS completely)
+          const r2Url = `https://sharedmomentsmedia.socialboostai.com/${media.r2Key}`;
           
           const a = document.createElement('a');
           a.href = r2Url;
