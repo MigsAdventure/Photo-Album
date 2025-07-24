@@ -106,21 +106,31 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }, []);
 
-  // Analyze file to determine if it's a camera photo vs screenshot
-  const analyzeFile = useCallback((file: File): { isCamera: boolean; needsCompression: boolean } => {
+  // Analyze file to determine if it's a camera photo/video vs screenshot and media type
+  const analyzeFile = useCallback((file: File): { isCamera: boolean; needsCompression: boolean; mediaType: 'photo' | 'video' } => {
     const sizeMB = file.size / 1024 / 1024;
     
-    // Heuristics to detect camera photos vs screenshots
-    const isCamera = (
-      sizeMB > 3 || // Camera photos are usually >3MB
-      file.name.toLowerCase().includes('img_') || // iOS camera naming
-      file.name.toLowerCase().includes('dsc') || // Camera naming
-      (file.type === 'image/jpeg' && sizeMB > 1.5) // Large JPEG likely camera
-    );
+    // Determine if it's a video first
+    const isVideo = file.type.startsWith('video/') || 
+                   file.name.toLowerCase().match(/\.(mp4|mov|webm|avi|3gp|wmv)$/);
     
-    const needsCompression = isCamera && sizeMB > 8;
+    // Heuristics to detect camera media vs screenshots
+    const isCamera = isVideo ? 
+      sizeMB > 10 : // Camera videos are usually >10MB
+      (
+        sizeMB > 3 || // Camera photos are usually >3MB
+        file.name.toLowerCase().includes('img_') || // iOS camera naming
+        file.name.toLowerCase().includes('dsc') || // Camera naming
+        (file.type === 'image/jpeg' && sizeMB > 1.5) // Large JPEG likely camera
+      );
     
-    return { isCamera, needsCompression };
+    const needsCompression = !isVideo && isCamera && sizeMB > 8; // Only compress photos, not videos
+    
+    return { 
+      isCamera, 
+      needsCompression, 
+      mediaType: isVideo ? 'video' : 'photo' 
+    };
   }, []);
 
   // Validate file before upload using the new media validation
@@ -439,6 +449,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
           fileIndex: i,
           file,
           isCamera: analysis.isCamera,
+          mediaType: analysis.mediaType,
           canRetry: false
         });
 
@@ -1137,7 +1148,8 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         </DialogTitle>
         <DialogContent sx={{ 
           width: '100%',
-          overflow: 'hidden',
+          maxHeight: { xs: '60vh', sm: '70vh' },
+          overflow: 'auto',
           padding: { xs: 1, sm: 3 }
         }}>
           {uploadProgress.map((item, index) => (
@@ -1149,7 +1161,7 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
                   </Typography>
                   {item.isCamera && (
                     <Typography variant="caption" color="primary.main">
-                      📷 Camera Photo {item.file && `(${(item.file.size / 1024 / 1024).toFixed(1)}MB)`}
+                      {item.mediaType === 'video' ? '📹 Camera video' : '📷 Camera photo'} {item.file && `(${(item.file.size / 1024 / 1024).toFixed(1)}MB)`}
                     </Typography>
                   )}
                 </Box>

@@ -24,9 +24,11 @@ import {
   Error as ErrorIcon,
   Add,
   Refresh,
-  Delete
+  Delete,
+  Videocam
 } from '@mui/icons-material';
 import { uploadPhotoWithFallback } from '../services/mobileUploadService';
+import { validateVideoFile, analyzeVideoFile, formatDuration } from '../services/videoService';
 import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
@@ -41,11 +43,32 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const [currentUploadIndex, setCurrentUploadIndex] = useState(-1);
   const theme = useTheme();
 
-  // Analyze file to determine if it's a camera photo vs screenshot
-  const analyzeFile = useCallback((file: File): FileAnalysis => {
+  // Analyze file to determine if it's a camera photo/video vs screenshot
+  const analyzeFile = useCallback(async (file: File): Promise<FileAnalysis> => {
     const sizeMB = file.size / 1024 / 1024;
     
-    // Heuristics to detect camera photos vs screenshots
+    // Check if it's a video first
+    const isVideoFile = file.type.startsWith('video/') || 
+                       file.name.toLowerCase().match(/\.(mp4|mov|webm|avi|3gp|wmv)$/);
+    
+    if (isVideoFile) {
+      // Use video analysis
+      try {
+        return await analyzeVideoFile(file);
+      } catch (error) {
+        console.warn('Video analysis failed, using basic analysis:', error);
+        return {
+          isCamera: sizeMB > 10, // Large videos likely from camera
+          isScreenshot: false,
+          needsCompression: sizeMB > 200,
+          originalSize: file.size,
+          estimatedCompressedSize: sizeMB > 200 ? file.size * 0.7 : file.size,
+          mediaType: 'video'
+        };
+      }
+    }
+    
+    // Photo analysis
     const isCamera = (
       sizeMB > 3 || // Camera photos are usually >3MB
       file.name.toLowerCase().includes('img_') || // iOS camera naming
@@ -219,30 +242,54 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   const handleFileSelect = useCallback(async (files: FileList) => {
     console.log('📤 Files selected:', files.length);
     
-    const imageFiles = Array.from(files).filter(file => {
-      return file.type.startsWith('image/') || file.type === '' || 
-             file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/);
+    // Accept both images and videos
+    const mediaFiles = Array.from(files).filter(file => {
+      const isImage = file.type.startsWith('image/') || 
+                     file.name.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/);
+      const isVideo = file.type.startsWith('video/') || 
+                     file.name.toLowerCase().match(/\.(mp4|mov|webm|avi|3gp|wmv)$/);
+      return isImage || isVideo;
     });
 
-    if (imageFiles.length === 0) {
-      alert('Please select valid image files');
+    if (mediaFiles.length === 0) {
+      alert('Please select valid image or video files');
       return;
     }
 
-    // Analyze and create upload queue
-    const newQueue: UploadProgress[] = imageFiles.map((file, index) => {
-      const analysis = analyzeFile(file);
-      
-      return {
-        fileName: file.name,
-        progress: 0,
-        status: 'waiting' as const,
-        fileIndex: index,
-        file,
-        isCamera: analysis.isCamera,
-        canRetry: false
-      };
-    });
+    // Analyze and create upload queue - handle async analysis
+    const newQueue: UploadProgress[] = [];
+    
+    for (let index = 0; index < mediaFiles.length; index++) {
+      const file = mediaFiles[index];
+      try {
+        const analysis = await analyzeFile(file);
+        
+        newQueue.push({
+          fileName: file.name,
+          progress: 0,
+          status: 'waiting' as const,
+          fileIndex: index,
+          file,
+          isCamera: analysis.isCamera,
+          mediaType: analysis.mediaType,
+          duration: analysis.duration,
+          canRetry: false
+        });
+      } catch (error) {
+        console.warn('Failed to analyze file:', file.name, error);
+        // Add with basic info if analysis fails
+        newQueue.push({
+          fileName: file.name,
+          progress: 0,
+          status: 'waiting' as const,
+          fileIndex: index,
+          file,
+          isCamera: false,
+          mediaType: file.type.startsWith('video/') ? 'video' : 'photo',
+          canRetry: false
+        });
+      }
+    }
 
     setUploadQueue(newQueue);
     
@@ -341,11 +388,11 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         />
         
         <Typography variant="h5" gutterBottom color="primary">
-          Upload Photos
+          Upload Photos & Videos
         </Typography>
         
         <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-          Drag and drop photos here, or click to select from your device
+          Drag and drop photos and videos here, or click to select from your device
         </Typography>
 
         {/* Hidden file inputs */}
@@ -353,7 +400,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           id="photo-gallery-input"
           type="file"
           multiple
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,video/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
@@ -361,7 +408,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
         <input
           id="photo-camera-input"
           type="file"
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,video/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
           capture
@@ -371,7 +418,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
           id="photo-upload-input"
           type="file"
           multiple
-          accept="image/*,image/heic,image/heif"
+          accept="image/*,video/*,image/heic,image/heif"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
@@ -495,8 +542,24 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             
             <List dense sx={{ 
               width: '100%',
-              overflow: 'hidden',
-              minWidth: 0
+              maxHeight: '300px', // Add max height for scrolling
+              overflowY: 'auto', // Enable vertical scrolling
+              overflowX: 'hidden',
+              minWidth: 0,
+              '&::-webkit-scrollbar': {
+                width: '8px',
+              },
+              '&::-webkit-scrollbar-track': {
+                bgcolor: alpha(theme.palette.grey[300], 0.3),
+                borderRadius: '4px',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                bgcolor: alpha(theme.palette.grey[500], 0.5),
+                borderRadius: '4px',
+                '&:hover': {
+                  bgcolor: alpha(theme.palette.grey[600], 0.7),
+                }
+              }
             }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 
@@ -561,7 +624,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
                             >
                               {item.isCamera && (
                                 <Chip 
-                                  label="📷 Camera" 
+                                  label={item.mediaType === 'video' ? "📹 Camera video" : "📷 Camera photo"}
                                   size="small" 
                                   color="primary" 
                                   variant="outlined"
