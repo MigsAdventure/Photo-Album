@@ -29,6 +29,7 @@ import {
 } from '@mui/icons-material';
 import { uploadPhotoWithFallback } from '../services/mobileUploadService';
 import { validateVideoFile, analyzeVideoFile, formatDuration } from '../services/videoService';
+import { uploadFilesWithBackground, EnhancedUploadProgress } from '../services/backgroundUploadService';
 import { UploadProgress, FileAnalysis } from '../types';
 
 interface PhotoUploadProps {
@@ -240,7 +241,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
   }, [uploadQueue, isUploading, eventId, onUploadComplete, compressImage]);
 
   const handleFileSelect = useCallback(async (files: FileList) => {
-    console.log('📤 Files selected:', files.length);
+    console.log('🚀 Enhanced upload: Files selected:', files.length);
     
     // Accept both images and videos
     const mediaFiles = Array.from(files).filter(file => {
@@ -256,46 +257,94 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
       return;
     }
 
-    // Analyze and create upload queue - handle async analysis
-    const newQueue: UploadProgress[] = [];
-    
-    for (let index = 0; index < mediaFiles.length; index++) {
-      const file = mediaFiles[index];
-      try {
-        const analysis = await analyzeFile(file);
-        
-        newQueue.push({
-          fileName: file.name,
-          progress: 0,
-          status: 'waiting' as const,
-          fileIndex: index,
-          file,
-          isCamera: analysis.isCamera,
-          mediaType: analysis.mediaType,
-          duration: analysis.duration,
-          canRetry: false
-        });
-      } catch (error) {
-        console.warn('Failed to analyze file:', file.name, error);
-        // Add with basic info if analysis fails
-        newQueue.push({
-          fileName: file.name,
-          progress: 0,
-          status: 'waiting' as const,
-          fileIndex: index,
-          file,
-          isCamera: false,
-          mediaType: file.type.startsWith('video/') ? 'video' : 'photo',
-          canRetry: false
-        });
-      }
-    }
+    try {
+      console.log('🔥 Using enhanced background upload service with parallel processing');
+      
+      // Convert enhanced progress to legacy format for UI compatibility
+      const convertProgress = (enhancedUploads: EnhancedUploadProgress[]): UploadProgress[] => {
+        return enhancedUploads.map(upload => ({
+          fileName: upload.fileName,
+          progress: upload.progress,
+          status: upload.status as any,
+          fileIndex: upload.fileIndex,
+          file: upload.file,
+          isCamera: upload.isCamera,
+          mediaType: upload.mediaType,
+          duration: upload.duration,
+          canRetry: upload.canRetry || false,
+          error: upload.error
+        }));
+      };
 
-    setUploadQueue(newQueue);
-    
-    // Start processing
-    setTimeout(() => processUploadQueue(), 100);
-  }, [analyzeFile, processUploadQueue]);
+      // Use the enhanced background upload service
+      await uploadFilesWithBackground(
+        mediaFiles, 
+        eventId, 
+        (enhancedUploads: EnhancedUploadProgress[]) => {
+          const convertedUploads = convertProgress(enhancedUploads);
+          setUploadQueue(convertedUploads);
+          
+          // Update upload status
+          const anyUploading = enhancedUploads.some(u => u.status === 'uploading' || u.status === 'compressing');
+          const anyCompleted = enhancedUploads.some(u => u.status === 'completed');
+          const allCompleted = enhancedUploads.length > 0 && enhancedUploads.every(u => u.status === 'completed');
+          
+          setIsUploading(anyUploading);
+          
+          if (allCompleted) {
+            console.log('🎉 All uploads completed successfully!');
+            setTimeout(() => {
+              setUploadQueue([]);
+              onUploadComplete?.();
+            }, 3000);
+          }
+        }
+      );
+      
+    } catch (error) {
+      console.error('❌ Enhanced upload failed, falling back to legacy upload:', error);
+      
+      // Fallback to legacy upload on error
+      const newQueue: UploadProgress[] = [];
+      
+      for (let index = 0; index < mediaFiles.length; index++) {
+        const file = mediaFiles[index];
+        try {
+          const analysis = await analyzeFile(file);
+          
+          newQueue.push({
+            fileName: file.name,
+            progress: 0,
+            status: 'waiting' as const,
+            fileIndex: index,
+            file,
+            isCamera: analysis.isCamera,
+            mediaType: analysis.mediaType,
+            duration: analysis.duration,
+            canRetry: false
+          });
+        } catch (analysisError) {
+          console.warn('Failed to analyze file:', file.name, analysisError);
+          // Add with basic info if analysis fails
+          newQueue.push({
+            fileName: file.name,
+            progress: 0,
+            status: 'waiting' as const,
+            fileIndex: index,
+            file,
+            isCamera: false,
+            mediaType: file.type.startsWith('video/') ? 'video' : 'photo',
+            canRetry: false
+          });
+        }
+      }
+
+      setUploadQueue(newQueue);
+      
+      // Start legacy processing
+      setTimeout(() => processUploadQueue(), 100);
+    }
+  }, [analyzeFile, processUploadQueue, eventId, onUploadComplete]);
 
   const retryUpload = useCallback((fileIndex: number) => {
     setUploadQueue(prev => 
@@ -542,24 +591,36 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             
             <List dense sx={{ 
               width: '100%',
-              maxHeight: '300px', // Add max height for scrolling
+              maxHeight: { xs: '400px', sm: '350px' }, // Better height for mobile
               overflowY: 'auto', // Enable vertical scrolling
               overflowX: 'hidden',
               minWidth: 0,
+              scrollBehavior: 'smooth', // Smooth scrolling
+              // Enhanced scrollbar styles for better visibility
               '&::-webkit-scrollbar': {
-                width: '8px',
+                width: '12px',
               },
               '&::-webkit-scrollbar-track': {
-                bgcolor: alpha(theme.palette.grey[300], 0.3),
-                borderRadius: '4px',
+                bgcolor: alpha(theme.palette.grey[200], 0.5),
+                borderRadius: '6px',
+                margin: '4px',
               },
               '&::-webkit-scrollbar-thumb': {
-                bgcolor: alpha(theme.palette.grey[500], 0.5),
-                borderRadius: '4px',
+                bgcolor: alpha(theme.palette.primary.main, 0.6),
+                borderRadius: '6px',
+                border: `2px solid transparent`,
+                backgroundClip: 'content-box',
                 '&:hover': {
-                  bgcolor: alpha(theme.palette.grey[600], 0.7),
+                  bgcolor: alpha(theme.palette.primary.main, 0.8),
                 }
-              }
+              },
+              // For Firefox
+              scrollbarWidth: 'thin',
+              scrollbarColor: `${alpha(theme.palette.primary.main, 0.6)} ${alpha(theme.palette.grey[200], 0.5)}`,
+              // Touch scrolling for mobile
+              WebkitOverflowScrolling: 'touch',
+              // Ensure scrolling works on mobile
+              touchAction: 'pan-y'
             }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 
