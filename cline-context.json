@@ -1,0 +1,67 @@
+{
+  "lastUpdated": "2025-01-25T23:34:01.000Z",
+  "currentTask": null,
+  "recentTasks": [
+    {
+      "id": "memory-bank-creation",
+      "title": "Create Memory Bank System for Cline",
+      "status": "completed",
+      "completedAt": "2025-01-25",
+      "summary": "Successfully implemented comprehensive memory bank system with cline-context.json, project-state.md, task documentation structure, and usage guidelines to prevent task confusion"
+    },
+    {
+      "id": "architecture-simplification",
+      "title": "Simplified Architecture - Removed Google Cloud Run",
+      "status": "completed",
+      "completedAt": "2025-01-20",
+      "summary": "Successfully removed Google Cloud Run from processing pipeline, simplified routing to Netlify → Cloudflare → AWS EC2 Spot"
+    },
+    {
+      "id": "streaming-zip-implementation", 
+      "title": "Streaming ZIP Implementation for Large Files",
+      "status": "completed",
+      "completedAt": "2025-01-23",
+      "summary": "Implemented streaming ZIP processing for 500MB+ video collections using AWS EC2 Spot instances"
+    },
+    {
+      "id": "cost-optimization",
+      "title": "Cost Optimization and Cleanup",
+      "status": "completed", 
+      "completedAt": "2025-01-24",
+      "summary": "Optimized processing costs to $0.01-0.02 per job using AWS EC2 Spot instances"
+    }
+  ],
+  "systemState": {
+    "architecture": "simplified",
+    "processingFlow": "Netlify → Cloudflare → AWS EC2 Spot → Email",
+    "mainComponents": {
+      "frontend": "React app with photo upload/gallery",
+      "backend": "Netlify Functions + Cloudflare Workers",
+      "processing": "AWS EC2 Spot instances",
+      "storage": "Firebase Storage + R2 migration",
+      "email": "Integrated delivery system"
+    },
+    "knownStableFeatures": [
+      "Photo upload via Firebase Storage",
+      "R2 migration for cost optimization", 
+      "Email download delivery system",
+      "AWS EC2 Spot processing for large files",
+      "Freemium model with premium upgrades",
+      "Memory bank system for task context management"
+    ]
+  },
+  "doNotRevisit": [
+    "Google Cloud Run setup (removed from architecture)",
+    "Complex fallback chains (simplified)",
+    "Multiple processing engines routing (streamlined)",
+    "GCR 404 error troubleshooting (no longer relevant)",
+    "Memory bank system creation (completed and working)"
+  ],
+  "contextRules": [
+    "Always check currentTask before starting new work",
+    "Update context when switching tasks",
+    "Mark tasks as completed when finished",
+    "Reference systemState for current architecture",
+    "Check doNotRevisit list to avoid repeating resolved issues"
+  ]
+}
