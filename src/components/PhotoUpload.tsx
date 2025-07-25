@@ -591,7 +591,7 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             
             <List dense sx={{ 
               width: '100%',
-              maxHeight: { xs: '400px', sm: '350px' }, // Better height for mobile
+              maxHeight: { xs: '60vh', sm: '350px' }, // Use viewport height for mobile
               overflowY: 'auto', // Enable vertical scrolling
               overflowX: 'hidden',
               minWidth: 0,
@@ -617,10 +617,15 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
               // For Firefox
               scrollbarWidth: 'thin',
               scrollbarColor: `${alpha(theme.palette.primary.main, 0.6)} ${alpha(theme.palette.grey[200], 0.5)}`,
-              // Touch scrolling for mobile
+              // Touch scrolling for mobile - enhanced
               WebkitOverflowScrolling: 'touch',
               // Ensure scrolling works on mobile
-              touchAction: 'pan-y'
+              touchAction: 'pan-y',
+              // Additional mobile scroll fixes
+              position: 'relative',
+              // Force hardware acceleration for smooth scrolling
+              transform: 'translateZ(0)',
+              willChange: 'scroll-position'
             }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 

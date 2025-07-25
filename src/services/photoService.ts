@@ -218,7 +218,9 @@ export const subscribeToPhotos = (
         fileName: data.fileName,
         size: data.size,
         mediaType: data.mediaType || 'photo' as const, // Default to 'photo' for backward compatibility
-        uploadedBy: data.uploadedBy // Include ownership info
+        uploadedBy: data.uploadedBy, // Include ownership info
+        r2Key: data.r2Key, // Include R2 key for cost-effective display
+        contentType: data.contentType // Include content type for proper R2 handling
       });
     });
     

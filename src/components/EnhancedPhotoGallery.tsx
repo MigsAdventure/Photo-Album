@@ -40,6 +40,7 @@ import {
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
+import { getOptimalMediaUrl, preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
 
@@ -89,6 +90,9 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
   const [ownedPhotos, setOwnedPhotos] = useState<Set<string>>(new Set());
   
+  // R2 URL optimization state
+  const [optimizedUrls, setOptimizedUrls] = useState<Map<string, { url: string; source: 'r2' | 'firebase' }>>(new Map());
+  const [urlOptimizationInProgress, setUrlOptimizationInProgress] = useState(false);
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -111,10 +115,81 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
         }
       }
       setOwnedPhotos(owned);
+      
+      // Optimize URLs for cost savings using R2 when available
+      if (newPhotos.length > 0) {
+        optimizeMediaUrls(newPhotos);
+      }
     });
 
     return () => unsubscribe();
   }, [eventId]);
+
+  // Background URL optimization for cost savings
+  const optimizeMediaUrls = useCallback(async (mediaList: Media[]) => {
+    if (urlOptimizationInProgress) return;
+    
+    setUrlOptimizationInProgress(true);
+    console.log('💾 Starting R2 URL optimization for', mediaList.length, 'media items...');
+    
+    try {
+      // Prepare media items for optimization
+      const mediaItems = mediaList.map(media => ({
+        firebaseUrl: media.url,
+        r2Key: media.r2Key,
+        id: media.id
+      }));
+      
+      // Use preloading service to test R2 URLs in batches
+      const urlResults = await preloadOptimalUrls(mediaItems);
+      
+      // Update optimized URLs state
+      const newOptimizedUrls = new Map(optimizedUrls);
+      let r2Count = 0;
+      let firebaseCount = 0;
+      
+      Array.from(urlResults.entries()).forEach(([firebaseUrl, result]) => {
+        const media = mediaList.find(m => m.url === firebaseUrl);
+        if (media) {
+          newOptimizedUrls.set(media.id, result);
+          if (result.source === 'r2') {
+            r2Count++;
+          } else {
+            firebaseCount++;
+          }
+        }
+      });
+      
+      setOptimizedUrls(newOptimizedUrls);
+      
+      console.log(`✅ URL optimization complete: ${r2Count} R2 URLs, ${firebaseCount} Firebase URLs`);
+      console.log(`💰 Estimated bandwidth cost savings: ${Math.round((r2Count / mediaList.length) * 100)}%`);
+      
+    } catch (error) {
+      console.warn('⚠️ URL optimization failed, falling back to Firebase URLs:', error);
+    } finally {
+      setUrlOptimizationInProgress(false);
+    }
+  }, [optimizedUrls, urlOptimizationInProgress]);
+
+  // Get optimized URL for a media item
+  const getMediaUrl = useCallback((media: Media): string => {
+    const optimized = optimizedUrls.get(media.id);
+    if (optimized) {
+      return optimized.url;
+    }
+    // Fallback to Firebase URL while optimization is in progress
+    return media.url;
+  }, [optimizedUrls]);
+
+  // Get source type for display purposes
+  const getMediaSource = useCallback((media: Media): 'r2' | 'firebase' | 'optimizing' => {
+    const optimized = optimizedUrls.get(media.id);
+    if (optimized) {
+      return optimized.source;
+    }
+    return urlOptimizationInProgress ? 'optimizing' : 'firebase';
+  }, [optimizedUrls, urlOptimizationInProgress]);
 
   // Load event data for plan information
   useEffect(() => {
@@ -642,7 +717,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
                   <Box
                     component="video"
-                    src={photo.url}
+                    src={getMediaUrl(photo)}
                     muted
                     preload="metadata"
                     sx={{
@@ -720,7 +795,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 <CardMedia
                   component="img"
                   height={200}
-                  image={photo.url}
+                  image={getMediaUrl(photo)}
                   alt={photo.fileName || 'Event photo'}
                   sx={{ 
                     objectFit: 'cover',
@@ -913,7 +988,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   <Box
                     key={currentPhoto.id} // Force new video element for each video
                     component="video"
-                    src={currentPhoto.url} // Use src directly instead of source element
+                    src={getMediaUrl(currentPhoto)} // Use optimized R2 URL when available
                     controls
                     autoPlay={false}
                     muted
@@ -945,7 +1020,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               ) : (
                 <Box
                   component="img"
-                  src={currentPhoto.url}
+                  src={getMediaUrl(currentPhoto)}
                   alt={currentPhoto.fileName || 'Event photo'}
                   sx={{
                     maxWidth: '100%',
