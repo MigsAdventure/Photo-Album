@@ -36,7 +36,7 @@ EOF
 # Install dependencies
 npm install --production
 
-# Create the processor script with correct R2 credentials
+# Create the processor script with environment variable placeholders
 cat > index.js << 'SCRIPT_EOF'
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const { S3Client } = require('@aws-sdk/client-s3');
@@ -47,23 +47,36 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
 
-// Configuration
+// Configuration from environment variables
 const config = {
   r2: {
-    accountId: '98a9cce92e578cafdb9025fa24a6ee7e',
-    accessKeyId: '06da59a3b3aa1315ed2c9a38efa7579e',
-    secretAccessKey: 'e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27',
-    bucketName: 'sharedmoments-photos-production',
-    publicUrl: 'https://sharedmomentsphotos.socialboostai.com'
+    accountId: process.env.R2_ACCOUNT_ID,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    bucketName: process.env.R2_BUCKET_NAME,
+    publicUrl: process.env.R2_PUBLIC_URL
   },
   sqs: {
-    queueUrl: 'https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue',
-    region: 'us-east-1'
+    queueUrl: process.env.AWS_SQS_QUEUE_URL,
+    region: process.env.AWS_REGION
   },
   netlify: {
-    emailEndpoint: 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
   }
 };
+
+// Validate environment variables
+const requiredEnvVars = [
+  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 
+  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION'
+];
+
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
 
 // Initialize AWS clients
 const sqsClient = new SQSClient({ region: config.sqs.region });
@@ -255,6 +268,7 @@ async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB) {
 
 // Start processing
 console.log('🚀 Wedding photo processor started');
+console.log('📊 Configuration loaded from environment variables');
 console.log('📊 R2 Configuration:', {
   accountId: config.r2.accountId,
   bucket: config.r2.bucketName,

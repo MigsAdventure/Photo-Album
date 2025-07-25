@@ -1,123 +1,152 @@
 #!/bin/bash
-# AWS EC2 Streaming Processor Setup Script
-# Handles 5-10GB+ collections with minimal memory usage
+set -e
 
-# Log all output
-exec > >(tee -a /var/log/user-data.log)
-exec 2>&1
+# Redirect all output to log file
+exec > >(tee /var/log/user-data.log) 2>&1
 
-echo "🚀 Starting EC2 streaming processor setup at $(date)"
+echo "🚀 Starting wedding photo streaming processor setup at $(date)"
 
 # Update system
-echo "📦 Updating system packages..."
-apt-get update -y
+yum update -y
 
-# Install Node.js 18.x
-echo "📦 Installing Node.js..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt-get install -y nodejs
+# Install Node.js 16.x
+curl -fsSL https://rpm.nodesource.com/setup_16.x | bash -
+yum install -y nodejs
 
-# Verify installations
-echo "✅ Node version: $(node --version)"
-echo "✅ NPM version: $(npm --version)"
+# Create app directory
+mkdir -p /app
+cd /app
 
-# Create working directory
-mkdir -p /home/ubuntu/processor
-cd /home/ubuntu/processor
+# Create package.json
+cat > package.json << 'EOF'
+{
+  "name": "wedding-photo-streaming-processor",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.450.0",
+    "@aws-sdk/client-s3": "^3.450.0",
+    "@aws-sdk/lib-storage": "^3.450.0",
+    "express": "^4.18.2",
+    "archiver": "^5.3.2",
+    "node-fetch": "^2.7.0",
+    "stream": "^0.0.2"
+  }
+}
+EOF
 
-# Download the streaming processor script
-echo "⬇️ Downloading streaming processor script..."
-cat > wedding-photo-processor-streaming.js << 'EOF'
+# Install dependencies
+npm install --production
+
+# Create the streaming processor script with environment variable placeholders
+cat > index.js << 'SCRIPT_EOF'
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
-const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
+const { S3Client } = require('@aws-sdk/client-s3');
+const { Upload } = require('@aws-sdk/lib-storage');
+const express = require('express');
 const archiver = require('archiver');
 const fetch = require('node-fetch');
-const https = require('https');
-const fs = require('fs');
-const path = require('path');
-const { pipeline } = require('stream/promises');
 const { PassThrough } = require('stream');
+const fs = require('fs');
 
-// SQS Configuration
-const sqs = new SQSClient({ region: 'us-east-1' });
-const queueUrl = 'https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue';
-
-// R2 Configuration (from .env)
-const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: 'https://98a9cce92e578cafdb9025fa24a6ee7e.r2.cloudflarestorage.com',
-  credentials: {
-    accessKeyId: '06da59a3b3aa1315ed2c9a38efa7579e',
-    secretAccessKey: 'e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27',
+// Configuration from environment variables
+const config = {
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    bucketName: process.env.R2_BUCKET_NAME,
+    publicUrl: process.env.R2_PUBLIC_URL
   },
-  forcePathStyle: true
-});
+  sqs: {
+    queueUrl: process.env.AWS_SQS_QUEUE_URL,
+    region: process.env.AWS_REGION
+  },
+  netlify: {
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
+  }
+};
 
-const R2_BUCKET_NAME = 'sharedmoments-photos-production';
-const R2_PUBLIC_URL = 'https://sharedmomentsphotos.socialboostai.com';
+// Validate environment variables
+const requiredEnvVars = [
+  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 
+  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION'
+];
 
-// Track activity for auto-shutdown
-let lastActivity = Date.now();
-let isProcessing = false;
-
-// Memory monitoring
-function logMemoryUsage(label) {
-  const used = process.memoryUsage();
-  console.log(`💾 Memory [${label}]: RSS ${(used.rss / 1024 / 1024).toFixed(2)}MB, Heap ${(used.heapUsed / 1024 / 1024).toFixed(2)}MB`);
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
 }
 
-// Auto-shutdown after 10 minutes of inactivity
-setInterval(() => {
-  if (Date.now() - lastActivity > 600000 && !isProcessing) {
-    console.log('🔌 Auto-shutting down due to inactivity (10 min idle)');
-    process.exit(0);
+// Initialize AWS clients
+const sqsClient = new SQSClient({ region: config.sqs.region });
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint: `https://${config.r2.accountId}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: config.r2.accessKeyId,
+    secretAccessKey: config.r2.secretAccessKey
   }
-}, 60000);
+});
 
-// Main SQS polling function
-async function pollForJobs() {
+// Processing state
+let isProcessing = false;
+let lastActivity = Date.now();
+const IDLE_TIMEOUT = 15 * 60 * 1000; // 15 minutes for streaming
+
+// Express server for health checks
+const app = express();
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    processing: isProcessing, 
+    uptime: process.uptime(),
+    type: 'streaming-processor'
+  });
+});
+app.listen(8080, () => console.log('Health check server running on port 8080'));
+
+// Poll SQS for jobs
+async function pollQueue() {
   while (true) {
     try {
-      console.log('🔍 Polling SQS queue for jobs...');
-      
-      const result = await sqs.send(new ReceiveMessageCommand({
-        QueueUrl: queueUrl,
+      const result = await sqsClient.send(new ReceiveMessageCommand({
+        QueueUrl: config.sqs.queueUrl,
         MaxNumberOfMessages: 1,
-        WaitTimeSeconds: 20,
-        MessageAttributeNames: ['All']
+        WaitTimeSeconds: 20
       }));
-      
+
       if (result.Messages && result.Messages.length > 0) {
         const message = result.Messages[0];
         const jobData = JSON.parse(message.Body);
-        
-        console.log(`📦 Received job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
+
+        console.log(`📦 Received streaming job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
         lastActivity = Date.now();
         isProcessing = true;
-        
+
         try {
-          await processWeddingJobStreaming(jobData);
+          await processStreamingJob(jobData);
           
-          // Delete message after successful processing
-          await sqs.send(new DeleteMessageCommand({
-            QueueUrl: queueUrl,
+          // Delete message from queue
+          await sqsClient.send(new DeleteMessageCommand({
+            QueueUrl: config.sqs.queueUrl,
             ReceiptHandle: message.ReceiptHandle
           }));
           
-          console.log(`✅ Job completed: ${jobData.eventId}`);
+          console.log('✅ Streaming job completed and message deleted from queue');
         } catch (error) {
-          console.error(`❌ Processing failed for ${jobData.eventId}:`, error);
-          await sendErrorEmail(jobData.email || jobData.customerEmail, jobData.eventId, error.message);
-          
-          // Delete message to prevent infinite retries
-          await sqs.send(new DeleteMessageCommand({
-            QueueUrl: queueUrl,
-            ReceiptHandle: message.ReceiptHandle
-          }));
+          console.error('❌ Streaming job processing failed:', error);
         }
-        
+
         isProcessing = false;
-        lastActivity = Date.now();
+      }
+
+      // Check for idle timeout
+      if (Date.now() - lastActivity > IDLE_TIMEOUT) {
+        console.log('⏰ Idle timeout reached, shutting down...');
+        require('child_process').exec('sudo shutdown -h now');
+        process.exit(0);
       }
     } catch (error) {
       console.error('❌ Queue polling error:', error);
@@ -126,371 +155,153 @@ async function pollForJobs() {
   }
 }
 
-// Process wedding photos with streaming
-async function processWeddingJobStreaming(jobData) {
-  const { eventId, email, photos = [], customerEmail } = jobData;
-  const startTime = Date.now();
-  
-  // Use customerEmail if email is not provided
-  const recipientEmail = email || customerEmail;
-  
-  console.log(`🎥 Processing started (STREAMING MODE): ${eventId}`);
-  console.log(`📧 Customer email: ${recipientEmail}`);
-  console.log(`📁 Files to process: ${photos.length}`);
-  logMemoryUsage('Start');
-  
-  if (!photos || photos.length === 0) {
-    throw new Error('No photos provided for processing');
-  }
-  
-  // Create archive with streaming
-  const archive = archiver('zip', { 
-    zlib: { level: 6 }, // Balanced compression
-    store: false
-  });
-  
-  // Setup archive error handling
-  archive.on('error', (err) => {
-    console.error('❌ Archive error:', err);
-    throw err;
-  });
-  
-  archive.on('warning', (err) => {
-    if (err.code === 'ENOENT') {
-      console.warn('⚠️ Archive warning:', err);
-    } else {
-      throw err;
-    }
-  });
-  
-  // Statistics tracking
-  let processedFiles = 0;
-  let failedFiles = 0;
-  let totalBytes = 0;
-  const failedFilesList = [];
-  
-  // Setup multipart upload to R2
-  const timestamp = Date.now();
-  const r2Key = `downloads/event_${eventId}_photos_${timestamp}.zip`;
-  
-  console.log(`☁️ Starting multipart upload to R2: ${r2Key}`);
-  
-  const multipartUpload = await r2Client.send(new CreateMultipartUploadCommand({
-    Bucket: R2_BUCKET_NAME,
-    Key: r2Key,
-    ContentType: 'application/zip',
-    Metadata: {
-      eventId,
-      email: recipientEmail,
-      fileCount: photos.length.toString()
-    }
-  }));
-  
-  const uploadId = multipartUpload.UploadId;
-  const uploadParts = [];
-  let partNumber = 1;
-  let currentPartBuffer = Buffer.alloc(0);
-  const MIN_PART_SIZE = 5 * 1024 * 1024; // 5MB minimum part size
-  
-  // Create a transform stream to collect data and upload in parts
-  const uploadStream = new PassThrough();
-  
-  uploadStream.on('data', async (chunk) => {
-    currentPartBuffer = Buffer.concat([currentPartBuffer, chunk]);
-    
-    // Upload when we reach minimum part size
-    if (currentPartBuffer.length >= MIN_PART_SIZE) {
-      const partData = currentPartBuffer;
-      currentPartBuffer = Buffer.alloc(0);
-      
-      try {
-        console.log(`⬆️ Uploading part ${partNumber} (${(partData.length / 1024 / 1024).toFixed(2)}MB)`);
-        
-        const uploadPartResult = await r2Client.send(new UploadPartCommand({
-          Bucket: R2_BUCKET_NAME,
-          Key: r2Key,
-          UploadId: uploadId,
-          PartNumber: partNumber,
-          Body: partData
-        }));
-        
-        uploadParts.push({
-          ETag: uploadPartResult.ETag,
-          PartNumber: partNumber
-        });
-        
-        partNumber++;
-        logMemoryUsage(`Part ${partNumber - 1} uploaded`);
-      } catch (error) {
-        console.error(`❌ Failed to upload part ${partNumber}:`, error);
-        throw error;
-      }
-    }
-  });
-  
-  // Pipe archive to upload stream
-  archive.pipe(uploadStream);
-  
-  // Process files one by one (streaming)
-  for (let i = 0; i < photos.length; i++) {
-    const photo = photos[i];
-    const fileName = photo.fileName || photo.filename || `photo_${i + 1}.jpg`;
-    const fileUrl = photo.url || photo.downloadUrl;
-    
-    try {
-      console.log(`⬇️ Streaming ${i + 1}/${photos.length}: ${fileName}`);
-      
-      // Create a download stream
-      const downloadStream = await createDownloadStream(fileUrl);
-      
-      // Add to archive as stream
-      archive.append(downloadStream, { name: fileName });
-      
-      processedFiles++;
-      
-      // Log progress every 10 files
-      if (processedFiles % 10 === 0) {
-        logMemoryUsage(`Processed ${processedFiles} files`);
-      }
-      
-    } catch (error) {
-      console.error(`❌ Failed to stream ${fileName}:`, error.message);
-      failedFiles++;
-      failedFilesList.push({ fileName, error: error.message });
-      // Continue with other files
-    }
-  }
-  
-  // Finalize the archive
-  console.log('🏁 Finalizing ZIP archive...');
-  await archive.finalize();
-  
-  // Wait for stream to finish
-  await new Promise((resolve, reject) => {
-    uploadStream.on('finish', resolve);
-    uploadStream.on('error', reject);
-  });
-  
-  // Upload final part if there's remaining data
-  if (currentPartBuffer.length > 0) {
-    console.log(`⬆️ Uploading final part ${partNumber} (${(currentPartBuffer.length / 1024 / 1024).toFixed(2)}MB)`);
-    
-    const uploadPartResult = await r2Client.send(new UploadPartCommand({
-      Bucket: R2_BUCKET_NAME,
-      Key: r2Key,
-      UploadId: uploadId,
-      PartNumber: partNumber,
-      Body: currentPartBuffer
-    }));
-    
-    uploadParts.push({
-      ETag: uploadPartResult.ETag,
-      PartNumber: partNumber
-    });
-  }
-  
-  // Complete multipart upload
-  console.log('🏁 Completing multipart upload...');
-  await r2Client.send(new CompleteMultipartUploadCommand({
-    Bucket: R2_BUCKET_NAME,
-    Key: r2Key,
-    UploadId: uploadId,
-    MultipartUpload: {
-      Parts: uploadParts
-    }
-  }));
-  
-  const downloadUrl = `${R2_PUBLIC_URL}/${r2Key}`;
-  console.log(`✅ Upload complete: ${downloadUrl}`);
-  
-  // Calculate final stats
-  const processingTime = (Date.now() - startTime) / 1000;
-  const estimatedZipSize = archive.pointer() / 1024 / 1024; // Archive tracks bytes written
-  
-  // Send completion email
-  await sendCompletionEmail(recipientEmail, eventId, processedFiles, downloadUrl, estimatedZipSize, processingTime, failedFilesList);
-  
-  console.log(`🎉 Processing complete: ${eventId}`);
-  console.log(`📊 Stats: ${processedFiles}/${photos.length} files processed, ${failedFiles} failed`);
-  console.log(`📊 Estimated ZIP size: ${estimatedZipSize.toFixed(2)}MB, Time: ${processingTime.toFixed(1)}s`);
-  logMemoryUsage('Complete');
-}
+async function processStreamingJob(jobData) {
+  const { eventId, email, photos = [] } = jobData;
+  console.log(`🚀 Starting streaming processing for ${photos.length} files for event ${eventId}`);
 
-// Create download stream for a file
-function createDownloadStream(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (response) => {
-      // Handle redirects
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        return createDownloadStream(response.headers.location).then(resolve).catch(reject);
-      }
-      
-      if (response.statusCode !== 200) {
-        reject(new Error(`HTTP ${response.statusCode}`));
-        return;
-      }
-      
-      resolve(response);
-    }).on('error', reject);
-  });
-}
-
-// Send completion email
-async function sendCompletionEmail(email, eventId, fileCount, downloadUrl, sizeMB, processingTime, failedFiles = []) {
-  console.log(`📧 Sending completion email to: ${email}`);
-  
-  const failedFilesHtml = failedFiles.length > 0 ? `
-    <div style="background-color: #fff3e0; padding: 15px; border-radius: 8px; margin: 20px 0;">
-      <p><strong>⚠️ Some files could not be processed:</strong></p>
-      <ul style="font-size: 14px; color: #666;">
-        ${failedFiles.slice(0, 5).map(f => `<li>${f.fileName}: ${f.error}</li>`).join('')}
-        ${failedFiles.length > 5 ? `<li>... and ${failedFiles.length - 5} more files</li>` : ''}
-      </ul>
-    </div>
-  ` : '';
-  
-  const emailData = {
-    to: email,
-    subject: 'Your Wedding Photos Are Ready! 🎉',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Your Wedding Photos Are Ready!</h2>
-        <p>Great news! Your wedding photos for event <strong>${eventId}</strong> have been processed and are ready for download.</p>
-        
-        <div style="background-color: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>📊 Processing Summary:</strong></p>
-          <ul style="list-style: none; padding: 0;">
-            <li>✅ Files processed: ${fileCount}</li>
-            <li>📦 ZIP file size: ~${sizeMB.toFixed(2)}MB</li>
-            <li>⏱️ Processing time: ${processingTime.toFixed(1)} seconds</li>
-            <li>🚀 Method: Streaming (handles large collections)</li>
-          </ul>
-        </div>
-        
-        ${failedFilesHtml}
-        
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; display: inline-block; font-size: 16px;">
-            Download Your Photos
-          </a>
-        </div>
-        
-        <p style="color: #666; font-size: 14px;">This download link will be available for 7 days. Please save your photos to your device.</p>
-        
-        ${sizeMB > 1000 ? '<p style="color: #ff6b00; font-size: 14px;"><strong>Note:</strong> This is a large file. We recommend downloading on a stable Wi-Fi connection.</p>' : ''}
-      </div>
-    `
-  };
-  
   try {
-    const response = await fetch('https://wedding-photo-app.netlify.app/.netlify/functions/direct-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(emailData)
-    });
+    // Create streaming ZIP and upload directly to R2
+    const zipKey = `events/${eventId}/photos.zip`;
+    console.log('🌊 Starting streaming ZIP creation and upload...');
     
-    if (response.ok) {
-      console.log(`✅ Email sent successfully to: ${email}`);
-    } else {
-      const error = await response.text();
-      console.error(`❌ Email failed (${response.status}): ${error}`);
-      throw new Error(`Email service returned ${response.status}`);
-    }
+    const { finalSizeMB } = await createStreamingZip(photos, zipKey);
+
+    // Generate download URL
+    const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
+    console.log(`✅ Streaming upload complete: ${downloadUrl}`);
+
+    // Send email via Netlify
+    console.log('📧 Sending email notification...');
+    await sendEmail(email, eventId, downloadUrl, photos.length, finalSizeMB);
+
+    console.log('✅ Streaming job completed successfully!');
   } catch (error) {
-    console.error(`❌ Failed to send email:`, error);
+    console.error('❌ Error processing streaming job:', error);
     throw error;
   }
 }
 
-// Send error email
-async function sendErrorEmail(email, eventId, errorMessage) {
-  console.log(`📧 Sending error notification to: ${email}`);
-  
-  const emailData = {
-    to: email,
-    subject: 'Wedding Photos Processing Failed',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Processing Failed</h2>
-        <p>Unfortunately, we encountered an error while processing your wedding photos for event <strong>${eventId}</strong>.</p>
+async function createStreamingZip(photos, zipKey) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Create a PassThrough stream for the ZIP
+      const zipStream = new PassThrough();
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      
+      let totalBytes = 0;
+
+      // Track archive progress
+      archive.on('progress', (progress) => {
+        totalBytes = progress.entries.processed;
+        console.log(`📦 Processed ${progress.entries.processed}/${progress.entries.total} files`);
+      });
+
+      archive.on('end', () => {
+        const finalSizeMB = archive.pointer() / (1024 * 1024);
+        console.log(`🌊 Streaming ZIP completed: ${finalSizeMB.toFixed(2)} MB`);
+        resolve({ finalSizeMB });
+      });
+
+      archive.on('error', reject);
+
+      // Pipe archive to our stream
+      archive.pipe(zipStream);
+
+      // Start upload to R2 while creating ZIP
+      const upload = new Upload({
+        client: s3Client,
+        params: {
+          Bucket: config.r2.bucketName,
+          Key: zipKey,
+          Body: zipStream,
+          ContentType: 'application/zip'
+        }
+      });
+
+      // Start the upload (this will consume the zipStream as we write to it)
+      upload.done().catch(reject);
+
+      // Add files to archive by streaming them
+      for (let i = 0; i < photos.length; i++) {
+        const photo = photos[i];
+        console.log(`📥 Streaming file ${i + 1}/${photos.length}: ${photo.fileName}`);
         
-        <div style="background-color: #fee; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Error details:</strong></p>
-          <p style="color: #c00;">${errorMessage}</p>
-        </div>
-        
-        <p>Our team has been notified and will investigate the issue. You may try uploading your photos again, or contact support if the problem persists.</p>
-      </div>
-    `
-  };
-  
-  try {
-    await fetch('https://wedding-photo-app.netlify.app/.netlify/functions/direct-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(emailData)
-    });
-  } catch (error) {
-    console.error(`❌ Failed to send error email:`, error);
+        try {
+          const response = await fetch(photo.url);
+          if (!response.ok) {
+            console.error(`❌ Failed to fetch ${photo.fileName}: ${response.status}`);
+            continue;
+          }
+
+          // Add the response stream directly to the archive
+          archive.append(response.body, { name: photo.fileName });
+        } catch (error) {
+          console.error(`❌ Error streaming ${photo.fileName}:`, error);
+        }
+      }
+
+      // Finalize the archive (this will end the stream)
+      archive.finalize();
+
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB) {
+  const response = await fetch(config.netlify.emailEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: email,
+      subject: 'Your Wedding Photos Are Ready! (Streaming Processed)',
+      html: `
+        <h2>Your Wedding Photos Are Ready!</h2>
+        <p>Your wedding photos for event <strong>${eventId}</strong> have been processed using our advanced streaming technology and are ready for download!</p>
+        <p><strong>Files:</strong> ${fileCount} photos (${finalSizeMB.toFixed(2)}MB)</p>
+        <p><a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Download Your Photos</a></p>
+        <p>This download link will be available for 7 days.</p>
+        <p><em>Processed with streaming technology for faster delivery.</em></p>
+      `
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Email send failed: ${response.status} - ${errorText}`);
   }
+
+  console.log('✅ Email sent successfully');
 }
 
 // Start processing
-console.log('🚀 Wedding Photo Processor Starting (STREAMING VERSION)...');
-console.log('🌊 Features: Stream processing, multipart upload, handles 5-10GB+ collections');
-console.log('📊 Configuration:');
-console.log(`  - R2 Bucket: ${R2_BUCKET_NAME}`);
-console.log(`  - R2 Public URL: ${R2_PUBLIC_URL}`);
-console.log(`  - SQS Queue: ${queueUrl}`);
-console.log(`  - Memory Limit: Minimal (streaming mode)`);
-console.log('📬 Starting SQS queue polling...');
-
-pollForJobs().catch(error => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
+console.log('🚀 Wedding photo streaming processor started');
+console.log('📊 Configuration loaded from environment variables');
+console.log('📊 R2 Configuration:', {
+  accountId: config.r2.accountId,
+  bucket: config.r2.bucketName,
+  publicUrl: config.r2.publicUrl
 });
-EOF
 
-# Create package.json
-echo "📝 Creating package.json..."
-cat > package.json << 'EOF'
-{
-  "name": "wedding-photo-processor-streaming",
-  "version": "2.0.0",
-  "description": "AWS EC2 Streaming Processor for Large Wedding Photo Collections",
-  "main": "wedding-photo-processor-streaming.js",
-  "scripts": {
-    "start": "node wedding-photo-processor-streaming.js"
-  },
-  "dependencies": {
-    "@aws-sdk/client-sqs": "^3.0.0",
-    "@aws-sdk/client-s3": "^3.0.0",
-    "archiver": "^6.0.0",
-    "node-fetch": "^2.6.7"
-  }
-}
-EOF
+pollQueue().catch(console.error);
+SCRIPT_EOF
 
-# Install dependencies
-echo "📦 Installing dependencies..."
-npm install
-
-# Create systemd service for auto-restart
-echo "🔧 Creating systemd service..."
-cat > /etc/systemd/system/wedding-processor.service << 'EOF'
+# Create systemd service
+cat > /etc/systemd/system/wedding-streaming-processor.service << 'EOF'
 [Unit]
 Description=Wedding Photo Streaming Processor
 After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/processor
-ExecStart=/usr/bin/node wedding-photo-processor-streaming.js
+User=root
+WorkingDirectory=/app
+ExecStart=/usr/bin/node index.js
 Restart=always
-RestartSec=10
-StandardOutput=append:/var/log/wedding-processor.log
-StandardError=append:/var/log/wedding-processor.log
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -498,26 +309,9 @@ EOF
 
 # Enable and start the service
 systemctl daemon-reload
-systemctl enable wedding-processor
-systemctl start wedding-processor
+systemctl enable wedding-streaming-processor
+systemctl start wedding-streaming-processor
 
-# Set up auto-shutdown on instance termination
-echo "🔧 Setting up shutdown hook..."
-cat > /usr/local/bin/shutdown-processor.sh << 'EOF'
-#!/bin/bash
-systemctl stop wedding-processor
-EOF
-chmod +x /usr/local/bin/shutdown-processor.sh
-
-# Install CloudWatch Logs agent for monitoring
-echo "📊 Installing CloudWatch Logs agent..."
-wget https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py
-python3 awslogs-agent-setup.py -n -r us-east-1 -c /tmp/awslogs.conf
-
-# Final system info
-echo "✅ Setup complete at $(date)"
-echo "📊 System info:"
-echo "  - Memory: $(free -h | grep Mem | awk '{print $2}')"
-echo "  - Disk: $(df -h / | tail -1 | awk '{print $4}' | sed 's/G/ GB/')"
-echo "  - CPU: $(nproc) cores"
-echo "🌊 Streaming processor ready to handle 5-10GB+ collections!"
+echo "✅ Wedding photo streaming processor setup complete at $(date)"
+echo "📊 Service status:"
+systemctl status wedding-streaming-processor --no-pager

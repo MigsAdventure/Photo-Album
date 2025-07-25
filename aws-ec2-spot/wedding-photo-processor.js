@@ -1,85 +1,118 @@
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client } = require('@aws-sdk/client-s3');
+const { Upload } = require('@aws-sdk/lib-storage');
+const express = require('express');
 const archiver = require('archiver');
 const fetch = require('node-fetch');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-// SQS Configuration
-const sqs = new SQSClient({ region: 'us-east-1' });
-const queueUrl = 'https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue';
-
-// R2 Configuration (from .env)
-const r2Client = new S3Client({
-  region: 'auto',
-  endpoint: 'https://98a9cce92e578cafdb9025fa24a6ee7e.r2.cloudflarestorage.com',
-  credentials: {
-    accessKeyId: '06da59a3b3aa1315ed2c9a38efa7579e',
-    secretAccessKey: 'e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27',
+// Configuration from environment variables
+const config = {
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    bucketName: process.env.R2_BUCKET_NAME,
+    publicUrl: process.env.R2_PUBLIC_URL
   },
-  forcePathStyle: true
+  sqs: {
+    queueUrl: process.env.AWS_SQS_QUEUE_URL,
+    region: process.env.AWS_REGION
+  },
+  netlify: {
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
+  }
+};
+
+// Validate environment variables
+const requiredEnvVars = [
+  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 
+  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION'
+];
+
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`❌ Missing required environment variable: ${envVar}`);
+    process.exit(1);
+  }
+}
+
+console.log('🚀 Wedding photo processor started');
+console.log('📊 Configuration loaded from environment variables');
+console.log('📊 R2 Configuration:', {
+  accountId: config.r2.accountId,
+  bucket: config.r2.bucketName,
+  publicUrl: config.r2.publicUrl
 });
 
-const R2_BUCKET_NAME = 'sharedmoments-photos-production';
-const R2_PUBLIC_URL = 'https://sharedmomentsphotos.socialboostai.com';
-
-// Track activity for auto-shutdown
-let lastActivity = Date.now();
-let isProcessing = false;
-
-// Auto-shutdown after 10 minutes of inactivity
-setInterval(() => {
-  if (Date.now() - lastActivity > 600000 && !isProcessing) {
-    console.log('🔌 Auto-shutting down due to inactivity (10 min idle)');
-    process.exit(0);
+// Initialize AWS clients
+const sqsClient = new SQSClient({ region: config.sqs.region });
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint: `https://${config.r2.accountId}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: config.r2.accessKeyId,
+    secretAccessKey: config.r2.secretAccessKey
   }
-}, 60000);
+});
 
-// Main SQS polling function
-async function pollForJobs() {
+// Processing state
+let isProcessing = false;
+let lastActivity = Date.now();
+const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+
+// Express server for health checks
+const app = express();
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    processing: isProcessing, 
+    uptime: process.uptime(),
+    lastActivity: new Date(lastActivity).toISOString()
+  });
+});
+app.listen(8080, () => console.log('Health check server running on port 8080'));
+
+// Poll SQS for jobs
+async function pollQueue() {
   while (true) {
     try {
-      console.log('🔍 Polling SQS queue for jobs...');
-      
-      const result = await sqs.send(new ReceiveMessageCommand({
-        QueueUrl: queueUrl,
+      const result = await sqsClient.send(new ReceiveMessageCommand({
+        QueueUrl: config.sqs.queueUrl,
         MaxNumberOfMessages: 1,
-        WaitTimeSeconds: 20,
-        MessageAttributeNames: ['All']
+        WaitTimeSeconds: 20
       }));
-      
+
       if (result.Messages && result.Messages.length > 0) {
         const message = result.Messages[0];
         const jobData = JSON.parse(message.Body);
-        
+
         console.log(`📦 Received job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
         lastActivity = Date.now();
         isProcessing = true;
-        
+
         try {
-          await processWeddingJob(jobData);
+          await processJob(jobData);
           
-          // Delete message after successful processing
-          await sqs.send(new DeleteMessageCommand({
-            QueueUrl: queueUrl,
+          // Delete message from queue
+          await sqsClient.send(new DeleteMessageCommand({
+            QueueUrl: config.sqs.queueUrl,
             ReceiptHandle: message.ReceiptHandle
           }));
           
-          console.log(`✅ Job completed: ${jobData.eventId}`);
+          console.log('✅ Job completed and message deleted from queue');
         } catch (error) {
-          console.error(`❌ Processing failed for ${jobData.eventId}:`, error);
-          await sendErrorEmail(jobData.email, jobData.eventId, error.message);
-          
-          // Delete message to prevent infinite retries
-          await sqs.send(new DeleteMessageCommand({
-            QueueUrl: queueUrl,
-            ReceiptHandle: message.ReceiptHandle
-          }));
+          console.error('❌ Job processing failed:', error);
         }
-        
+
         isProcessing = false;
-        lastActivity = Date.now();
+      }
+
+      // Check for idle timeout
+      if (Date.now() - lastActivity > IDLE_TIMEOUT) {
+        console.log('⏰ Idle timeout reached, shutting down...');
+        process.exit(0);
       }
     } catch (error) {
       console.error('❌ Queue polling error:', error);
@@ -88,261 +121,122 @@ async function pollForJobs() {
   }
 }
 
-// Process wedding photos
-async function processWeddingJob(jobData) {
-  const { eventId, email, photos = [], customerEmail } = jobData;
-  const startTime = Date.now();
-  
-  // Use customerEmail if email is not provided
-  const recipientEmail = email || customerEmail;
-  
-  console.log(`🎥 Processing started: ${eventId}`);
-  console.log(`📧 Customer email: ${recipientEmail}`);
-  console.log(`📁 Files to process: ${photos.length}`);
-  
-  if (!photos || photos.length === 0) {
-    throw new Error('No photos provided for processing');
-  }
-  
+async function processJob(jobData) {
+  const { eventId, email, photos = [] } = jobData;
+  console.log(`🚀 Processing ${photos.length} files for event ${eventId}`);
+
   const tempDir = `/tmp/${eventId}`;
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-  
-  const downloadedFiles = [];
-  let totalBytes = 0;
-  
-  // Download all files
-  for (let i = 0; i < photos.length; i++) {
-    const photo = photos[i];
-    const fileName = photo.fileName || photo.filename || `photo_${i + 1}.jpg`;
-    const fileUrl = photo.url || photo.downloadUrl;
-    
-    try {
-      console.log(`⬇️ Downloading ${i + 1}/${photos.length}: ${fileName}`);
-      
-      const filePath = path.join(tempDir, fileName);
-      const fileSize = await downloadFile(fileUrl, filePath);
-      
-      downloadedFiles.push({
-        path: filePath,
-        name: fileName,
-        size: fileSize
-      });
-      
-      totalBytes += fileSize;
-      console.log(`✅ Downloaded: ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)}MB)`);
-    } catch (error) {
-      console.error(`❌ Failed to download ${fileName}:`, error.message);
-      // Continue with other files
-    }
-  }
-  
-  if (downloadedFiles.length === 0) {
-    throw new Error('Failed to download any files');
-  }
-  
-  console.log(`📊 Downloaded ${downloadedFiles.length}/${photos.length} files (${(totalBytes / 1024 / 1024).toFixed(2)}MB total)`);
-  
-  // Create ZIP archive
-  const zipPath = path.join(tempDir, `${eventId}.zip`);
-  await createZipArchive(downloadedFiles, zipPath);
-  
-  const zipStats = fs.statSync(zipPath);
-  const zipSizeMB = zipStats.size / 1024 / 1024;
-  
-  console.log(`🗜️ ZIP created: ${zipSizeMB.toFixed(2)}MB`);
-  
-  // Upload to R2
-  const timestamp = Date.now();
-  const r2Key = `downloads/event_${eventId}_photos_${timestamp}.zip`;
-  
-  console.log(`☁️ Uploading to R2: ${r2Key}`);
-  
-  const zipBuffer = fs.readFileSync(zipPath);
-  await r2Client.send(new PutObjectCommand({
-    Bucket: R2_BUCKET_NAME,
-    Key: r2Key,
-    Body: zipBuffer,
-    ContentType: 'application/zip',
-    Metadata: {
-      eventId,
-      email: recipientEmail,
-      fileCount: downloadedFiles.length.toString(),
-      originalFileCount: photos.length.toString()
-    }
-  }));
-  
-  const downloadUrl = `${R2_PUBLIC_URL}/${r2Key}`;
-  console.log(`✅ Uploaded to R2: ${downloadUrl}`);
-  
-  // Clean up temp files
-  fs.rmSync(tempDir, { recursive: true, force: true });
-  
-  // Send completion email via Netlify function
-  const processingTime = (Date.now() - startTime) / 1000;
-  await sendCompletionEmail(recipientEmail, eventId, downloadedFiles.length, downloadUrl, zipSizeMB, processingTime);
-  
-  console.log(`🎉 Processing complete: ${eventId}`);
-  console.log(`📊 Stats: ${downloadedFiles.length}/${photos.length} files, ${zipSizeMB.toFixed(2)}MB, ${processingTime.toFixed(1)}s`);
-}
+  fs.mkdirSync(tempDir, { recursive: true });
+  let zipSizeMB = 0;
 
-// Download file helper
-async function downloadFile(url, filePath) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(filePath);
-    let downloadedBytes = 0;
-    
-    https.get(url, (response) => {
-      // Handle redirects
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        file.close();
-        fs.unlinkSync(filePath);
-        return downloadFile(response.headers.location, filePath).then(resolve).catch(reject);
-      }
-      
-      if (response.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(filePath);
-        reject(new Error(`HTTP ${response.statusCode}`));
-        return;
-      }
-      
-      response.on('data', (chunk) => {
-        downloadedBytes += chunk.length;
-      });
-      
-      response.pipe(file);
-      
-      file.on('finish', () => {
-        file.close();
-        resolve(downloadedBytes);
-      });
-      
-      file.on('error', (err) => {
-        fs.unlinkSync(filePath);
-        reject(err);
-      });
-    }).on('error', (err) => {
-      fs.unlinkSync(filePath);
-      reject(err);
-    });
-  });
-}
-
-// Create ZIP archive
-async function createZipArchive(files, zipPath) {
-  return new Promise((resolve, reject) => {
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 6 } });
-    
-    output.on('close', () => resolve());
-    archive.on('error', reject);
-    
-    archive.pipe(output);
-    
-    files.forEach(file => {
-      archive.file(file.path, { name: file.name });
-    });
-    
-    archive.finalize();
-  });
-}
-
-// Send completion email
-async function sendCompletionEmail(email, eventId, fileCount, downloadUrl, sizeMB, processingTime) {
-  console.log(`📧 Sending completion email to: ${email}`);
-  
-  const emailData = {
-    to: email,
-    subject: 'Your Wedding Photos Are Ready! 🎉',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Your Wedding Photos Are Ready!</h2>
-        <p>Great news! Your wedding photos for event <strong>${eventId}</strong> have been processed and are ready for download.</p>
-        
-        <div style="background-color: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>📊 Processing Summary:</strong></p>
-          <ul style="list-style: none; padding: 0;">
-            <li>✅ Files processed: ${fileCount}</li>
-            <li>📦 ZIP file size: ${sizeMB.toFixed(2)}MB</li>
-            <li>⏱️ Processing time: ${processingTime.toFixed(1)} seconds</li>
-          </ul>
-        </div>
-        
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; display: inline-block; font-size: 16px;">
-            Download Your Photos
-          </a>
-        </div>
-        
-        <p style="color: #666; font-size: 14px;">This download link will be available for 7 days. Please save your photos to your device.</p>
-      </div>
-    `
-  };
-  
   try {
-    const response = await fetch('https://wedding-photo-app.netlify.app/.netlify/functions/direct-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(emailData)
-    });
-    
-    if (response.ok) {
-      console.log(`✅ Email sent successfully to: ${email}`);
-    } else {
-      const error = await response.text();
-      console.error(`❌ Email failed (${response.status}): ${error}`);
-      throw new Error(`Email service returned ${response.status}`);
+    // Download all files
+    console.log('📥 Downloading files...');
+    for (const photo of photos) {
+      await downloadFile(photo.url, path.join(tempDir, photo.fileName));
     }
+
+    // Create ZIP
+    const zipPath = `/tmp/${eventId}.zip`;
+    console.log('📦 Creating ZIP archive...');
+    await createZipArchive(tempDir, zipPath);
+    
+    // Get ZIP file size
+    const stats = fs.statSync(zipPath);
+    zipSizeMB = stats.size / (1024 * 1024);
+
+    // Upload to R2
+    const zipKey = `events/${eventId}/photos.zip`;
+    console.log('☁️ Uploading to R2...');
+    await uploadToR2(zipPath, zipKey);
+
+    // Generate download URL
+    const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
+    console.log(`✅ Upload complete: ${downloadUrl}`);
+
+    // Send email via Netlify
+    console.log('📧 Sending email notification...');
+    await sendEmail(email, eventId, downloadUrl, photos.length, zipSizeMB);
+
+    // Cleanup
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.unlinkSync(zipPath);
+
+    console.log('✅ Job completed successfully!');
   } catch (error) {
-    console.error(`❌ Failed to send email:`, error);
+    console.error('❌ Error processing job:', error);
     throw error;
   }
 }
 
-// Send error email
-async function sendErrorEmail(email, eventId, errorMessage) {
-  console.log(`📧 Sending error notification to: ${email}`);
+async function downloadFile(url, outputPath) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download: ${url}`);
   
-  const emailData = {
-    to: email,
-    subject: 'Wedding Photos Processing Failed',
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>Processing Failed</h2>
-        <p>Unfortunately, we encountered an error while processing your wedding photos for event <strong>${eventId}</strong>.</p>
-        
-        <div style="background-color: #fee; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <p><strong>Error details:</strong></p>
-          <p style="color: #c00;">${errorMessage}</p>
-        </div>
-        
-        <p>Our team has been notified and will investigate the issue. You may try uploading your photos again, or contact support if the problem persists.</p>
-      </div>
-    `
-  };
-  
-  try {
-    await fetch('https://wedding-photo-app.netlify.app/.netlify/functions/direct-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(emailData)
+  const fileStream = fs.createWriteStream(outputPath);
+  await new Promise((resolve, reject) => {
+    response.body.pipe(fileStream);
+    response.body.on('error', reject);
+    fileStream.on('finish', resolve);
+  });
+}
+
+async function createZipArchive(sourceDir, outputPath) {
+  return new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(outputPath);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+
+    output.on('close', () => {
+      console.log(`📦 ZIP created: ${(archive.pointer() / 1024 / 1024).toFixed(2)} MB`);
+      resolve();
     });
-  } catch (error) {
-    console.error(`❌ Failed to send error email:`, error);
+
+    archive.on('error', reject);
+    archive.pipe(output);
+    archive.directory(sourceDir, false);
+    archive.finalize();
+  });
+}
+
+async function uploadToR2(filePath, key) {
+  const fileStream = fs.createReadStream(filePath);
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: config.r2.bucketName,
+      Key: key,
+      Body: fileStream,
+      ContentType: 'application/zip'
+    }
+  });
+
+  await upload.done();
+}
+
+async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB) {
+  const response = await fetch(config.netlify.emailEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: email,
+      subject: 'Your Wedding Photos Are Ready!',
+      html: `
+        <h2>Your Wedding Photos Are Ready!</h2>
+        <p>Your wedding photos for event <strong>${eventId}</strong> have been processed and are ready for download!</p>
+        <p><strong>Files:</strong> ${fileCount} photos (${finalSizeMB.toFixed(2)}MB)</p>
+        <p><a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Download Your Photos</a></p>
+        <p>This download link will be available for 7 days.</p>
+      `
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Email send failed: ${response.status} - ${errorText}`);
   }
+
+  console.log('✅ Email sent successfully');
 }
 
 // Start processing
-console.log('🚀 Wedding Photo Processor Starting...');
-console.log('📊 Configuration:');
-console.log(`  - R2 Bucket: ${R2_BUCKET_NAME}`);
-console.log(`  - R2 Public URL: ${R2_PUBLIC_URL}`);
-console.log(`  - SQS Queue: ${queueUrl}`);
-console.log('📬 Starting SQS queue polling...');
-
-pollForJobs().catch(error => {
-  console.error('❌ Fatal error:', error);
-  process.exit(1);
-});
+pollQueue().catch(console.error);
