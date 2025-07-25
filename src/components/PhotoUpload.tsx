@@ -598,34 +598,46 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
               scrollBehavior: 'smooth', // Smooth scrolling
               // Enhanced scrollbar styles for better visibility
               '&::-webkit-scrollbar': {
-                width: '12px',
+                width: '8px', // Slightly smaller for mobile
               },
               '&::-webkit-scrollbar-track': {
                 bgcolor: alpha(theme.palette.grey[200], 0.5),
-                borderRadius: '6px',
-                margin: '4px',
+                borderRadius: '4px',
+                margin: '2px',
               },
               '&::-webkit-scrollbar-thumb': {
-                bgcolor: alpha(theme.palette.primary.main, 0.6),
-                borderRadius: '6px',
-                border: `2px solid transparent`,
-                backgroundClip: 'content-box',
+                bgcolor: alpha(theme.palette.primary.main, 0.7),
+                borderRadius: '4px',
                 '&:hover': {
-                  bgcolor: alpha(theme.palette.primary.main, 0.8),
+                  bgcolor: alpha(theme.palette.primary.main, 0.9),
                 }
               },
               // For Firefox
               scrollbarWidth: 'thin',
-              scrollbarColor: `${alpha(theme.palette.primary.main, 0.6)} ${alpha(theme.palette.grey[200], 0.5)}`,
-              // Touch scrolling for mobile - enhanced
+              scrollbarColor: `${alpha(theme.palette.primary.main, 0.7)} ${alpha(theme.palette.grey[200], 0.5)}`,
+              // Critical mobile scrolling fixes
               WebkitOverflowScrolling: 'touch',
-              // Ensure scrolling works on mobile
+              // Ensure proper touch scrolling on mobile
               touchAction: 'pan-y',
-              // Additional mobile scroll fixes
+              // Remove any potential scroll blocking
+              overscrollBehavior: 'contain',
+              // Ensure the container can scroll
               position: 'relative',
               // Force hardware acceleration for smooth scrolling
               transform: 'translateZ(0)',
-              willChange: 'scroll-position'
+              willChange: 'scroll-position',
+              // Prevent any parent containers from interfering
+              isolation: 'isolate',
+              // Ensure minimum height for scrolling to work
+              minHeight: '100px',
+              // Additional iOS safari fixes
+              '&:focus': {
+                outline: 'none'
+              },
+              // Force scrollable area to be recognized on mobile
+              height: { xs: '60vh', sm: '350px' },
+              // Ensure proper stacking context
+              zIndex: 1
             }}>
               {uploadQueue.map((item, index) => (
                 <ListItem 
