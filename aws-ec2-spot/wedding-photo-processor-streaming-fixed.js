@@ -61,7 +61,7 @@ const s3Client = new S3Client({
 // Processing state
 let isProcessing = false;
 let lastActivity = Date.now();
-const IDLE_TIMEOUT = 15 * 60 * 1000; // 15 minutes for streaming
+const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes idle timeout to save costs
 let jobsProcessed = 0;
 
 // Get instance ID from EC2 metadata
@@ -162,9 +162,9 @@ async function pollQueue() {
         isProcessing = false;
       }
 
-      // Check for idle timeout
-      if (Date.now() - lastActivity > IDLE_TIMEOUT) {
-        console.log('⏰ Idle timeout reached, terminating instance...');
+      // Check for idle timeout - only when not processing
+      if (!isProcessing && Date.now() - lastActivity > IDLE_TIMEOUT) {
+        console.log(`⏰ Idle timeout reached (${IDLE_TIMEOUT/1000/60} minutes), terminating instance...`);
         await terminateInstance();
         process.exit(0);
       }

@@ -91,7 +91,8 @@ exports.handler = async (event) => {
         
         console.log(`✅ Job queued successfully for eventId: ${eventId}`);
         
-        // Check if there's already a running instance
+        // Check if there's already a running instance to avoid launching duplicates
+        // But we let instances auto-terminate when idle instead of reusing them
         const describeParams = {
             Filters: [
                 { Name: 'tag:Name', Values: ['wedding-photo-processor'] },
@@ -105,8 +106,42 @@ exports.handler = async (event) => {
         if (runningInstances.length > 0) {
             const instanceId = runningInstances[0].InstanceId;
             const publicIP = runningInstances[0].PublicIpAddress;
+            const launchTime = runningInstances[0].LaunchTime;
+            const instanceAge = Date.now() - new Date(launchTime).getTime();
             
-            console.log(`✅ Using existing instance: ${instanceId} (${publicIP})`);
+            console.log(`ℹ️ Found existing instance: ${instanceId} (age: ${Math.round(instanceAge / 1000 / 60)}min)`);
+            
+            // If instance is young (< 2 minutes), it's likely still starting up, so don't launch another
+            if (instanceAge < 120000) {
+                console.log(`⏳ Instance is still starting up, not launching another`);
+                
+                return {
+                    statusCode: 200,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                        'Access-Control-Allow-Headers': 'Content-Type'
+                    },
+                    body: JSON.stringify({
+                        success: true,
+                        message: 'Job queued - instance is starting up',
+                        instanceId: instanceId,
+                        publicIP: publicIP,
+                        estimatedCost: '$0.01-0.02',
+                        processingTime: '2-3 minutes',
+                        instanceType: 't3.medium (spot)',
+                        eventId: eventId,
+                        email: email,
+                        photoCount: photos.length,
+                        timestamp: new Date().toISOString(),
+                        existingInstance: true
+                    })
+                };
+            }
+            
+            // If instance is older, it's processing jobs. The existing instance will handle the queued job.
+            console.log(`✅ Active instance found - job will be processed from queue`);
             
             return {
                 statusCode: 200,
@@ -118,7 +153,7 @@ exports.handler = async (event) => {
                 },
                 body: JSON.stringify({
                     success: true,
-                    message: 'Job queued - using existing EC2 instance',
+                    message: 'Job queued - existing instance will process',
                     instanceId: instanceId,
                     publicIP: publicIP,
                     estimatedCost: '$0.01-0.02',
@@ -128,7 +163,8 @@ exports.handler = async (event) => {
                     email: email,
                     photoCount: photos.length,
                     timestamp: new Date().toISOString(),
-                    reusedInstance: true
+                    activeInstance: true,
+                    note: 'Instance will auto-terminate after 5min of inactivity'
                 })
             };
         }

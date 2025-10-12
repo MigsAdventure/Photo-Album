@@ -1,5 +1,6 @@
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const { S3Client } = require('@aws-sdk/client-s3');
+const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
 const express = require('express');
 const archiver = require('archiver');
@@ -48,6 +49,7 @@ console.log('📊 R2 Configuration:', {
 
 // Initialize AWS clients
 const sqsClient = new SQSClient({ region: config.sqs.region });
+const ec2Client = new EC2Client({ region: config.sqs.region });
 const s3Client = new S3Client({
   region: 'auto',
   endpoint: `https://${config.r2.accountId}.r2.cloudflarestorage.com`,
@@ -60,7 +62,43 @@ const s3Client = new S3Client({
 // Processing state
 let isProcessing = false;
 let lastActivity = Date.now();
-const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes idle timeout to save costs
+let jobsProcessed = 0;
+
+// Get instance ID from EC2 metadata
+async function getInstanceId() {
+  try {
+    const response = await fetch('http://169.254.169.254/latest/meta-data/instance-id', {
+      timeout: 1000
+    });
+    if (!response.ok) return null;
+    return await response.text();
+  } catch (error) {
+    console.error('Failed to get instance ID:', error);
+    return null;
+  }
+}
+
+// Terminate this EC2 instance
+async function terminateInstance() {
+  try {
+    const instanceId = await getInstanceId();
+    if (!instanceId) {
+      console.error('❌ Could not get instance ID for termination');
+      return;
+    }
+    
+    console.log(`🔪 Terminating instance ${instanceId} after processing ${jobsProcessed} jobs`);
+    
+    await ec2Client.send(new TerminateInstancesCommand({
+      InstanceIds: [instanceId]
+    }));
+    
+    console.log('✅ Instance termination initiated');
+  } catch (error) {
+    console.error('❌ Failed to terminate instance:', error);
+  }
+}
 
 // Express server for health checks
 const app = express();
@@ -69,7 +107,8 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     processing: isProcessing, 
     uptime: process.uptime(),
-    lastActivity: new Date(lastActivity).toISOString()
+    lastActivity: new Date(lastActivity).toISOString(),
+    jobsProcessed
   });
 });
 app.listen(8080, () => console.log('Health check server running on port 8080'));
@@ -101,6 +140,7 @@ async function pollQueue() {
             ReceiptHandle: message.ReceiptHandle
           }));
           
+          jobsProcessed++;
           console.log('✅ Job completed and message deleted from queue');
         } catch (error) {
           console.error('❌ Job processing failed:', error);
@@ -109,9 +149,10 @@ async function pollQueue() {
         isProcessing = false;
       }
 
-      // Check for idle timeout
-      if (Date.now() - lastActivity > IDLE_TIMEOUT) {
-        console.log('⏰ Idle timeout reached, shutting down...');
+      // Check for idle timeout - only when not processing
+      if (!isProcessing && Date.now() - lastActivity > IDLE_TIMEOUT) {
+        console.log(`⏰ Idle timeout reached (${IDLE_TIMEOUT/1000/60} minutes), terminating instance...`);
+        await terminateInstance();
         process.exit(0);
       }
     } catch (error) {
@@ -237,6 +278,23 @@ async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB) {
 
   console.log('✅ Email sent successfully');
 }
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('⚠️ SIGTERM received, shutting down gracefully...');
+  if (!isProcessing) {
+    await terminateInstance();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('⚠️ SIGINT received, shutting down gracefully...');
+  if (!isProcessing) {
+    await terminateInstance();
+  }
+  process.exit(0);
+});
 
 // Start processing
 pollQueue().catch(console.error);
