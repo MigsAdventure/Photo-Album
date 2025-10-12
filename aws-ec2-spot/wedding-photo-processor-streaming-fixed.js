@@ -1,10 +1,11 @@
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const { S3Client, HeadObjectCommand } = require('@aws-sdk/client-s3');
+const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
 const express = require('express');
 const archiver = require('archiver');
-// Using global fetch available in modern Node (v18+); user-data will install Node 22
 const { PassThrough } = require('stream');
+const fs = require('fs');
 
 // Configuration from environment variables
 const config = {
@@ -37,7 +38,7 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-console.log('🚀 Wedding photo streaming processor started');
+console.log('🚀 Wedding photo streaming processor started (with auto-termination fix)');
 console.log('📊 Configuration loaded from environment variables');
 console.log('📊 R2 Configuration:', {
   accountId: config.r2.accountId,
@@ -47,6 +48,7 @@ console.log('📊 R2 Configuration:', {
 
 // Initialize AWS clients
 const sqsClient = new SQSClient({ region: config.sqs.region });
+const ec2Client = new EC2Client({ region: config.sqs.region });
 const s3Client = new S3Client({
   region: 'auto',
   endpoint: `https://${config.r2.accountId}.r2.cloudflarestorage.com`,
@@ -60,6 +62,42 @@ const s3Client = new S3Client({
 let isProcessing = false;
 let lastActivity = Date.now();
 const IDLE_TIMEOUT = 15 * 60 * 1000; // 15 minutes for streaming
+let jobsProcessed = 0;
+
+// Get instance ID from EC2 metadata
+async function getInstanceId() {
+  try {
+    const response = await fetch('http://169.254.169.254/latest/meta-data/instance-id', {
+      timeout: 1000
+    });
+    if (!response.ok) return null;
+    return await response.text();
+  } catch (error) {
+    console.error('Failed to get instance ID:', error);
+    return null;
+  }
+}
+
+// Terminate this EC2 instance
+async function terminateInstance() {
+  try {
+    const instanceId = await getInstanceId();
+    if (!instanceId) {
+      console.error('❌ Could not get instance ID for termination');
+      return;
+    }
+    
+    console.log(`🔪 Terminating instance ${instanceId} after processing ${jobsProcessed} jobs`);
+    
+    await ec2Client.send(new TerminateInstancesCommand({
+      InstanceIds: [instanceId]
+    }));
+    
+    console.log('✅ Instance termination initiated');
+  } catch (error) {
+    console.error('❌ Failed to terminate instance:', error);
+  }
+}
 
 // Express server for health checks
 const app = express();
@@ -68,8 +106,9 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     processing: isProcessing, 
     uptime: process.uptime(),
-    type: 'streaming-processor',
-    lastActivity: new Date(lastActivity).toISOString()
+    type: 'streaming-processor-fixed',
+    lastActivity: new Date(lastActivity).toISOString(),
+    jobsProcessed
   });
 });
 app.listen(8080, () => console.log('Health check server running on port 8080'));
@@ -81,7 +120,8 @@ async function pollQueue() {
       const result = await sqsClient.send(new ReceiveMessageCommand({
         QueueUrl: config.sqs.queueUrl,
         MaxNumberOfMessages: 1,
-        WaitTimeSeconds: 20
+        WaitTimeSeconds: 20,
+        VisibilityTimeout: 900 // 15 minutes for large jobs
       }));
 
       if (result.Messages && result.Messages.length > 0) {
@@ -89,11 +129,22 @@ async function pollQueue() {
         const jobData = JSON.parse(message.Body);
 
         console.log(`📦 Received streaming job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
+        
+        // Calculate total size
+        const totalSize = jobData.photos?.reduce((sum, photo) => sum + (photo.size || 0), 0) || 0;
+        const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+        console.log(`📊 Total size to process: ${totalSizeMB} MB`);
+        
         lastActivity = Date.now();
         isProcessing = true;
 
         try {
-          await processStreamingJob(jobData);
+          // Process with longer timeout for large files
+          const timeoutMs = Math.max(600000, totalSize / 100); // At least 10 minutes, or 10KB/s minimum
+          await Promise.race([
+            processStreamingJob(jobData),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Job timeout')), timeoutMs))
+          ]);
           
           // Delete message from queue
           await sqsClient.send(new DeleteMessageCommand({
@@ -101,9 +152,11 @@ async function pollQueue() {
             ReceiptHandle: message.ReceiptHandle
           }));
           
+          jobsProcessed++;
           console.log('✅ Streaming job completed and message deleted from queue');
         } catch (error) {
           console.error('❌ Streaming job processing failed:', error);
+          // Message will become visible again after visibility timeout
         }
 
         isProcessing = false;
@@ -111,7 +164,8 @@ async function pollQueue() {
 
       // Check for idle timeout
       if (Date.now() - lastActivity > IDLE_TIMEOUT) {
-        console.log('⏰ Idle timeout reached, shutting down...');
+        console.log('⏰ Idle timeout reached, terminating instance...');
+        await terminateInstance();
         process.exit(0);
       }
     } catch (error) {
@@ -153,7 +207,7 @@ async function createStreamingZip(photos, zipKey, eventId) {
       // Create a PassThrough stream for the ZIP
       const zipStream = new PassThrough();
       const archive = archiver('zip', { 
-        zlib: { level: 9 },
+        zlib: { level: 6 }, // Reduced compression for faster processing
         statConcurrency: 1 // Process files one at a time to manage memory
       });
       
@@ -173,6 +227,7 @@ async function createStreamingZip(photos, zipKey, eventId) {
         console.log(`🌊 Streaming ZIP completed: ${finalSizeMB.toFixed(2)} MB`);
 
         try {
+          // Wait for upload to complete
           await uploadPromise;
           console.log('✅ Upload to R2 completed');
 
@@ -184,8 +239,13 @@ async function createStreamingZip(photos, zipKey, eventId) {
             }));
             const sizeMB = (Number(head.ContentLength || 0) / (1024 * 1024)).toFixed(2);
             console.log(`🔎 R2 object verified. Content-Length: ${sizeMB} MB`);
+            
+            if (Number(head.ContentLength) === 0) {
+              throw new Error('Uploaded file is empty');
+            }
           } catch (headErr) {
-            console.warn('⚠️ HeadObject verification failed:', headErr);
+            console.error('⚠️ HeadObject verification failed:', headErr);
+            throw headErr;
           }
 
           resolve({ finalSizeMB, failedCount });
@@ -198,6 +258,14 @@ async function createStreamingZip(photos, zipKey, eventId) {
       archive.on('error', (err) => {
         console.error('❌ Archive error:', err);
         reject(err);
+      });
+
+      archive.on('warning', (err) => {
+        if (err.code === 'ENOENT') {
+          console.warn('⚠️ Archive warning:', err);
+        } else {
+          throw err;
+        }
       });
 
       // Pipe archive to our stream
@@ -213,6 +281,16 @@ async function createStreamingZip(photos, zipKey, eventId) {
           Body: zipStream,
           ContentType: 'application/zip',
           ContentDisposition: `attachment; filename="${fileName}"`
+        },
+        queueSize: 4, // Parallel parts
+        partSize: 10 * 1024 * 1024 // 10MB parts for large files
+      });
+
+      // Monitor upload progress
+      upload.on('httpUploadProgress', (progress) => {
+        if (progress.loaded && progress.total) {
+          const percent = ((progress.loaded / progress.total) * 100).toFixed(1);
+          console.log(`⬆️ Upload progress: ${percent}% (${(progress.loaded / 1024 / 1024).toFixed(2)}MB / ${(progress.total / 1024 / 1024).toFixed(2)}MB)`);
         }
       });
 
@@ -224,10 +302,20 @@ async function createStreamingZip(photos, zipKey, eventId) {
       
       for (let i = 0; i < photos.length; i++) {
         const photo = photos[i];
-        console.log(`📥 Streaming file ${i + 1}/${photos.length}: ${photo.fileName}`);
+        const sizeMB = ((photo.size || 0) / (1024 * 1024)).toFixed(2);
+        console.log(`📥 Streaming file ${i + 1}/${photos.length}: ${photo.fileName} (${sizeMB} MB)`);
         
         try {
-          const response = await fetch(photo.url);
+          // Add timeout for fetch
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 120000); // 2 minutes per file
+          
+          const response = await fetch(photo.url, {
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeout);
+          
           if (!response.ok) {
             console.error(`❌ Failed to fetch ${photo.fileName}: ${response.status}`);
             failedCount++;
@@ -242,10 +330,10 @@ async function createStreamingZip(photos, zipKey, eventId) {
           
           // Add a small delay between files to prevent overwhelming the system
           if (i < photos.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 50)); // Reduced delay
           }
         } catch (error) {
-          console.error(`❌ Error streaming ${photo.fileName}:`, error);
+          console.error(`❌ Error streaming ${photo.fileName}:`, error.message || error);
           failedCount++;
           // Continue with next file instead of failing entire job
         }
@@ -263,31 +351,53 @@ async function createStreamingZip(photos, zipKey, eventId) {
 }
 
 async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB, failedCount = 0) {
-  const response = await fetch(config.netlify.emailEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      to: email,
-      subject: 'Your Wedding Photos Are Ready! (Streaming Processed)',
-      html: `
-        <h2>Your Wedding Photos Are Ready!</h2>
-        <p>Your wedding photos for event <strong>${eventId}</strong> have been processed using our advanced streaming technology and are ready for download!</p>
-        <p><strong>Files:</strong> ${fileCount} photos (${finalSizeMB.toFixed(2)}MB)</p>
-        ${failedCount > 0 ? `<p><strong>Note:</strong> ${failedCount} file(s) could not be processed and were skipped.</p>` : ''}
-        <p><a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Download Your Photos</a></p>
-        <p>This download link will be available for 7 days.</p>
-        <p><em>Processed with streaming technology for optimal performance and memory efficiency.</em></p>
-      `
-    })
-  });
+  try {
+    const response = await fetch(config.netlify.emailEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: email,
+        subject: 'Your Wedding Photos Are Ready! (Streaming Processed)',
+        html: `
+          <h2>Your Wedding Photos Are Ready!</h2>
+          <p>Your wedding photos for event <strong>${eventId}</strong> have been processed using our advanced streaming technology and are ready for download!</p>
+          <p><strong>Files:</strong> ${fileCount} photos (${finalSizeMB.toFixed(2)}MB)</p>
+          ${failedCount > 0 ? `<p><strong>Note:</strong> ${failedCount} file(s) could not be processed and were skipped.</p>` : ''}
+          <p><a href="${downloadUrl}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px;">Download Your Photos</a></p>
+          <p>This download link will be available for 7 days.</p>
+          <p><em>Processed with streaming technology for optimal performance and memory efficiency.</em></p>
+        `
+      })
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Email send failed: ${response.status} - ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Email send failed: ${response.status} - ${errorText}`);
+    }
+
+    console.log('✅ Email sent successfully');
+  } catch (error) {
+    console.error('❌ Failed to send email:', error);
+    throw error;
   }
-
-  console.log('✅ Email sent successfully');
 }
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('⚠️ SIGTERM received, shutting down gracefully...');
+  if (!isProcessing) {
+    await terminateInstance();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('⚠️ SIGINT received, shutting down gracefully...');
+  if (!isProcessing) {
+    await terminateInstance();
+  }
+  process.exit(0);
+});
 
 // Start processing
 pollQueue().catch(console.error);

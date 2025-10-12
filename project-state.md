@@ -1,7 +1,7 @@
 # Wedding Photo App - Project State Overview
 
-**Last Updated**: January 25, 2025  
-**Current Phase**: Stable Production with Ongoing Enhancements
+**Last Updated**: August 10, 2025  
+**Current Phase**: Stable Production with Enhanced Reliability
 
 ## 🎯 Project Overview
 
@@ -31,13 +31,27 @@ Frontend (React) → Netlify Functions → Cloudflare Workers → AWS EC2 Spot �
 - **Email Downloads**: Professional delivery system
 - **R2 Migration**: Cost-optimized storage display
 
-### 🔧 **Processing Pipeline**
+### 🔧 **Processing Pipeline (Enhanced)**
 - **Small Collections (<50MB)**: Netlify Functions (immediate)
 - **Large Collections (>50MB)**: Cloudflare Workers → AWS EC2 Spot
 - **Video Processing**: AWS EC2 Spot (handles 500MB+ files)
 - **Email Delivery**: Integrated with all processing tiers
+- **EC2 Spot Processor**: 
+  - Node.js 20 LTS (fallback to 18)
+  - Streaming ZIP directly to R2 (no disk bottleneck)
+  - Proper multipart upload await handling
+  - HeadObject verification for upload integrity
+  - Friendly download filenames (`photos-{eventId}.zip`)
+  - CloudWatch logging integration
 
 ## 📈 Major Milestones Completed
+
+### ✅ **EC2 Streaming ZIP Fixes** (Aug 10, 2025)
+- Fixed critical race condition in R2 uploads
+- Upgraded from Node.js 16 to Node.js 20/18 LTS
+- Resolved cloud-init Unicode encoding issues
+- Added HeadObject verification and friendly filenames
+- 100% reliable ZIP delivery with proper await handling
 
 ### ✅ **Architecture Simplification** (Jan 20, 2025)
 - Removed Google Cloud Run complexity
@@ -66,27 +80,32 @@ Frontend (React) → Netlify Functions → Cloudflare Workers → AWS EC2 Spot �
 
 ## 🚫 **Do NOT Revisit These Completed Items**
 
-1. **Google Cloud Run Setup**
+1. **EC2 Streaming ZIP Issues**
+   - Status: Fixed and optimized
+   - Reason: Race condition resolved, uploads verified, Node.js modernized
+   - Date Resolved: August 10, 2025
+
+2. **Google Cloud Run Setup**
    - Status: Permanently removed from architecture
    - Reason: Caused 404 errors, added complexity
    - Date Resolved: January 20, 2025
 
-2. **Complex Fallback Chains**
+3. **Complex Fallback Chains**
    - Status: Simplified to direct routing
    - Reason: Reduced failure points
    - Date Resolved: January 20, 2025
 
-3. **Firebase Storage Setup**
+4. **Firebase Storage Setup**
    - Status: Fully working and stable
    - Reason: 100% upload reliability achieved
    - Last Modified: October 2024
 
-4. **R2 Migration Configuration**
+5. **R2 Migration Configuration**
    - Status: Complete and optimized
    - Reason: Cost savings achieved, working perfectly
    - Date Completed: December 2024
 
-5. **Email Download Implementation**
+6. **Email Download Implementation**
    - Status: Production ready
    - Reason: Professional system working reliably
    - Date Completed: November 2024

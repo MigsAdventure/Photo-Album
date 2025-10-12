@@ -1,7 +1,14 @@
 {
-  "lastUpdated": "2025-01-25T23:34:01.000Z",
+  "lastUpdated": "2025-08-10T21:43:40.000Z",
   "currentTask": null,
   "recentTasks": [
+    {
+      "id": "ec2-streaming-zip-fixes",
+      "title": "EC2 Streaming ZIP Fixes and Modernization",
+      "status": "completed",
+      "completedAt": "2025-08-10",
+      "summary": "Fixed critical race condition in streaming processor, upgraded to Node.js 20/18 LTS, resolved cloud-init encoding issues, added upload verification and friendly filenames. Ensures reliable ZIP delivery via email."
+    },
     {
       "id": "memory-bank-creation",
       "title": "Create Memory Bank System for Cline",
@@ -37,17 +44,34 @@
     "mainComponents": {
       "frontend": "React app with photo upload/gallery",
       "backend": "Netlify Functions + Cloudflare Workers",
-      "processing": "AWS EC2 Spot instances",
+      "processing": "AWS EC2 Spot instances (Node.js 20/18 LTS, streaming ZIP)",
       "storage": "Firebase Storage + R2 migration",
       "email": "Integrated delivery system"
+    },
+    "processingDetails": {
+      "ec2SpotProcessor": {
+        "runtime": "Node.js 20 LTS (fallback to 18)",
+        "method": "Streaming ZIP directly to R2",
+        "features": [
+          "Multipart upload with proper await",
+          "HeadObject verification after upload",
+          "ContentDisposition for friendly filenames",
+          "Failed file counting and reporting",
+          "CloudWatch logging integration"
+        ],
+        "deployScript": "aws-ec2-spot/deploy-ec2-modern-streaming.sh",
+        "userDataScript": "aws-ec2-spot/user-data-modern-streaming-ascii.sh"
+      }
     },
     "knownStableFeatures": [
       "Photo upload via Firebase Storage",
       "R2 migration for cost optimization", 
-      "Email download delivery system",
-      "AWS EC2 Spot processing for large files",
+      "Email download delivery system with verified uploads",
+      "AWS EC2 Spot streaming processor (fixed race conditions)",
       "Freemium model with premium upgrades",
-      "Memory bank system for task context management"
+      "Memory bank system for task context management",
+      "CloudWatch logging for EC2 instances",
+      "ASCII-safe cloud-init bootstrap scripts"
     ]
   },
   "doNotRevisit": [
@@ -55,7 +79,11 @@
     "Complex fallback chains (simplified)",
     "Multiple processing engines routing (streamlined)",
     "GCR 404 error troubleshooting (no longer relevant)",
-    "Memory bank system creation (completed and working)"
+    "Memory bank system creation (completed and working)",
+    "EC2 streaming ZIP race condition (fixed with await and verification)",
+    "Node.js 16 upgrade (now using Node.js 20/18 LTS)",
+    "Cloud-init Unicode issues (resolved with ASCII-safe scripts)",
+    "R2 upload completion issues (fixed with proper await and HeadObject verification)"
   ],
   "contextRules": [
     "Always check currentTask before starting new work",
