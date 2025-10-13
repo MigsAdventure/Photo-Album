@@ -25,7 +25,8 @@ import {
   Add,
   Refresh,
   Delete,
-  Videocam
+  Videocam,
+  CloudDone
 } from '@mui/icons-material';
 import { uploadPhotoWithFallback } from '../services/mobileUploadService';
 import { validateVideoFile, analyzeVideoFile, formatDuration } from '../services/videoService';
@@ -550,6 +551,33 @@ const PhotoUpload: React.FC<PhotoUploadProps> = ({ eventId, onUploadComplete }) 
             boxSizing: 'border-box',
             maxWidth: '100%'
           }}>
+            {/* Background Upload Notification */}
+            {isUploading && (
+              <Alert 
+                severity="info" 
+                icon={<CloudDone />}
+                sx={{ 
+                  mb: 2,
+                  '& .MuiAlert-message': {
+                    width: '100%'
+                  }
+                }}
+              >
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                    📤 Uploads in Progress
+                  </Typography>
+                  <Typography variant="caption">
+                    You can safely navigate away from this page. Uploads will continue in the background and your photos will appear in the gallery when complete.
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', fontStyle: 'italic' }}>
+                    Processing {uploadQueue.filter(q => q.status === 'completed').length} of {uploadQueue.length} files... 
+                    {uploadQueue.some(q => q.file && q.file.size > 100 * 1024 * 1024) && ' Large files may take 5-10 minutes.'}
+                  </Typography>
+                </Box>
+              </Alert>
+            )}
+
             <Box sx={{ 
               display: 'flex', 
               alignItems: 'center', 

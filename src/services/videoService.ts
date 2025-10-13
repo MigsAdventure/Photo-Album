@@ -35,11 +35,11 @@ export const validateVideoFile = (file: File): { isValid: boolean; error?: strin
   
   console.log('✅ Valid video file detected:', { type: file.type, name: file.name, hasValidMimeType, hasValidExtension });
 
-  // Check file size (1GB limit)
-  const maxSizeMB = 1024;
+  // Check file size (1.5GB limit)
+  const maxSizeMB = 1500;
   const fileSizeMB = file.size / (1024 * 1024);
   if (fileSizeMB > maxSizeMB) {
-    return { isValid: false, error: `Video file too large. Maximum size is ${maxSizeMB}MB` };
+    return { isValid: false, error: `Video file too large (${fileSizeMB.toFixed(0)}MB). Maximum size is ${maxSizeMB}MB` };
   }
 
   return { isValid: true };
@@ -118,14 +118,9 @@ export const compressVideo = (file: File, options: Partial<VideoProcessingOption
     console.log('Video compression requested but not implemented - returning original file');
     console.log('Original file size:', (file.size / 1024 / 1024).toFixed(2), 'MB');
     
-    // Basic validation that video meets size requirements
-    const maxSizeMB = 200; // Compression threshold for large uploads
+    // Videos up to 1500MB are allowed - no compression rejection
     const fileSizeMB = file.size / (1024 * 1024);
-    
-    if (fileSizeMB > maxSizeMB) {
-      reject(new Error(`Video file too large: ${fileSizeMB.toFixed(1)}MB. Maximum size is ${maxSizeMB}MB`));
-      return;
-    }
+    console.log(`Video size: ${fileSizeMB.toFixed(1)}MB - no compression needed, proceeding with original file`);
     
     resolve(file);
   });
@@ -149,7 +144,7 @@ export const analyzeVideoFile = async (file: File): Promise<FileAnalysis> => {
   try {
     const metadata = await getVideoMetadata(file);
     const isValidDuration = metadata.duration <= DEFAULT_VIDEO_CONFIG.maxDuration;
-    const needsCompression = file.size > 200 * 1024 * 1024; // 200MB threshold
+    const needsCompression = file.size > 1500 * 1024 * 1024; // 1.5GB threshold
     
     // Detect if it's likely a phone camera video
     const isCamera = (

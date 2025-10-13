@@ -259,6 +259,18 @@ class BackgroundUploadService {
 
     const uploadTask = uploadBytesResumable(storageRef, fileToUpload, metadata);
 
+    // Add timeout protection - 5 minutes for small files, 30 minutes for large files
+    const timeoutMs = fileToUpload.size > 100 * 1024 * 1024 ? 30 * 60 * 1000 : 5 * 60 * 1000;
+    const timeoutId = setTimeout(() => {
+      console.error(`⏰ Upload timeout for ${upload.fileName} after ${timeoutMs/1000}s`);
+      upload.status = 'error';
+      upload.error = 'Upload timeout - file too large or slow connection';
+      upload.canRetry = true;
+      this.activeUploads.delete(upload.uploadId);
+      this.notifyProgress(upload);
+      this.processNextInQueue();
+    }, timeoutMs);
+
     uploadTask.on(
       'state_changed',
       (snapshot) => {
@@ -270,6 +282,7 @@ class BackgroundUploadService {
         this.notifyProgress(upload);
       },
       (error) => {
+        clearTimeout(timeoutId); // Clear timeout on error
         console.error('❌ Foreground upload error:', error);
         upload.status = 'error';
         upload.error = error.message;
@@ -279,6 +292,7 @@ class BackgroundUploadService {
         this.processNextInQueue();
       },
       async () => {
+        clearTimeout(timeoutId); // Clear timeout on success
         try {
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
           
