@@ -40,7 +40,7 @@ import {
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
-import { getOptimalMediaUrl, preloadOptimalUrls } from '../services/r2UrlService';
+import { preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
 
@@ -97,34 +97,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
-  useEffect(() => {
-    const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
-      setPhotos(newPhotos);
-      setLoading(false);
-      
-      // Check ownership for all photos
-      const owned = new Set<string>();
-      for (const photo of newPhotos) {
-        try {
-          const canDelete = await canDeletePhoto(photo.id);
-          if (canDelete) {
-            owned.add(photo.id);
-          }
-        } catch (error) {
-          console.warn('Failed to check ownership for photo:', photo.id, error);
-        }
-      }
-      setOwnedPhotos(owned);
-      
-      // Optimize URLs for cost savings using R2 when available
-      if (newPhotos.length > 0) {
-        optimizeMediaUrls(newPhotos);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [eventId]);
-
   // Background URL optimization for cost savings
   const optimizeMediaUrls = useCallback(async (mediaList: Media[]) => {
     if (urlOptimizationInProgress) return;
@@ -172,6 +144,34 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     }
   }, [optimizedUrls, urlOptimizationInProgress]);
 
+  useEffect(() => {
+    const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
+      setPhotos(newPhotos);
+      setLoading(false);
+      
+      // Check ownership for all photos
+      const owned = new Set<string>();
+      for (const photo of newPhotos) {
+        try {
+          const canDelete = await canDeletePhoto(photo.id);
+          if (canDelete) {
+            owned.add(photo.id);
+          }
+        } catch (error) {
+          console.warn('Failed to check ownership for photo:', photo.id, error);
+        }
+      }
+      setOwnedPhotos(owned);
+      
+      // Optimize URLs for cost savings using R2 when available
+      if (newPhotos.length > 0) {
+        optimizeMediaUrls(newPhotos);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [eventId, optimizeMediaUrls]);
+
   // Get optimized URL for a media item
   const getMediaUrl = useCallback((media: Media): string => {
     const optimized = optimizedUrls.get(media.id);
@@ -181,15 +181,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     // Fallback to Firebase URL while optimization is in progress
     return media.url;
   }, [optimizedUrls]);
-
-  // Get source type for display purposes
-  const getMediaSource = useCallback((media: Media): 'r2' | 'firebase' | 'optimizing' => {
-    const optimized = optimizedUrls.get(media.id);
-    if (optimized) {
-      return optimized.source;
-    }
-    return urlOptimizationInProgress ? 'optimizing' : 'firebase';
-  }, [optimizedUrls, urlOptimizationInProgress]);
 
   // Load event data for plan information
   useEffect(() => {
