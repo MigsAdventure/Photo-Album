@@ -4,7 +4,7 @@ const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
 const express = require('express');
 const archiver = require('archiver');
-const { PassThrough } = require('stream');
+const { PassThrough, Readable } = require('stream');
 const fs = require('fs');
 
 // Configuration from environment variables
@@ -322,8 +322,9 @@ async function createStreamingZip(photos, zipKey, eventId) {
             continue;
           }
 
-          // Add the response stream directly to the archive
-          archive.append(response.body, { 
+          // Convert Web Stream (response.body) to Node.js stream
+          const nodeStream = Readable.fromWeb(response.body);
+          archive.append(nodeStream, { 
             name: photo.fileName,
             date: new Date()
           });
