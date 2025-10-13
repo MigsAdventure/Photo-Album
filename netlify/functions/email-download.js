@@ -471,78 +471,70 @@ exports.handler = async (event, context) => {
       processingStrategy: isLargeCollection ? 'background' : 'immediate'
     });
 
-    // Step 2: Smart routing - Route large collections directly to Cloudflare Worker
-    if (isLargeCollection) {
-      console.log(`🚀 Large collection detected [${requestId}] - Routing to Cloudflare Worker (no large videos)`);
+    // Step 2: Smart routing - Route large collections to AWS Lambda (EC2 Spot)
+    if (isLargeCollection || hasVideos) {
+      console.log(`🚀 Large collection detected [${requestId}] - Routing to AWS Lambda (EC2 Spot processing)`);
       
       try {
-        // Route large collections (without 80MB+ videos) to Cloudflare Worker
-        const workerResult = await routeToCloudflareWorker(photos, eventId, email, requestId);
+        // Route to AWS Lambda which will queue to SQS and launch EC2
+        const awsResult = await routeToAWSLambda(photos, eventId, email, requestId);
         
-        console.log(`✅ Worker routing successful [${requestId}]:`, workerResult.message);
-        
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            success: true,
-            processing: 'cloudflare-worker',
-            message: hasVideos 
-              ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos with enhanced compression via Cloudflare Worker. You'll receive an email in 2-7 minutes.`
-              : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) with compression via Cloudflare Worker. You'll receive an email in 1-4 minutes.`,
-            fileCount: photos.length,
-            estimatedSizeMB: Math.round(fileSizeMB),
-            videoCount,
-            estimatedWaitTime: hasVideos ? '2-7 minutes' : '1-4 minutes',
-            requestId,
-            processingEngine: 'cloudflare-worker'
-          }),
-        };
-        
-      } catch (workerError) {
-        console.warn(`⚠️ Worker routing failed [${requestId}]:`, workerError.message);
-        console.log(`🔄 Falling back to Netlify background processing [${requestId}]`);
-        
-        // Fallback to Netlify background processing
-        processLargeCollectionInBackground(photos, eventId, email, requestId, fileSizeMB, hasVideos);
+        console.log(`✅ AWS Lambda routing successful [${requestId}]:`, awsResult.message);
         
         return {
           statusCode: 200,
           headers,
           body: JSON.stringify({
             success: true,
-            processing: 'netlify-fallback',
+            processing: 'aws-ec2-spot',
             message: hasVideos 
-              ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos. Cloudflare Worker unavailable, using backup processing. You'll receive an email in 3-8 minutes.`
-              : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB). Cloudflare Worker unavailable, using backup processing. You'll receive an email in 2-5 minutes.`,
+              ? `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB) including ${videoCount} videos. AWS EC2 processing started. You'll receive an email in 3-8 minutes.`
+              : `Processing ${photos.length} files (${fileSizeMB.toFixed(0)}MB). AWS EC2 processing started. You'll receive an email in 2-5 minutes.`,
             fileCount: photos.length,
             estimatedSizeMB: Math.round(fileSizeMB),
             videoCount,
             estimatedWaitTime: hasVideos ? '3-8 minutes' : '2-5 minutes',
             requestId,
-            processingEngine: 'netlify-fallback'
+            processingEngine: 'aws-ec2-spot'
+          }),
+        };
+        
+      } catch (awsError) {
+        console.error(`❌ AWS Lambda routing failed [${requestId}]:`, awsError.message);
+        
+        // Return error so we know AWS is broken
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({
+            success: false,
+            error: 'AWS processing unavailable',
+            details: awsError.message,
+            requestId,
+            message: 'Download processing failed. Please try again or contact support.'
           }),
         };
       }
-    } else {
-      // Small collection - process immediately
-      console.log(`⚡ Small collection [${requestId}] - Processing immediately`);
-      
-      const result = await processCollectionImmediately(photos, eventId, email, requestId);
-      
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          success: true,
-          processing: 'immediate',
-          message: `Download link sent to ${email}`,
-          photoCount: result.downloadedCount,
-          fileSizeMB: Math.round(fileSizeMB),
-          requestId
-        }),
-      };
     }
+
+    // Step 3: Small collections - process directly in Netlify (immediate processing)
+    console.log(`⚡ Small collection [${requestId}] - Processing directly in Netlify`);
+    
+    // Continue with direct/immediate processing for small collections
+    const result = await processCollectionImmediately(photos, eventId, email, requestId);
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        success: true,
+        processing: 'immediate',
+        message: `Download link sent to ${email}`,
+        photoCount: result.downloadedCount,
+        fileSizeMB: Math.round(fileSizeMB),
+        requestId
+      }),
+    };
 
   } catch (error) {
     console.error(`❌ Email download failed [${requestId}]:`, error);
@@ -1111,6 +1103,48 @@ async function sendSuccessEmail(email, requestId, fileCount, fileSizeMB, downloa
 }
 
 // Route large collections to Cloudflare Worker for enhanced processing
+// Route large videos to AWS Lambda (EC2 Spot processing)
+async function routeToAWSLambda(photos, eventId, email, requestId) {
+  console.log(`🚀 Routing to AWS Lambda [${requestId}]`);
+  
+  const AWS_LAMBDA_URL = process.env.AWS_LAMBDA_URL || 'https://szfs7ixxp34s6nbeonngs726om0ihnqx.lambda-url.us-east-1.on.aws/';
+  
+  try {
+    const response = await fetch(AWS_LAMBDA_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        eventId,
+        email,
+        photos,
+        requestId,
+        source: 'netlify-function'
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`AWS Lambda responded with ${response.status}: ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log(`✅ AWS Lambda accepted request [${requestId}]:`, result);
+    
+    return {
+      success: true,
+      message: result.message || 'Processing with AWS EC2 Spot',
+      requestId: result.requestId || requestId
+    };
+    
+  } catch (error) {
+    console.error(`❌ AWS Lambda routing failed [${requestId}]:`, error.message);
+    throw error;
+  }
+}
+
 async function routeToCloudflareWorker(photos, eventId, email, requestId) {
   console.log(`🚀 Routing to Cloudflare Worker [${requestId}]`);
   
