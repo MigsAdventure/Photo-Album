@@ -116,33 +116,35 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       const urlResults = await preloadOptimalUrls(mediaItems);
       
       // Update optimized URLs state
-      const newOptimizedUrls = new Map(optimizedUrls);
-      let r2Count = 0;
-      let firebaseCount = 0;
-      
-      Array.from(urlResults.entries()).forEach(([firebaseUrl, result]) => {
-        const media = mediaList.find(m => m.url === firebaseUrl);
-        if (media) {
-          newOptimizedUrls.set(media.id, result);
-          if (result.source === 'r2') {
-            r2Count++;
-          } else {
-            firebaseCount++;
+      setOptimizedUrls(prevUrls => {
+        const newOptimizedUrls = new Map(prevUrls);
+        let r2Count = 0;
+        let firebaseCount = 0;
+        
+        Array.from(urlResults.entries()).forEach(([firebaseUrl, result]) => {
+          const media = mediaList.find(m => m.url === firebaseUrl);
+          if (media) {
+            newOptimizedUrls.set(media.id, result);
+            if (result.source === 'r2') {
+              r2Count++;
+            } else {
+              firebaseCount++;
+            }
           }
-        }
+        });
+        
+        console.log(`✅ URL optimization complete: ${r2Count} R2 URLs, ${firebaseCount} Firebase URLs`);
+        console.log(`💰 Estimated bandwidth cost savings: ${Math.round((r2Count / mediaList.length) * 100)}%`);
+        
+        return newOptimizedUrls;
       });
-      
-      setOptimizedUrls(newOptimizedUrls);
-      
-      console.log(`✅ URL optimization complete: ${r2Count} R2 URLs, ${firebaseCount} Firebase URLs`);
-      console.log(`💰 Estimated bandwidth cost savings: ${Math.round((r2Count / mediaList.length) * 100)}%`);
       
     } catch (error) {
       console.warn('⚠️ URL optimization failed, falling back to Firebase URLs:', error);
     } finally {
       setUrlOptimizationInProgress(false);
     }
-  }, [optimizedUrls, urlOptimizationInProgress]);
+  }, [urlOptimizationInProgress]);
 
   useEffect(() => {
     const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
@@ -170,7 +172,8 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     });
 
     return () => unsubscribe();
-  }, [eventId, optimizeMediaUrls]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
 
   // Get optimized URL for a media item
   const getMediaUrl = useCallback((media: Media): string => {
