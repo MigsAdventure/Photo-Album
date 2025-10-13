@@ -4,15 +4,22 @@
     {
       "Effect": "Allow",
       "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
       ],
-      "Resource": [
-        "arn:aws:s3:::wedding-photo-spot-1752995104",
-        "arn:aws:s3:::wedding-photo-spot-1752995104/*"
-      ]
+      "Resource": "arn:aws:sqs:us-east-1:782720046962:wedding-photo-processing-queue"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": "arn:aws:logs:us-east-1:782720046962:log-group:/wedding-photo-processor/*"
     },
     {
       "Effect": "Allow",

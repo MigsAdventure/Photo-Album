@@ -169,17 +169,60 @@ exports.handler = async (event) => {
             };
         }
         
+        // User-data script for AL2023 with fixed streaming processor
+        const userDataScript = `#!/bin/bash
+set -e
+exec 1>/var/log/user-data.log 2>&1
+echo "Starting EC2 instance setup at $(date)"
+dnf install -y nodejs npm git htop amazon-cloudwatch-agent
+echo "Node version: $(node -v || true)"
+echo "NPM version: $(npm -v || true)"
+mkdir -p /app/logs
+cd /app
+curl -fSL -o /app/wedding-photo-processor-streaming.js https://raw.githubusercontent.com/MigsAdventure/Photo-Album/main/aws-ec2-spot/wedding-photo-processor-streaming-fixed.js
+npm init -y
+npm install --omit=dev @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/client-ec2 @aws-sdk/lib-storage express archiver
+cat > /etc/systemd/system/wedding-streaming-processor.service << 'SERVICE_EOF'
+[Unit]
+Description=Wedding Photo Streaming Processor
+After=network.target
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/app
+ExecStart=/usr/bin/node /app/wedding-photo-processor-streaming.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/app/logs/processor.log
+StandardError=append:/app/logs/processor-error.log
+Environment="NODE_ENV=production"
+Environment="R2_ACCOUNT_ID=98a9cce92e578cafdb9025fa24a6ee7e"
+Environment="R2_ACCESS_KEY_ID=06da59a3b3aa1315ed2c9a38efa7579e"
+Environment="R2_SECRET_ACCESS_KEY=e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27"
+Environment="R2_BUCKET_NAME=sharedmoments-photos-production"
+Environment="R2_PUBLIC_URL=https://sharedmomentsphotos.socialboostai.com"
+Environment="AWS_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue"
+Environment="AWS_REGION=us-east-1"
+Environment="NETLIFY_EMAIL_ENDPOINT=https://sharedmoments.socialboostai.com/.netlify/functions/direct-email"
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+systemctl daemon-reload
+systemctl enable wedding-streaming-processor
+systemctl start wedding-streaming-processor
+echo "Setup complete at $(date)"`;
+        
         // Launch EC2 Spot Instance
         const launchParams = {
-            ImageId: 'ami-0c02fb55956c7d316', // Amazon Linux 2 AMI
+            ImageId: 'ami-052064a798f08f0d3', // Amazon Linux 2023 AMI (supports Node.js 20)
             InstanceType: 't3.medium',
             MinCount: 1,
             MaxCount: 1,
-            KeyName: process.env.KEY_NAME,
+            KeyName: 'wedding-photo-spot-key',
             IamInstanceProfile: {
-                Name: process.env.INSTANCE_PROFILE
+                Name: 'wedding-photo-processor-profile'
             },
-            SecurityGroupIds: ['sg-0179ab194345abc19'], // Use default security group ID
+            SecurityGroupIds: ['sg-0179ab194345abc19'],
             InstanceMarketOptions: {
                 MarketType: 'spot',
                 SpotOptions: {
@@ -187,7 +230,7 @@ exports.handler = async (event) => {
                     InstanceInterruptionBehavior: 'terminate'
                 }
             },
-            UserData: fs.readFileSync(path.join(__dirname, process.env.USER_DATA_SCRIPT === 'STREAMING' ? 'user-data-streaming.sh' : 'user-data.sh')).toString('base64'),
+            UserData: Buffer.from(userDataScript).toString('base64'),
             TagSpecifications: [{
                 ResourceType: 'instance',
                 Tags: [

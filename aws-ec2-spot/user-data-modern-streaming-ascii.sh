@@ -6,16 +6,10 @@ exec 1>/var/log/user-data.log 2>&1
 
 echo "Starting EC2 instance setup (modern streaming, ASCII-safe) at $(date)"
 
-# Update base packages first to avoid repo/key issues
-yum update -y
-
-# Install Node.js (prefer Node 20; fallback to Node 18)
+# Install Node.js (AL2023 has Node.js 20 in default repos)
+# Skip system update to speed up bootstrap (takes 5+ minutes)
 echo "Installing Node.js runtime and base tools..."
-if ! curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -; then
-  echo "NodeSource setup_20.x failed; trying Node 18"
-  curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-fi
-yum install -y nodejs git htop amazon-cloudwatch-agent
+dnf install -y nodejs npm git htop amazon-cloudwatch-agent
 
 echo "Node version: $(node -v || true)"
 echo "NPM version: $(npm -v || true)"
@@ -24,49 +18,14 @@ echo "NPM version: $(npm -v || true)"
 mkdir -p /app/logs
 cd /app
 
-# Fetch processor script from GitHub (keeps user-data small)
-echo "Downloading streaming processor script..."
-curl -fSL -o /app/wedding-photo-processor-streaming.js https://raw.githubusercontent.com/MigsAdventure/Photo-Album/main/aws-ec2-spot/wedding-photo-processor-streaming.js
-
-# Apply ASCII-safe in-place patches using Perl (no Node dependency)
-# - Add HeadObjectCommand import
-# - Remove node-fetch require (use global fetch from Node 18+)
-# - Pass eventId into createStreamingZip
-# - Update function signature to include eventId
-# - Add ContentDisposition + friendly filename on upload
-# - Capture uploadPromise and await it in archive end handler with HeadObject verify
-# - Strip any non-ASCII that might be present
-cat > /tmp/patch.pl <<'PERL'
-use strict;
-use warnings;
-local $/ = undef;
-my $file = "/app/wedding-photo-processor-streaming.js";
-open my $fh, "<", $file or die $!;
-my $s = <$fh>;
-close $fh;
-
-$s =~ s/const \{ S3Client \} = require\('@aws-sdk\/client-s3'\);/const { S3Client, HeadObjectCommand } = require('@aws-sdk\/client-s3');/;
-$s =~ s/const fetch = require\('node-fetch'\);\s*//;
-$s =~ s/const \{ finalSizeMB \} = await createStreamingZip\(\s*photos\s*,\s*zipKey\s*\);/const { finalSizeMB, failedCount } = await createStreamingZip(photos, zipKey, eventId);/;
-$s =~ s/async function createStreamingZip\(\s*photos\s*,\s*zipKey\s*\)\s*\{/async function createStreamingZip(photos, zipKey, eventId) {/;
-$s =~ s/const upload = new Upload\(\{\s*client:\s*s3Client,\s*params:\s*\{\s*Bucket:\s*config\.r2\.bucketName,\s*Key:\s*zipKey,\s*Body:\s*zipStream,\s*ContentType:\s*'application\/zip'\s*\}\s*\}\);\s*/const fileName = `photos-${eventId || 'download'}.zip`;\n      const upload = new Upload({\n        client: s3Client,\n        params: {\n          Bucket: config.r2.bucketName,\n          Key: zipKey,\n          Body: zipStream,\n          ContentType: 'application/zip',\n          ContentDisposition: `attachment; filename="${fileName}"`\n        }\n      });\n/s;
-$s =~ s/upload\.done\(\)\.catch\(reject\);/const uploadPromise = upload.done();/;
-$s =~ s/archive\.on\('end',\s*\(\)\s*=>\s*\{\s*const finalSizeMB = archive\.pointer\(\) \/ \(1024 \* 1024\);\s*console\.log\([^\)]*\);\s*resolve\(\{ finalSizeMB \}\);\s*\}\);/archive.on('end', async () => {\n        const finalSizeMB = archive.pointer() \/ (1024 * 1024);\n        try {\n          await uploadPromise;\n          try {\n            const head = await s3Client.send(new HeadObjectCommand({ Bucket: config.r2.bucketName, Key: zipKey }));\n            const sizeMB = (Number(head.ContentLength || 0) \/ (1024 * 1024)).toFixed(2);\n            console.log('R2 object verified. Content-Length MB:', sizeMB);\n          } catch (e) { console.warn('HeadObject verification failed:', e && e.message ? e.message : e); }\n          resolve({ finalSizeMB, failedCount });\n        } catch (err) {\n          console.error('Upload completion error:', err && err.message ? err.message : err);\n          reject(err);\n        }\n      });/s;
-
-$s =~ s/[^\x00-\x7F]//g;
-
-open my $out, ">", $file or die $!;
-print $out $s;
-close $out;
-print "Patched processor file.\n";
-PERL
-
-perl /tmp/patch.pl
+# Fetch FIXED processor script from GitHub (includes all patches)
+echo "Downloading fixed streaming processor script..."
+curl -fSL -o /app/wedding-photo-processor-streaming.js https://raw.githubusercontent.com/MigsAdventure/Photo-Album/main/aws-ec2-spot/wedding-photo-processor-streaming-fixed.js
 
 # Install production deps
 echo "Installing npm packages..."
 npm init -y
-npm install --omit=dev @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/lib-storage express archiver
+npm install --omit=dev @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/client-ec2 @aws-sdk/lib-storage express archiver
 
 # Systemd service
 cat > /etc/systemd/system/wedding-streaming-processor.service << 'SERVICE_EOF'

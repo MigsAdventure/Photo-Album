@@ -17,16 +17,16 @@ aws sts get-caller-identity >/dev/null
 
 USER_DATA_FILE="$SCRIPT_DIR/user-data-modern-streaming-ascii.sh"
 if [ ! -f "$USER_DATA_FILE" ]; then
-  echo "❌ user-data-modern-streaming.sh not found at $USER_DATA_FILE"
+  echo "❌ user-data-modern-streaming-ascii.sh not found at $USER_DATA_FILE"
   exit 1
 fi
 
 # Config (reuse known-good resources from existing scripts)
-AMI_ID="ami-0c02fb55956c7d316"               # Amazon Linux 2 AMI (us-east-1)
+AMI_ID="ami-052064a798f08f0d3"               # Amazon Linux 2023 AMI (us-east-1) - supports Node.js 20
 INSTANCE_TYPE="t3.medium"
 KEY_NAME="wedding-photo-spot-key"
 SECURITY_GROUP_ID="sg-0179ab194345abc19"
-IAM_INSTANCE_PROFILE="wedding-photo-spot-profile"
+IAM_INSTANCE_PROFILE="wedding-photo-processor-profile"
 
 # Base64 user-data
 echo "📦 Using user-data file directly (AWS CLI will base64-encode)..."
