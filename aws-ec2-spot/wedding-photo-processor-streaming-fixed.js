@@ -66,16 +66,40 @@ let jobsProcessed = 0;
 
 // Get instance ID from EC2 metadata
 async function getInstanceId() {
-  try {
-    const response = await fetch('http://169.254.169.254/latest/meta-data/instance-id', {
-      timeout: 1000
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const options = {
+      hostname: '169.254.169.254',
+      path: '/latest/meta-data/instance-id',
+      method: 'GET',
+      timeout: 5000
+    };
+
+    const req = http.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          console.log(`✅ Got instance ID: ${data}`);
+          resolve(data);
+        } else {
+          console.error(`❌ Failed to get instance ID: HTTP ${res.statusCode}`);
+          resolve(null);
+        }
+      });
     });
-    if (!response.ok) return null;
-    return await response.text();
-  } catch (error) {
-    console.error('Failed to get instance ID:', error);
-    return null;
-  }
+
+    req.on('error', (err) => {
+      console.error('❌ Error fetching instance ID:', err);
+      resolve(null);
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      console.error('❌ Timeout fetching instance ID');
+      resolve(null);
+    });
+  });
 }
 
 // Terminate this EC2 instance
