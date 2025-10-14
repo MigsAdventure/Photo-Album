@@ -9,9 +9,13 @@ echo "🚀 Starting wedding photo processor setup at $(date)"
 # Update system
 yum update -y
 
-# Install Node.js 16.x
-curl -fsSL https://rpm.nodesource.com/setup_16.x | bash -
+# Install Node.js 20.x (required for AWS SDK v3)
+echo "📦 Installing Node.js 20..."
+curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
 yum install -y nodejs
+
+echo "✅ Node.js installed: $(node -v)"
+echo "✅ NPM installed: $(npm -v)"
 
 # Create app directory
 mkdir -p /app

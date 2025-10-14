@@ -145,7 +145,20 @@ const AdminDashboard: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to create event:', error);
-      alert('Failed to create event. Please try again.');
+      
+      // Provide more helpful error message
+      let errorMessage = 'Failed to create event. Please try again.';
+      if (error instanceof Error) {
+        if (error.message.includes('Firebase configuration error')) {
+          errorMessage = 'App configuration error. Please contact support or check your setup.';
+        } else if (error.message.includes('permission-denied')) {
+          errorMessage = 'Permission denied. Please check Firestore security rules.';
+        } else if (error.message.includes('network')) {
+          errorMessage = 'Network error. Please check your internet connection.';
+        }
+      }
+      
+      alert(errorMessage);
     } finally {
       setLoading(false);
     }
