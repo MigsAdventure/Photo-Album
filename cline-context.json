@@ -3,6 +3,13 @@
   "currentTask": null,
   "recentTasks": [
     {
+      "id": "ec2-auto-termination-imdsv2",
+      "title": "EC2 Auto-Termination Fix - IMDSv2 Authentication",
+      "status": "completed",
+      "completedAt": "2025-10-13",
+      "summary": "Fixed EC2 instances not auto-terminating after idle timeout. Root cause: IMDSv2 requires two-step authentication (session token via PUT request, then instance ID fetch with token header). Implemented proper IMDSv2 support in getInstanceId() function. Instances now terminate after 5 minutes idle, saving costs."
+    },
+    {
       "id": "ec2-streaming-zip-fixes",
       "title": "EC2 Streaming ZIP Fixes and Modernization",
       "status": "completed",
@@ -57,10 +64,19 @@
           "HeadObject verification after upload",
           "ContentDisposition for friendly filenames",
           "Failed file counting and reporting",
-          "CloudWatch logging integration"
+          "CloudWatch logging integration",
+          "IMDSv2 authentication for auto-termination",
+          "5-minute idle timeout for cost efficiency"
         ],
         "deployScript": "aws-ec2-spot/deploy-ec2-modern-streaming.sh",
-        "userDataScript": "aws-ec2-spot/user-data-modern-streaming-ascii.sh"
+        "userDataScript": "aws-ec2-spot/user-data-modern-streaming-ascii.sh",
+        "autoTermination": {
+          "enabled": true,
+          "idleTimeout": "5 minutes",
+          "method": "IMDSv2 two-step authentication",
+          "implementation": "aws-ec2-spot/wedding-photo-processor-streaming-fixed.js",
+          "systemdConfig": "Restart=on-failure (only restarts on crashes, not exit(0))"
+        }
       }
     },
     "knownStableFeatures": [
@@ -68,6 +84,7 @@
       "R2 migration for cost optimization", 
       "Email download delivery system with verified uploads",
       "AWS EC2 Spot streaming processor (fixed race conditions)",
+      "EC2 auto-termination after 5 minutes idle (IMDSv2 authentication)",
       "Freemium model with premium upgrades",
       "Memory bank system for task context management",
       "CloudWatch logging for EC2 instances",
@@ -83,7 +100,11 @@
     "EC2 streaming ZIP race condition (fixed with await and verification)",
     "Node.js 16 upgrade (now using Node.js 20/18 LTS)",
     "Cloud-init Unicode issues (resolved with ASCII-safe scripts)",
-    "R2 upload completion issues (fixed with proper await and HeadObject verification)"
+    "R2 upload completion issues (fixed with proper await and HeadObject verification)",
+    "EC2 auto-termination issues (fixed with IMDSv2 authentication - see EC2_AUTO_TERMINATION_IMDSV2_SOLUTION.md)",
+    "getInstanceId() HTTP 401 errors (requires IMDSv2 session token)",
+    "Using fetch() for EC2 metadata (must use Node.js http module with IMDSv2)",
+    "Restart=always systemd config (should be Restart=on-failure per VisionCraft best practices)"
   ],
   "contextRules": [
     "Always check currentTask before starting new work",
