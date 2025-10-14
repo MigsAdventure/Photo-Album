@@ -393,5 +393,22 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+// Unhandled rejection handler (critical!)
+process.on('unhandledRejection', (error) => {
+  console.error('❌ UNHANDLED REJECTION - This will crash without handler:', error);
+  // Don't exit - let the process continue
+  // Systemd will handle actual crashes with Restart=on-failure
+});
+
+// Uncaught exception handler
+process.on('uncaughtException', (error) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', error);
+  // Exit with error code so systemd restarts with Restart=on-failure
+  process.exit(1);
+});
+
 // Start processing
-pollQueue().catch(console.error);
+pollQueue().catch((error) => {
+  console.error('❌ Fatal error in pollQueue:', error);
+  process.exit(1); // Exit with error code for systemd restart
+});

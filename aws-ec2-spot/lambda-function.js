@@ -191,12 +191,13 @@ Type=simple
 User=root
 WorkingDirectory=/app
 ExecStart=/usr/bin/node /app/wedding-photo-processor-streaming.js
-Restart=always
+Restart=on-failure
 RestartSec=10
 StandardOutput=append:/app/logs/processor.log
 StandardError=append:/app/logs/processor-error.log
 TimeoutStopSec=120
 KillMode=process
+SuccessExitStatus=0
 Environment="NODE_ENV=production"
 Environment="R2_ACCOUNT_ID=98a9cce92e578cafdb9025fa24a6ee7e"
 Environment="R2_ACCESS_KEY_ID=06da59a3b3aa1315ed2c9a38efa7579e"
