@@ -64,41 +64,105 @@ let lastActivity = Date.now();
 const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes idle timeout to save costs
 let jobsProcessed = 0;
 
-// Get instance ID from EC2 metadata
-async function getInstanceId() {
+// Get IMDSv2 session token (required for EC2 metadata)
+async function getImdsSessionToken() {
   return new Promise((resolve, reject) => {
     const http = require('http');
     const options = {
       hostname: '169.254.169.254',
-      path: '/latest/meta-data/instance-id',
-      method: 'GET',
+      port: 80,
+      path: '/latest/api/token',
+      method: 'PUT',
+      headers: {
+        'X-aws-ec2-metadata-token-ttl-seconds': '21600' // 6 hours
+      },
       timeout: 5000
     };
 
-    const req = http.get(options, (res) => {
+    const req = http.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         if (res.statusCode === 200) {
-          console.log(`✅ Got instance ID: ${data}`);
-          resolve(data);
+          console.log('✅ Got IMDSv2 session token');
+          resolve(data.trim());
         } else {
-          console.error(`❌ Failed to get instance ID: HTTP ${res.statusCode}`);
+          console.error(`❌ Failed to get IMDSv2 token: HTTP ${res.statusCode}`);
           resolve(null);
         }
       });
     });
 
     req.on('error', (err) => {
-      console.error('❌ Error fetching instance ID:', err);
+      console.error('❌ Error getting IMDSv2 token:', err);
       resolve(null);
     });
 
     req.on('timeout', () => {
       req.destroy();
-      console.error('❌ Timeout fetching instance ID');
+      console.error('❌ Timeout getting IMDSv2 token');
       resolve(null);
     });
+
+    req.end();
+  });
+}
+
+// Get instance ID from EC2 metadata (with IMDSv2 support)
+async function getInstanceId() {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Step 1: Get IMDSv2 session token
+      const token = await getImdsSessionToken();
+      if (!token) {
+        console.error('❌ Could not get IMDSv2 session token');
+        resolve(null);
+        return;
+      }
+
+      // Step 2: Use token to fetch instance ID
+      const http = require('http');
+      const options = {
+        hostname: '169.254.169.254',
+        port: 80,
+        path: '/latest/meta-data/instance-id',
+        method: 'GET',
+        headers: {
+          'X-aws-ec2-metadata-token': token
+        },
+        timeout: 5000
+      };
+
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            console.log(`✅ Got instance ID: ${data.trim()}`);
+            resolve(data.trim());
+          } else {
+            console.error(`❌ Failed to get instance ID: HTTP ${res.statusCode}`);
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error('❌ Error fetching instance ID:', err);
+        resolve(null);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        console.error('❌ Timeout fetching instance ID');
+        resolve(null);
+      });
+
+      req.end();
+    } catch (error) {
+      console.error('❌ Error in getInstanceId:', error);
+      resolve(null);
+    }
   });
 }
 
