@@ -17,7 +17,22 @@ import {
   PhotoLibrary
 } from '@mui/icons-material';
 import { getEvent } from '../services/photoService';
+import { getUploadState } from '../services/planService';
 import { Event } from '../types';
+
+/** The closing date, phrased for a customer rather than as a timestamp. */
+function formatClosesAt(event: Event | null): string | null {
+  if (!event) return null;
+
+  const closesAt = getUploadState(event).closesAt;
+  if (!closesAt) return null;
+
+  return closesAt.toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+  });
+}
 
 const PaymentCancelled: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -150,10 +165,12 @@ const PaymentCancelled: React.FC = () => {
     );
   }
 
+  const closesAtText = formatClosesAt(event);
+
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
       <Box textAlign="center" mb={4}>
-        <Cancel 
+        <Cancel
           sx={{ 
             fontSize: 80, 
             color: 'warning.main', 
@@ -176,28 +193,39 @@ const PaymentCancelled: React.FC = () => {
             {event?.title || 'Event Gallery'}
           </Typography>
           
+          {/*
+            Was: "you're on the free plan with a limit of {photoLimit || 20}
+            photos". There is no photo limit — UX-1 replaced the count with an
+            upload window — and the number shown was doubly wrong: the field is
+            written as 2 at creation, so the fallback of 20 only ever appeared
+            when the data was missing. Now it states the actual rule, and the
+            actual date where we have one.
+          */}
           <Alert severity="info" sx={{ my: 3 }}>
             <Typography variant="body1">
-              Your event gallery is still active! You're currently on the free plan with a limit of {event?.photoLimit || 20} photos.
+              Nothing has changed — your gallery is still live and guests can keep uploading.
+              {closesAtText
+                ? ` Free uploads run until ${closesAtText}.`
+                : ' Free uploads run for a limited window after your event date.'}
             </Typography>
           </Alert>
 
           <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-            When you're ready to upgrade, you'll get:
+            Upgrading later gets you:
           </Typography>
-          
+
           <Box component="ul" sx={{ pl: 2, m: 0 }}>
             <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              ✨ Unlimited photo and video uploads
+              Uploads that stay open, with no closing date
             </Typography>
             <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              ✨ Custom branding options
+              Every photo and video at full quality
             </Typography>
             <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              ✨ Priority customer support
+              Full-album downloads whenever you want them
             </Typography>
             <Typography component="li" variant="body1">
-              ✨ Enhanced gallery features
+              Your own cover photo and colours on the gallery
             </Typography>
           </Box>
         </CardContent>

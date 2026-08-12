@@ -132,7 +132,11 @@ export const createEvent = async (title: string, date: string, organizerEmail: s
     isActive: true,
     organizerEmail: normalizedEmail,
     planType: 'free',
-    photoLimit: 2,
+    // photoLimit is deliberately not written. It was `2`, and although nothing
+    // enforces it any more — uploads run on a time window since UX-1 — the field
+    // was still being *read* and rendered: the cancelled-payment page told
+    // customers they were "on the free plan with a limit of 2 photos". A dead
+    // field that still reaches the screen is worse than no field.
     photoCount: 0
   });
   

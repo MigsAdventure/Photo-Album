@@ -19,7 +19,7 @@ Four phases of the audit are **code complete and pushed**, none deployed.
 | 6 — Differentiate | Not started | — |
 
 Branch: `claude/photo-album-audit-be5aap` · 18 commits from `b897696`
-Tests: `npm run test:all` → **136 passing** across five suites
+Tests: `npm run test:all` → **151 passing** across six suites
 Build: clean, no warnings
 
 **Nothing has run against real infrastructure.** No AWS, R2 or Firebase
@@ -157,6 +157,10 @@ not deployment chores.
 4. **Enable Firebase email-link sign-in** and add authorized domains, or
    organizer sign-in fails silently. → [`ENVIRONMENT.md`](ENVIRONMENT.md)
 5. **Generate the four new secrets** and set them everywhere listed.
+5a. **Set `CHECKOUT_URL` and `CHECKOUT_REF_SECRET`**, and configure the
+   GoHighLevel order form to carry `ref` through and send it back. Without these
+   nobody can upgrade — the button correctly reports upgrades unavailable. →
+   [`sessions/2026-08-12_payment-flow-and-upgrade-ux.md`](sessions/2026-08-12_payment-flow-and-upgrade-ux.md)
 6. **Decide on the git history purge.** It rewrites shared history, so it needs
    an explicit call. Once 1 and 2 are done it is hygiene, not an emergency.
    Combine it with removing the committed `node_modules` and Lambda zips —

@@ -1,4 +1,35 @@
-import React, { useState, useEffect } from 'react';
+// Where the customer lands after paying.
+//
+// What was wrong with it
+// ----------------------
+// Two things, both of which hit people at the worst possible moment.
+//
+// 1. It announced success on arrival. "Payment Successful! Welcome to Premium!
+//    Your unlimited photo gallery is now active" rendered as soon as the page
+//    loaded — but returning here only means the customer finished the order
+//    form. The upgrade is written by `ghl-webhook` when GoHighLevel confirms the
+//    transaction, and that is an independent race the redirect usually wins. So
+//    a customer could read "now active", go back to the gallery, and find
+//    uploads still closed. Then they email support about a payment that was
+//    fine.
+//
+// 2. When it could not identify the event it showed them this:
+//
+//      Event ID not found. Debug info:
+//      - URL event_id: null
+//      - localStorage data: Not found
+//
+//    That is what a paying customer saw. And it happened for a predictable
+//    reason: the event id was carried in localStorage, written just before the
+//    redirect, so paying on a different device from the one that opened the
+//    gallery — phone scans the QR, laptop pays — lost it entirely.
+//
+// Now: the event travels in a signed `ref` in the URL, and the page polls until
+// the plan actually flips, saying something honest while it waits.
+//
+// Refs: AUDIT_2026-08.md GHL-2, UX-7
+
+import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Container,
@@ -7,349 +38,235 @@ import {
   Card,
   CardContent,
   Button,
-  Alert,
   CircularProgress,
-  Divider,
-  Chip
+  Stack,
 } from '@mui/material';
-import {
-  CheckCircle,
-  ArrowBack,
-  Star,
-  PhotoLibrary,
-  Receipt
-} from '@mui/icons-material';
+import { CheckCircle, HourglassTop, PhotoLibrary, ArrowForward } from '@mui/icons-material';
+import { getCheckoutStatus } from '../services/checkoutService';
 import { getEvent } from '../services/photoService';
-import { Event } from '../types';
+
+// The webhook normally lands within a couple of seconds. We keep asking for a
+// while longer because the alternative — telling someone their payment did not
+// work when it did — is far more expensive than a few extra requests.
+const POLL_INTERVAL_MS = 2000;
+const MAX_POLLS = 15;
+
+type Phase = 'checking' | 'upgraded' | 'pending' | 'unknown';
 
 const PaymentSuccess: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [event, setEvent] = useState<Event | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  // Try URL parameter first, then localStorage as fallback
-  const getEventId = (): string | null => {
-    const urlEventId = searchParams.get('event_id');
-    if (urlEventId && urlEventId !== '{event_id}') {
-      console.log('✅ PaymentSuccess: Got event_id from URL:', urlEventId);
-      return urlEventId;
-    }
-    
-    console.log('⚠️ PaymentSuccess: No valid event_id in URL, checking localStorage...');
-    
-    try {
-      const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
-      if (pendingUpgradeData) {
-        const upgradeData = JSON.parse(pendingUpgradeData);
-        const isRecent = upgradeData.timestamp && (Date.now() - upgradeData.timestamp < 3600000); // 1 hour
-        
-        if (isRecent && upgradeData.eventId) {
-          console.log('✅ PaymentSuccess: Got event_id from localStorage:', upgradeData.eventId);
-          // Don't clear immediately - set a 5-minute cleanup timer instead
-          setTimeout(() => {
-            console.log('🧹 PaymentSuccess: Cleaning up localStorage after 5 minutes');
-            localStorage.removeItem('pendingUpgrade');
-          }, 5 * 60 * 1000); // 5 minutes
-          return upgradeData.eventId;
-        } else if (!isRecent) {
-          console.log('⚠️ PaymentSuccess: localStorage data expired, clearing...');
-          localStorage.removeItem('pendingUpgrade');
-        }
-      }
-    } catch (error) {
-      console.error('❌ PaymentSuccess: Error reading localStorage:', error);
-      localStorage.removeItem('pendingUpgrade');
-    }
-    
-    return null;
-  };
+  const ref = searchParams.get('ref');
+  // Links created before checkout-start existed carry a bare event_id. Honour
+  // them: galleries are publicly readable, so the plan state can still be polled.
+  const legacyEventId = (() => {
+    const value = searchParams.get('event_id');
+    return value && value !== '{event_id}' ? value : null;
+  })();
 
-  const eventId = getEventId();
-  const orderId = searchParams.get('order_id');
+  const [phase, setPhase] = useState<Phase>('checking');
+  const [eventId, setEventId] = useState<string | null>(legacyEventId);
+  const [eventTitle, setEventTitle] = useState<string | null>(null);
+  const [attempts, setAttempts] = useState(0);
+
+  const checkOnce = useCallback(async (): Promise<boolean> => {
+    if (ref) {
+      const status = await getCheckoutStatus(ref);
+      if (!status) return false;
+
+      setEventId(status.eventId);
+      setEventTitle(status.eventTitle);
+      return status.upgraded;
+    }
+
+    if (legacyEventId) {
+      const event = await getEvent(legacyEventId);
+      if (!event) return false;
+
+      setEventTitle(event.title);
+      return event.planType === 'premium';
+    }
+
+    return false;
+  }, [ref, legacyEventId]);
 
   useEffect(() => {
-    const loadEventData = async () => {
-      console.log('🔍 PaymentSuccess: Starting event lookup process...');
-      console.log('📍 Current URL:', window.location.href);
-      console.log('📍 Search params:', window.location.search);
-      
-      if (!eventId) {
-        console.error('❌ PaymentSuccess: No event_id found in URL or localStorage');
-        
-        // Add debugging info about what we tried
-        const urlEventId = searchParams.get('event_id');
-        console.log('🔗 URL event_id value:', urlEventId);
-        
-        const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
-        console.log('📦 localStorage pendingUpgrade:', pendingUpgradeData);
-        
-        setError(`Event ID not found. Debug info:
-        - URL event_id: ${urlEventId}
-        - localStorage data: ${pendingUpgradeData ? 'Found' : 'Not found'}
-        Please return to your event gallery.`);
-        setLoading(false);
+    if (!ref && !legacyEventId) {
+      setPhase('unknown');
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const run = async (attempt: number) => {
+      if (cancelled) return;
+
+      let upgraded = false;
+      try {
+        upgraded = await checkOnce();
+      } catch {
+        // A failed poll is not a failed payment. Keep trying.
+      }
+
+      if (cancelled) return;
+
+      if (upgraded) {
+        setPhase('upgraded');
         return;
       }
 
-      console.log('🔍 PaymentSuccess: Loading event data for ID:', eventId);
-
-      try {
-        // Add test function call for debugging
-        try {
-          console.log('🧪 Testing event lookup via debug function...');
-          // Removed: this called a debug endpoint that dumped raw event
-          // documents to anyone who asked. The endpoint is deleted.
-        } catch (debugError) {
-          console.log('⚠️ Debug function failed (this is ok):', debugError instanceof Error ? debugError.message : String(debugError));
-        }
-
-        const eventData = await getEvent(eventId);
-        console.log('📊 PaymentSuccess: Event data from getEvent():', eventData);
-        
-        if (eventData) {
-          setEvent(eventData);
-          console.log('✅ PaymentSuccess: Event loaded successfully:', eventData.title);
-        } else {
-          console.error('❌ PaymentSuccess: Event not found for ID:', eventId);
-          setError(`Event not found in database. 
-          Event ID: ${eventId}
-          This event may have been deleted or the ID is incorrect.
-          Please check with the event organizer.`);
-        }
-      } catch (error) {
-        console.error('❌ PaymentSuccess: Failed to load event:', error);
-        setError(`Failed to load event data: ${error instanceof Error ? error.message : String(error)}
-        Event ID: ${eventId}
-        Error details: ${String(error)}`);
-      } finally {
-        setLoading(false);
+      if (attempt >= MAX_POLLS) {
+        setPhase('pending');
+        return;
       }
+
+      setAttempts(attempt + 1);
+      timer = setTimeout(() => run(attempt + 1), POLL_INTERVAL_MS);
     };
 
-    loadEventData();
-  }, [eventId, searchParams]);
+    run(0);
 
-  const handleReturnToGallery = () => {
-    if (eventId) {
-      navigate(`/event/${eventId}`);
-    } else {
-      navigate('/');
-    }
-  };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [ref, legacyEventId, checkOnce]);
 
-  if (loading) {
-    return (
-      <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
-        <CircularProgress size={60} sx={{ mb: 2 }} />
-        <Typography variant="h6" color="text.secondary">
-          Processing payment confirmation...
-        </Typography>
-      </Container>
-    );
-  }
-
-  if (error) {
-    return (
-      <Container maxWidth="sm" sx={{ py: 8 }}>
-        <Alert severity="error" sx={{ mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Error Loading Event
-          </Typography>
-          <Typography variant="body1">
-            {error}
-          </Typography>
-        </Alert>
-        <Button
-          variant="outlined"
-          onClick={() => {
-            if (eventId) {
-              navigate(`/event/${eventId}`);
-            } else {
-              navigate('/');
-            }
-          }}
-          fullWidth
-        >
-          {eventId ? 'Go to Event Gallery' : 'Go to Home'}
-        </Button>
-      </Container>
-    );
-  }
+  const goToGallery = () => navigate(eventId ? `/event/${eventId}` : '/');
 
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box textAlign="center" mb={4}>
-        <CheckCircle 
-          sx={{ 
-            fontSize: 80, 
-            color: 'success.main', 
-            mb: 2,
-            animation: 'pulse 2s infinite'
-          }} 
-        />
-        <Typography variant="h3" gutterBottom color="success.main" sx={{ fontWeight: 600 }}>
-          Payment Successful! 🎉
-        </Typography>
-        <Typography variant="h6" color="text.secondary" sx={{ mb: 3 }}>
-          Welcome to Premium! Your unlimited photo gallery is now active.
-        </Typography>
-      </Box>
+    <Container maxWidth="sm" sx={{ py: { xs: 6, sm: 10 } }}>
+      <Card elevation={0} sx={{ borderRadius: 4, border: '1px solid', borderColor: 'grey.200' }}>
+        <CardContent sx={{ p: { xs: 3, sm: 5 }, textAlign: 'center' }}>
+          {phase === 'checking' && (
+            <>
+              <CircularProgress size={56} sx={{ mb: 3 }} />
+              <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+                Confirming your payment
+              </Typography>
+              <Typography variant="body1" color="text.secondary">
+                This usually takes a few seconds. You can leave this page open.
+              </Typography>
+              {attempts > 4 && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+                  Still working — payment confirmations occasionally take a little longer.
+                </Typography>
+              )}
+            </>
+          )}
 
-      {/* Event Details Card */}
-      <Card elevation={3} sx={{ mb: 4, borderRadius: 3 }}>
-        <CardContent sx={{ p: 4 }}>
-          <Typography variant="h5" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-            <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
-            {event?.title || 'Event Gallery'}
-          </Typography>
-          
-          <Divider sx={{ my: 2 }} />
-          
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="body1" color="text.secondary">
-                Plan Status:
+          {phase === 'upgraded' && (
+            <>
+              <CheckCircle sx={{ fontSize: 72, color: 'success.main', mb: 2 }} />
+              <Typography variant="h4" sx={{ fontWeight: 700, mb: 1 }}>
+                You're all set
               </Typography>
-              <Chip
-                icon={<Star />}
-                label="Premium Plan"
-                color="warning"
-                sx={{
-                  fontWeight: 'bold',
-                  background: 'linear-gradient(45deg, #ffd700, #ffed4e)',
-                  color: '#000',
-                  '& .MuiChip-icon': { color: '#000' }
-                }}
-              />
-            </Box>
-            
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="body1" color="text.secondary">
-                Photo Limit:
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
+                {eventTitle ? (
+                  <>
+                    Uploads are open again for <strong>{eventTitle}</strong>, and will stay open.
+                  </>
+                ) : (
+                  'Uploads are open again, and will stay open.'
+                )}
               </Typography>
-              <Typography variant="body1" sx={{ fontWeight: 600, color: 'success.main' }}>
-                Unlimited Photos & Videos
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 4 }}>
+                Share the gallery link or QR code with your guests — anything they add from now on
+                appears straight away.
               </Typography>
-            </Box>
-            
-            {orderId && (
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="body1" color="text.secondary">
-                  Order ID:
-                </Typography>
-                <Typography variant="body2" sx={{ fontFamily: 'monospace', bgcolor: 'grey.100', px: 1, py: 0.5, borderRadius: 1 }}>
-                  {orderId}
-                </Typography>
-              </Box>
-            )}
-            
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="body1" color="text.secondary">
-                Amount Paid:
+
+              <Button
+                variant="contained"
+                size="large"
+                fullWidth
+                onClick={goToGallery}
+                endIcon={<ArrowForward />}
+                sx={{ py: 1.5, textTransform: 'none', fontWeight: 600 }}
+              >
+                Back to the gallery
+              </Button>
+            </>
+          )}
+
+          {phase === 'pending' && (
+            <>
+              {/*
+                The honest state. The payment almost certainly succeeded — we
+                simply have not seen the confirmation yet. Nothing here should
+                read as an error, because for the customer nothing has gone
+                wrong, and telling them otherwise generates a support email about
+                a working payment.
+              */}
+              <HourglassTop sx={{ fontSize: 72, color: 'warning.main', mb: 2 }} />
+              <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+                Payment received — finishing up
               </Typography>
-              <Typography variant="h6" sx={{ fontWeight: 600, color: 'success.main' }}>
-                $29.00
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 1 }}>
+                Your upgrade is taking a little longer than usual to apply. It normally completes
+                within a few minutes.
               </Typography>
-            </Box>
-          </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 4 }}>
+                Nothing else is needed from you. If the gallery still shows uploads as closed in an
+                hour, forward your receipt to{' '}
+                <Box component="a" href="mailto:support@socialboostai.com" sx={{ color: 'inherit' }}>
+                  support@socialboostai.com
+                </Box>{' '}
+                and we'll sort it out.
+              </Typography>
+
+              <Stack spacing={1}>
+                <Button
+                  variant="contained"
+                  size="large"
+                  fullWidth
+                  onClick={goToGallery}
+                  sx={{ py: 1.5, textTransform: 'none', fontWeight: 600 }}
+                >
+                  Back to the gallery
+                </Button>
+                <Button
+                  fullWidth
+                  onClick={() => window.location.reload()}
+                  sx={{ textTransform: 'none' }}
+                >
+                  Check again
+                </Button>
+              </Stack>
+            </>
+          )}
+
+          {phase === 'unknown' && (
+            <>
+              {/*
+                Reached when the link carries no usable reference — most often an
+                expired one, since refs last 24 hours. This is emphatically not a
+                statement about whether the payment worked, and must not read as
+                one.
+              */}
+              <PhotoLibrary sx={{ fontSize: 72, color: 'text.disabled', mb: 2 }} />
+              <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+                This link has expired
+              </Typography>
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
+                If you completed a payment, it went through — open your gallery to check, or reply
+                to your receipt email and we'll confirm it for you.
+              </Typography>
+
+              <Button
+                variant="contained"
+                size="large"
+                fullWidth
+                onClick={() => navigate('/')}
+                sx={{ py: 1.5, textTransform: 'none', fontWeight: 600 }}
+              >
+                Go to SharedMoments
+              </Button>
+            </>
+          )}
         </CardContent>
       </Card>
-
-      {/* Premium Features Unlocked */}
-      <Card elevation={2} sx={{ mb: 4, bgcolor: 'success.50', borderRadius: 3 }}>
-        <CardContent sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom sx={{ color: 'success.dark', display: 'flex', alignItems: 'center' }}>
-            <Star sx={{ mr: 1 }} />
-            Premium Features Now Active:
-          </Typography>
-          <Box component="ul" sx={{ pl: 2, m: 0 }}>
-            <Typography component="li" variant="body1" sx={{ mb: 1, color: 'success.dark' }}>
-              ✅ Unlimited photo and video uploads
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1, color: 'success.dark' }}>
-              ✅ Custom branding options
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1, color: 'success.dark' }}>
-              ✅ Priority customer support
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ color: 'success.dark' }}>
-              ✅ Enhanced gallery features
-            </Typography>
-          </Box>
-        </CardContent>
-      </Card>
-
-      {/* Action Buttons */}
-      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
-        <Button
-          variant="contained"
-          size="large"
-          onClick={handleReturnToGallery}
-          startIcon={<ArrowBack />}
-          sx={{ 
-            px: 4, 
-            py: 1.5,
-            fontWeight: 600,
-            background: 'linear-gradient(45deg, #d81b60, #8e24aa)',
-            '&:hover': {
-              background: 'linear-gradient(45deg, #c2185b, #7b1fa2)',
-            }
-          }}
-        >
-          Return to Your Event Gallery
-        </Button>
-        
-        {/* Close Tab Button - appears if opened in new tab */}
-        {window.opener && (
-          <Button
-            variant="outlined"
-            size="large"
-            onClick={() => {
-              try {
-                // Try to communicate back to parent window
-                if (window.opener && !window.opener.closed) {
-                  window.opener.postMessage({
-                    type: 'PAYMENT_SUCCESS',
-                    eventId: eventId,
-                    orderId: orderId,
-                    timestamp: new Date().toISOString()
-                  }, window.location.origin);
-                }
-                
-                // Close this tab
-                window.close();
-              } catch (error) {
-                console.error('Error closing tab:', error);
-                // Fallback: try to navigate back
-                handleReturnToGallery();
-              }
-            }}
-            sx={{ 
-              px: 4, 
-              py: 1.5,
-              fontWeight: 600,
-              borderColor: 'success.main',
-              color: 'success.main',
-              '&:hover': {
-                bgcolor: 'success.50',
-                borderColor: 'success.dark',
-              }
-            }}
-          >
-            ✓ Close & Return to App
-          </Button>
-        )}
-      </Box>
-
-      {/* Receipt Note */}
-      <Box textAlign="center" sx={{ mt: 4 }}>
-        <Alert severity="info" sx={{ display: 'inline-flex', alignItems: 'center' }}>
-          <Receipt sx={{ mr: 1 }} />
-          A receipt has been sent to your email address for this transaction.
-        </Alert>
-      </Box>
     </Container>
   );
 };

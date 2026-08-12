@@ -56,7 +56,7 @@ readable by every visitor**. Only public values belong here.
 | `REACT_APP_FIREBASE_APP_ID` | |
 | `REACT_APP_R2_PUBLIC_DOMAIN` | Public R2 hostname used to build display URLs |
 | `REACT_APP_FIREBASE_MEASUREMENT_ID` | Analytics id; optional |
-| `REACT_APP_GHL_UPGRADE_WEBHOOK` | GoHighLevel workflow trigger URL for the upgrade notification. Optional — the notification is skipped with a warning if unset. It is a notification only and carries no authority to change plan state. |
+| ~~`REACT_APP_GHL_UPGRADE_WEBHOOK`~~ | **No longer used.** The browser posted a *completed upgrade* to this before the customer had seen a payment form, so every abandoned checkout was recorded as a sale. Replaced by server-side `GHL_CHECKOUT_WEBHOOK_URL`. Safe to delete. |
 | ~~`REACT_APP_GHL_API_KEY`~~ | **Remove this.** A GoHighLevel API key in the bundle exposes the whole location to every visitor (finding GHL-1). If it was ever deployed, rotate it. |
 
 ## Netlify Functions (server-side)
@@ -68,6 +68,12 @@ readable by every visitor**. Only public values belong here.
 | `GHL_WEBHOOK_SECRET` | Authenticates the GoHighLevel upgrade webhook |
 | `GHL_API_TOKEN` | Optional but recommended. Confirms the payment with GoHighLevel before granting premium, which is what makes a static shared secret tolerable against replay. |
 | `GHL_WEBHOOK_ALLOW_RESET` | Set to `true` only in a test environment. Enables the action that downgrades a paying customer. |
+| `CHECKOUT_URL` | **Required for upgrades.** The GoHighLevel order form URL. Without it `checkout-start` returns 503 and the upgrade button reports that upgrades are unavailable — which is the correct failure, but no one can pay. |
+| `CHECKOUT_REF_SECRET` | Signs the reference that identifies an event on the return from checkout. Falls back to `INTERNAL_SERVICE_SECRET`. `openssl rand -hex 32`. Without either, the post-payment page cannot confirm an upgrade. |
+| `UPGRADE_PRICE_CENTS` | Optional, default `2900`. What the customer is *shown*. The order form is what actually charges — change both together or they will disagree. |
+| `UPGRADE_CURRENCY` | Optional, default `USD` |
+| `PUBLIC_SITE_URL` | Optional; Netlify's own `URL` is used if unset. Builds the return link carried into checkout. |
+| `GHL_CHECKOUT_WEBHOOK_URL` | Optional. Receives a `checkout_started` event when an organizer opens checkout — useful for abandoned-cart follow-up, and it primes the workflow with the event data the order form sends back. Carries no authority. |
 | `R2_ACCOUNT_ID` | |
 | `R2_ACCESS_KEY_ID` | Rotate — see `runbooks/credential-rotation.md` |
 | `R2_SECRET_ACCESS_KEY` | Rotate — see `runbooks/credential-rotation.md` |

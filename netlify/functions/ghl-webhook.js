@@ -303,9 +303,14 @@ exports.handler = async (event) => {
       return json(400, { error: 'A valid eventId is required' });
     }
 
+    // photoLimit is not written back. It was `2` here, which re-created the
+    // count-based paywall UX-1 removed — a reset event would have been capped at
+    // two photos again while _lib/plan.js, which decides for real, ignores the
+    // field entirely. Deleting it keeps the document honest about what governs
+    // uploads: the time window, not a count.
     await db.collection('events').doc(eventId).update({
       planType: 'free',
-      photoLimit: 2,
+      photoLimit: FieldValue.delete(),
       paymentId: FieldValue.delete(),
       upgradedAt: FieldValue.delete(),
     });

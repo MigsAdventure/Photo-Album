@@ -106,7 +106,9 @@ const AdminDashboard: React.FC = () => {
         isActive: true,
         organizerEmail: email,
         planType: 'free',
-        photoLimit: 2,
+        // Mirrors what createEvent actually writes — see the note there. -1 is
+        // what getEvent reports for a document without the field.
+        photoLimit: -1,
         photoCount: 0
       };
       setEvent(newEvent);

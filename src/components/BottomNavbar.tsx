@@ -38,7 +38,6 @@ import { uploadMedia, validateMediaFile } from '../services/mediaUploadService';
 import { requestEmailDownload, getEvent } from '../services/photoService';
 import { getUploadState, explainUploadState, describeTimeRemaining } from '../services/planService';
 import { Photo, UploadProgress, Event } from '../types';
-import UpgradeModal from './UpgradeModal';
 import QRCode from 'qrcode';
 
 interface BottomNavbarProps {
@@ -66,7 +65,6 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   
   // Freemium state
   const [event, setEvent] = useState<Event | null>(null);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   // Why uploads are unavailable, phrased for a guest. Null when they are open.
   const [uploadBlockedMessage, setUploadBlockedMessage] = useState<string | null>(null);
   
@@ -1664,37 +1662,17 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         </Alert>
       </Snackbar>
 
-      {/* Upgrade Modal — organizer-facing only; a guest never reaches this. */}
-      {event && (
-        <UpgradeModal
-          open={showUpgradeModal}
-          onClose={() => setShowUpgradeModal(false)}
-          eventId={eventId}
-          currentPhotoCount={event.photoCount || 0}
-          onUpgradeSuccess={async () => {
-            setShowUpgradeModal(false);
-            console.log('🔄 BottomNavbar: Upgrade successful, refreshing event data...');
-            
-            try {
-              // Wait a moment for server to process upgrade
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Force refresh event data
-              const updatedEvent = await getEvent(eventId);
-              if (updatedEvent) {
-                setEvent(updatedEvent);
-                console.log('✅ BottomNavbar: Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
-              } else {
-                console.warn('⚠️ BottomNavbar: Failed to get updated event data');
-              }
-            } catch (error) {
-              console.error('❌ BottomNavbar: Error refreshing event data:', error);
-              // Fallback: reload the page to ensure fresh data
-              window.location.reload();
-            }
-          }}
-        />
-      )}
+      {/*
+        The UpgradeModal was mounted here but unreachable: nothing ever called
+        setShowUpgradeModal(true), because the UX-1 fix removed the trigger — a
+        blocked guest used to be shown the paywall — without removing the modal
+        it opened. It rendered a dialog that could not open, kept a dead
+        `photoLimit` reference alive, and gave the impression this component had
+        an upgrade path when the guest-facing navbar deliberately does not.
+
+        The upgrade prompt belongs to the organizer: the gallery header shows it
+        to a signed-in organizer, and the dashboard has it too.
+      */}
     </>
   );
 };

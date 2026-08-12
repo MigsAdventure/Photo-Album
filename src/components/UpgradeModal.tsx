@@ -1,247 +1,262 @@
-import React, { useState } from 'react';
+// The upgrade modal.
+//
+// What was wrong with it
+// ----------------------
+// It sold a product that no longer existed. The headline alert read "Photo limit
+// reached! You've uploaded {n}/2 photos" and the first feature bullet promised
+// "No more 20 photo limit" — two different dead numbers in one dialog, both left
+// over from the count-based paywall UX-1 removed. A customer reading this could
+// not tell what they were buying, and neither number described anything the
+// software actually did.
+//
+// It also did the work of a payment backend from the browser: fabricated a
+// payment id, told the CRM the upgrade had completed, and assembled the checkout
+// URL with the price in a query parameter — all before the customer saw a form.
+// That moved to netlify/functions/checkout-start.js.
+//
+// What it says now: uploads run on a window, here is when yours closes (or that
+// it has), and upgrading reopens it permanently. The price comes from the server
+// so the number shown is the number charged.
+//
+// Refs: AUDIT_2026-08.md UX-1, GHL-2
+
+import React, { useState, useEffect } from 'react';
 import {
   Dialog,
-  DialogTitle,
   DialogContent,
   DialogActions,
   Button,
   Typography,
   Box,
-  Card,
-  CardContent,
   List,
   ListItem,
   ListItemIcon,
   ListItemText,
   CircularProgress,
   Alert,
-  Chip
+  IconButton,
 } from '@mui/material';
 import {
-  Star,
-  PhotoLibrary,
+  AllInclusive,
+  LockOpen,
+  CloudDownload,
   Palette,
-  CheckCircle,
   Close,
-  Payment
+  ArrowForward,
 } from '@mui/icons-material';
 import { UpgradeModalProps } from '../types';
-import { getEvent } from '../services/photoService';
-import { sendUpgradeToGHL } from '../services/ghlService';
+import {
+  startCheckout,
+  NotOrganizerError,
+  AlreadyPremiumError,
+  CheckoutSession,
+} from '../services/checkoutService';
 
-const UpgradeModal: React.FC<UpgradeModalProps> = ({
-  open,
-  onClose,
-  eventId,
-  currentPhotoCount,
-  onUpgradeSuccess
-}) => {
-  const [loading, setLoading] = useState(false);
+const PREMIUM_FEATURES = [
+  {
+    icon: <LockOpen color="primary" />,
+    title: 'Uploads stay open',
+    description: 'Guests can keep adding photos and videos indefinitely, with no closing date.',
+  },
+  {
+    icon: <AllInclusive color="primary" />,
+    title: 'No limits on the gallery',
+    description: 'Every photo and video from the day, at full quality.',
+  },
+  {
+    icon: <CloudDownload color="primary" />,
+    title: 'Download everything, any time',
+    description: 'Request the full album whenever you like — it never expires.',
+  },
+  {
+    icon: <Palette color="primary" />,
+    title: 'Make it yours',
+    description: 'Add your own cover photo and colours to the gallery.',
+  },
+];
+
+const UpgradeModal: React.FC<UpgradeModalProps> = ({ open, onClose, eventId, onUpgradeSuccess }) => {
+  const [session, setSession] = useState<CheckoutSession | null>(null);
+  const [loadingOffer, setLoadingOffer] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
 
-  const handleUpgrade = async () => {
-    setLoading(true);
-    setError(null);
+  // Fetch the offer when the dialog opens, so the price and the closing date are
+  // on screen before the customer decides — rather than being discovered on the
+  // payment page. This also surfaces "you are not the organizer" here, instead of
+  // after a redirect to a form they cannot complete.
+  useEffect(() => {
+    if (!open) return;
 
-    try {
-      // Get event details
-      const event = await getEvent(eventId);
-      if (!event) {
-        throw new Error('Event not found');
+    let cancelled = false;
+
+    const load = async () => {
+      setLoadingOffer(true);
+      setError(null);
+      setNeedsSignIn(false);
+
+      try {
+        const result = await startCheckout(eventId);
+        if (!cancelled) setSession(result);
+      } catch (err) {
+        if (cancelled) return;
+
+        if (err instanceof AlreadyPremiumError) {
+          onUpgradeSuccess();
+          onClose();
+          return;
+        }
+
+        if (err instanceof NotOrganizerError) {
+          setNeedsSignIn(true);
+          setError(err.message);
+          return;
+        }
+
+        setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      } finally {
+        if (!cancelled) setLoadingOffer(false);
       }
+    };
 
-      console.log('🔄 UpgradeModal: Storing event data in localStorage before payment redirect');
-      
-      // Always store fresh event data in localStorage (overwrite any existing data)
-      const upgradeData = {
-        eventId,
-        eventTitle: event.title,
-        organizerEmail: event.organizerEmail,
-        organizerName: event.organizerEmail.split('@')[0],
-        timestamp: Date.now(), // Fresh timestamp for each upgrade attempt
-        paymentAmount: 29
-      };
-      
-      // Always set localStorage, even if it already exists (handle multiple upgrade attempts)
-      localStorage.setItem('pendingUpgrade', JSON.stringify(upgradeData));
-      console.log('✅ UpgradeModal: Fresh event data stored in localStorage:', upgradeData);
-      console.log('📝 UpgradeModal: This will be available for 5 minutes after payment success');
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, eventId, onClose, onUpgradeSuccess]);
 
-      // 🔥 CRITICAL FIX: Send upgrade data to GHL FIRST before payment redirect
-      console.log('📤 UpgradeModal: Sending upgrade data to GHL inbound webhook...');
-      const ghlSuccess = await sendUpgradeToGHL({
-        eventId,
-        eventTitle: event.title,
-        organizerEmail: event.organizerEmail,
-        organizerName: event.organizerEmail.split('@')[0],
-        planType: 'premium',
-        paymentAmount: 29,
-        paymentId: `${eventId}_${Date.now()}`,
-        paymentMethod: 'external_form'
-      });
-
-      if (ghlSuccess) {
-        console.log('✅ UpgradeModal: GHL webhook data sent successfully - inbound webhook will have event data');
-      } else {
-        console.warn('⚠️ UpgradeModal: GHL webhook failed, but continuing with payment - will need manual upgrade');
-      }
-
-      // Create payment URL with event data
-      const paymentBaseUrl = 'https://socialboostai.com/premium-upgrade-page';
-      const params = new URLSearchParams({
-        event_id: eventId,
-        event_title: event.title,
-        organizer_email: event.organizerEmail,
-        organizer_name: event.organizerEmail.split('@')[0],
-        amount: '29'
-      });
-
-      const paymentLink = `${paymentBaseUrl}?${params.toString()}`;
-      
-      console.log('🔗 UpgradeModal: Redirecting to payment page:', paymentLink);
-      
-      // Redirect to payment page in same tab
-      window.location.href = paymentLink;
-
-    } catch (error) {
-      console.error('❌ UpgradeModal: Upgrade failed:', error);
-      setError(error instanceof Error ? error.message : 'Upgrade failed');
-      setLoading(false);
-    }
+  const handleUpgrade = () => {
+    if (!session) return;
+    setRedirecting(true);
+    window.location.href = session.checkoutUrl;
   };
 
-  const premiumFeatures = [
-    {
-      icon: <PhotoLibrary color="primary" />,
-      title: 'Unlimited Photos & Videos',
-      description: 'No more 20 photo limit - upload as many memories as you want!'
-    },
-    {
-      icon: <Palette color="primary" />,
-      title: 'Custom Branding',
-      description: 'Add your logo and custom colors to make the gallery yours'
-    },
-    {
-      icon: <CheckCircle color="primary" />,
-      title: 'Priority Support',
-      description: 'Get help when you need it with premium support'
-    }
-  ];
+  const closesAtText = (() => {
+    if (!session?.closesAt) return null;
+
+    const closesAt = new Date(session.closesAt);
+    if (Number.isNaN(closesAt.getTime())) return null;
+
+    return closesAt.toLocaleDateString(undefined, {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+    });
+  })();
 
   return (
-    <Dialog 
-      open={open} 
-      onClose={onClose} 
-      maxWidth="sm" 
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="xs"
       fullWidth
-      PaperProps={{
-        sx: { borderRadius: 3 }
-      }}
+      PaperProps={{ sx: { borderRadius: 3 } }}
     >
-      <DialogTitle sx={{ textAlign: 'center', pb: 1 }}>
-        <Box display="flex" alignItems="center" justifyContent="space-between">
-          <Star sx={{ color: 'primary.main', fontSize: 30 }} />
-          <Typography variant="h5" component="div" sx={{ fontWeight: 600 }}>
-            Upgrade to Premium
-          </Typography>
-          <Button 
-            onClick={onClose} 
-            size="small" 
-            sx={{ minWidth: 'auto', p: 0.5 }}
-          >
-            <Close />
-          </Button>
-        </Box>
-      </DialogTitle>
+      <Box sx={{ position: 'relative', pt: 4, pb: 1, px: 3, textAlign: 'center' }}>
+        <IconButton
+          onClick={onClose}
+          size="small"
+          aria-label="Close"
+          sx={{ position: 'absolute', top: 8, right: 8 }}
+        >
+          <Close fontSize="small" />
+        </IconButton>
 
-      <DialogContent sx={{ pt: 1 }}>
-        {/* Photo Limit Alert */}
-        <Alert severity="warning" sx={{ mb: 3 }}>
-          <Typography variant="body2">
-            <strong>Photo limit reached!</strong> You've uploaded {currentPhotoCount}/2 photos. 
-            Upgrade to premium for unlimited uploads.
-          </Typography>
-        </Alert>
-
-        {/* Premium Features */}
-        <Typography variant="h6" gutterBottom sx={{ mb: 2, textAlign: 'center' }}>
-          What you get with Premium:
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
+          Keep this gallery open
         </Typography>
 
-        <List sx={{ mb: 3 }}>
-          {premiumFeatures.map((feature, index) => (
-            <ListItem key={index} sx={{ pl: 0 }}>
-              <ListItemIcon sx={{ minWidth: 40 }}>
-                {feature.icon}
-              </ListItemIcon>
+        {/*
+          The state, in one sentence, before any sales copy. A customer who
+          arrived here from "uploads have closed" needs to know that is what they
+          are fixing; one who is still inside their window needs to know they are
+          not in trouble yet.
+        */}
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          {session?.uploadsClosed
+            ? 'Uploads have closed for this event. Upgrading reopens them right away.'
+            : closesAtText
+              ? `Free uploads close on ${closesAtText}. Upgrading keeps them open for good.`
+              : 'Upgrading keeps uploads open for good.'}
+        </Typography>
+      </Box>
+
+      <DialogContent sx={{ pt: 1 }}>
+        {error && (
+          <Alert severity={needsSignIn ? 'info' : 'error'} sx={{ mb: 2 }}>
+            {error}
+          </Alert>
+        )}
+
+        <List dense sx={{ mb: 1 }}>
+          {PREMIUM_FEATURES.map((feature) => (
+            <ListItem key={feature.title} sx={{ pl: 0, alignItems: 'flex-start' }}>
+              <ListItemIcon sx={{ minWidth: 40, mt: 0.5 }}>{feature.icon}</ListItemIcon>
               <ListItemText
                 primary={feature.title}
                 secondary={feature.description}
-                primaryTypographyProps={{ fontWeight: 600 }}
+                primaryTypographyProps={{ fontWeight: 600, variant: 'body2' }}
+                secondaryTypographyProps={{ variant: 'body2' }}
               />
             </ListItem>
           ))}
         </List>
 
-        {/* Pricing Card */}
-        <Card 
-          variant="outlined" 
-          sx={{ 
-            textAlign: 'center', 
-            bgcolor: 'primary.main', 
-            color: 'white',
-            mb: 2
+        <Box
+          sx={{
+            textAlign: 'center',
+            py: 2,
+            borderRadius: 2,
+            bgcolor: 'grey.50',
+            border: '1px solid',
+            borderColor: 'grey.200',
           }}
         >
-          <CardContent sx={{ py: 2 }}>
-            <Typography variant="h4" sx={{ fontWeight: 700 }}>
-              $29
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.9 }}>
-              One-time payment per event
-            </Typography>
-            <Chip 
-              label="Best Value" 
-              size="small" 
-              sx={{ 
-                mt: 1,
-                bgcolor: 'secondary.main',
-                color: 'white'
-              }} 
-            />
-          </CardContent>
-        </Card>
-
-        {/* Error Display */}
-        {error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            {error}
-          </Alert>
-        )}
+          {loadingOffer ? (
+            <CircularProgress size={24} />
+          ) : (
+            <>
+              <Typography variant="h4" sx={{ fontWeight: 700 }}>
+                {session?.offer.display ?? '—'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                One payment for this event. No subscription.
+              </Typography>
+            </>
+          )}
+        </Box>
       </DialogContent>
 
-      <DialogActions sx={{ px: 3, pb: 3 }}>
-        <Button 
-          onClick={onClose} 
-          variant="outlined"
-          fullWidth
-          sx={{ mr: 1 }}
-        >
-          Maybe Later
-        </Button>
+      <DialogActions sx={{ px: 3, pb: 3, flexDirection: 'column', gap: 1 }}>
         <Button
           onClick={handleUpgrade}
           variant="contained"
           fullWidth
-          disabled={loading}
-          startIcon={loading ? <CircularProgress size={20} /> : <Payment />}
-          sx={{ 
-            py: 1.5,
-            fontWeight: 600
-          }}
+          size="large"
+          disabled={!session || loadingOffer || redirecting}
+          endIcon={redirecting ? <CircularProgress size={18} color="inherit" /> : <ArrowForward />}
+          sx={{ py: 1.5, fontWeight: 600, textTransform: 'none' }}
         >
-          {loading ? 'Processing...' : 'Upgrade Now - $29'}
+          {redirecting
+            ? 'Taking you to checkout…'
+            : session
+              ? `Continue — ${session.offer.display}`
+              : 'Continue'}
         </Button>
+
+        <Button onClick={onClose} fullWidth sx={{ textTransform: 'none' }}>
+          Not now
+        </Button>
+
+        {/*
+          Said plainly, because leaving the site to pay is the moment people
+          abandon. Knowing they come back to the gallery removes the worry that
+          they are about to lose their place.
+        */}
+        <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center' }}>
+          You'll pay on our secure checkout page and come straight back here.
+        </Typography>
       </DialogActions>
     </Dialog>
   );

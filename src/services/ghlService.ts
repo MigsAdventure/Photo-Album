@@ -9,85 +9,37 @@
 // It also targeted the v1 REST API, which is superseded by the OAuth-based v2
 // API where the current endpoints live.
 //
-// Everything privileged now runs in Netlify functions with a server-only token:
+// Nothing browser-side remains.
 //
-//   netlify/functions/ghl-webhook.js   receives upgrades, verifies the signature,
-//                                      confirms the payment, writes plan state
+// -----------------------------------------------------------------------------
+// sendUpgradeToGHL was the last function here, and it is gone.
+//
+// UpgradeModal called it at the moment the customer clicked "Upgrade", before
+// any payment form had been shown, with this payload:
+//
+//     planType:      'premium'
+//     paymentAmount: 29
+//     paymentId:     `${eventId}_${Date.now()}`
+//
+// None of which was true. The plan had not changed, no money had moved, and the
+// payment id was manufactured in the browser. Every organizer who opened the
+// modal and thought better of it was recorded in the CRM as a completed upgrade,
+// so the system of record for who had paid was being written by a button click.
+// Any GoHighLevel workflow keyed on that event fired for people who never paid.
+//
+// The replacement is two honest signals, both server-side:
+//
+//   checkout-start.js   posts `checkout_started` when a checkout is issued —
+//                       useful for abandoned-cart follow-up, and it primes the
+//                       workflow with the event data the order form needs
+//   ghl-webhook.js      receives GoHighLevel's confirmation of a real payment,
+//                       verifies it, and writes the plan state
 //
 // If you need more GoHighLevel calls — contact creation on upload, lifecycle
-// automations, the reseller sync described in AUDIT_2026-08.md §06 — add them as
-// functions there. Do not reintroduce a browser-side client, and do not add a
+// automations, the reseller sync in AUDIT_2026-08.md §06 — add them as Netlify
+// functions. Do not reintroduce a browser-side client, and do not add a
 // REACT_APP_GHL_* variable.
-
-// Send upgrade notification to GHL webhook (simplified approach)
-export const sendUpgradeToGHL = async (upgradeData: {
-  eventId: string;
-  eventTitle: string;
-  organizerEmail: string;
-  organizerName: string;
-  planType: string;
-  paymentAmount: number;
-  paymentId: string;
-  paymentMethod: string;
-}): Promise<boolean> => {
-  // This trigger URL is a capability: anyone holding it can post events into the
-  // workflow. It was hardcoded, and this file ships to the browser, so it was
-  // public regardless — but it should not be baked into the source as well.
-  // Configure it as REACT_APP_GHL_UPGRADE_WEBHOOK.
-  //
-  // It is a notification only, carrying no authority to change plan state, so a
-  // public URL is tolerable. If it ever gains authority, it must move server-side.
-  const GHL_WEBHOOK_URL = process.env.REACT_APP_GHL_UPGRADE_WEBHOOK;
-
-  if (!GHL_WEBHOOK_URL) {
-    console.warn('⚠️ REACT_APP_GHL_UPGRADE_WEBHOOK is not set; skipping CRM notification');
-    return false;
-  }
-
-  try {
-    console.log('📨 Sending upgrade notification to GHL webhook...');
-    
-    const webhookPayload = {
-      event_id: upgradeData.eventId,
-      event_title: upgradeData.eventTitle,
-      organizer_email: upgradeData.organizerEmail,
-      organizer_name: upgradeData.organizerName,
-      plan_type: upgradeData.planType,
-      payment_amount: upgradeData.paymentAmount,
-      payment_id: upgradeData.paymentId,
-      payment_method: upgradeData.paymentMethod,
-      upgrade_timestamp: new Date().toISOString(),
-      app_version: "1.0.0",
-      source: "wedding_photo_app"
-    };
-
-    const response = await fetch(GHL_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'WeddingPhotoApp/1.0.0'
-      },
-      body: JSON.stringify(webhookPayload)
-    });
-
-    if (response.ok) {
-      console.log('✅ GHL webhook notification sent successfully');
-      return true;
-    } else {
-      console.error('❌ Failed to send GHL webhook:', response.status, response.statusText);
-      return false;
-    }
-
-  } catch (error) {
-    console.error('❌ Error sending GHL webhook:', error);
-    return false;
-  }
-};
-
-// initiatePremiumUpgrade and processPaymentWebhook were here. Both drove the
-// browser-side client that has been removed, and nothing called either of them.
 //
-// The upgrade flow is: the customer pays through a GoHighLevel order form, and
-// GoHighLevel calls netlify/functions/ghl-webhook.js, which verifies the
-// signature, confirms the payment, and writes the plan state with the Admin SDK.
-// A browser is never in the trust path for granting premium.
+// Refs: AUDIT_2026-08.md GHL-1, GHL-2
+
+export {};

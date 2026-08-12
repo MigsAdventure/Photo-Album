@@ -3,6 +3,47 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — Payments, and what the app says about them
+
+Session: [`sessions/2026-08-12_payment-flow-and-upgrade-ux.md`](sessions/2026-08-12_payment-flow-and-upgrade-ux.md)
+
+**Requires `CHECKOUT_URL` and `CHECKOUT_REF_SECRET`** — without them the upgrade
+button correctly reports that upgrades are unavailable, and nobody can pay.
+
+The payment surfaces were still describing the two-photo paywall that Phase 4
+replaced with a 72-hour upload window. The enforcement had changed; the
+explanation had not.
+
+### Fixed
+
+- **The upgrade modal sold a product that did not exist** — "you've uploaded
+  {n}/2 photos" alongside "no more 20 photo limit", two dead numbers in one
+  dialog. It now states when uploads close, or that they have.
+- **Guests were shown the upgrade button** — gated on the event being free rather
+  than on the viewer being the organizer. That is finding UX-1 surviving in a
+  component its fix never touched.
+- **The CRM was told the upgrade completed before any money moved** — every
+  abandoned checkout was recorded as a sale, with a payment id invented in the
+  browser. Replaced by a server-side `checkout_started` signal that is true.
+- **The price and payment URL moved to the server.** The browser no longer
+  proposes what to charge.
+- **Paying on a different device lost the event** — correlation was via
+  `localStorage`, written before the redirect. A signed reference now travels in
+  the URL, so scanning the QR on a phone and paying on a laptop works.
+- **The post-payment page showed customers debug output**, and announced success
+  before the upgrade existed. It now polls until the plan actually flips.
+- Removed an `UpgradeModal` in `BottomNavbar` that could never open, and stopped
+  writing the dead `photoLimit` field that was still being rendered to customers
+  as "a limit of 2 photos".
+
+### Added
+
+- `checkout-start` / `checkout-status` functions, `_lib/pricing.js`,
+  `_lib/checkout-ref.js`, and `_lib/organizer-auth.js` (extracted from
+  `delete-photo.js` so both use one authorisation check).
+- `tests/checkout.test.js` — 15 tests, mostly negative cases on the signed ref.
+  `npm run test:all` is now 151 across six suites.
+
 ## 2026-08-12 — The four remaining review findings
 
 Session: [`sessions/2026-08-12_review-findings.md`](sessions/2026-08-12_review-findings.md)

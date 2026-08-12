@@ -34,14 +34,13 @@ import {
   PlayArrow,
   Videocam,
   Star,
-  Security,
   Delete,
   Download
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, getPhotoOwnershipInfo } from '../services/photoService';
 import { getCurrentUserEmail, onAuthChange } from '../services/authService';
-import { getUploadState, explainUploadState } from '../services/planService';
+import { getUploadState, explainUploadState, describeTimeRemaining } from '../services/planService';
 import { preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
@@ -169,6 +168,17 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
 
   useEffect(() => onAuthChange((user) => setSignedInEmail(user?.email?.toLowerCase() ?? null)), []);
 
+  // Is the person looking at this page the organizer?
+  //
+  // Hoisted out of the ownership effect below because the upgrade CTA needs it
+  // too: a guest must never be shown a payment prompt for an event they neither
+  // own nor can pay for. That was finding UX-1, and it survived in this
+  // component after the upload path was fixed — the button was gated on
+  // `planType === 'free'` alone, so every guest at a free event saw "Upgrade".
+  const isOrganizer = Boolean(
+    signedInEmail && event?.organizerEmail?.toLowerCase() === signedInEmail
+  );
+
   // Which photos does this browser get a delete affordance for?
   //
   // A guest sees it on their own uploads. An organizer signed in as this event's
@@ -185,10 +195,6 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
   // Both paths are UI hints. delete-photo.js re-checks independently, so being
   // wrong here shows or hides an icon and nothing more.
   useEffect(() => {
-    const isOrganizer = Boolean(
-      signedInEmail && event?.organizerEmail?.toLowerCase() === signedInEmail
-    );
-
     const owned = new Set<string>();
     for (const photo of photos) {
       if (isOrganizer || getPhotoOwnershipInfo(photo.id).canDelete) {
@@ -196,7 +202,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
       }
     }
     setOwnedPhotos(owned);
-  }, [photos, event, signedInEmail]);
+  }, [photos, isOrganizer]);
 
   // Preview URL for grid tiles.
   //
@@ -615,12 +621,29 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               />
             )}
             
-            {/* Plan Status Indicator */}
+            {/*
+              Plan status.
+
+              Was a "Free Trial" chip, which told a guest nothing they could act
+              on and did not describe the model — uploads run on a window, so the
+              fact that matters is when it closes. A free event now shows the
+              deadline; a premium one says uploads are open for good.
+            */}
             {!eventLoading && event && (
               <Chip
-                icon={event.planType === 'premium' ? <Star /> : <Security />}
-                label={event.planType === 'premium' ? 'Premium Plan' : 'Free Trial'}
-                color={event.planType === 'premium' ? 'warning' : 'default'}
+                icon={event.planType === 'premium' ? <Star /> : <AccessTime />}
+                label={
+                  event.planType === 'premium'
+                    ? 'Uploads always open'
+                    : describeTimeRemaining(getUploadState(event).closesAt) ?? 'Uploads closed'
+                }
+                color={
+                  event.planType === 'premium'
+                    ? 'warning'
+                    : getUploadState(event).canUpload
+                      ? 'default'
+                      : 'error'
+                }
                 variant={event.planType === 'premium' ? 'filled' : 'outlined'}
                 sx={{
                   fontWeight: 'bold',
@@ -634,9 +657,15 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 }}
               />
             )}
-            
-            {/* Upgrade Button for Free Users */}
-            {!eventLoading && event && event.planType === 'free' && (
+
+            {/*
+              Upgrade CTA — organizers only.
+
+              A guest cannot pay for an event they do not own, and asking them to
+              is finding UX-1. The upload path was fixed; this button was not, so
+              a free event still showed every guest a payment prompt.
+            */}
+            {!eventLoading && event && event.planType === 'free' && isOrganizer && (
               <Button
                 variant="contained"
                 color="primary"
@@ -652,10 +681,10 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   }
                 }}
               >
-                Upgrade
+                {getUploadState(event).canUpload ? 'Keep open' : 'Reopen uploads'}
               </Button>
             )}
-            
+
           </Box>
         </Box>
         
@@ -679,7 +708,13 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           */}
           {!eventLoading && event && !getUploadState(event).canUpload && (
             <Typography variant="body2" color="error" sx={{ fontWeight: 'bold' }}>
-              {explainUploadState(getUploadState(event), 'guest')}
+              {/*
+                Audience matters here. The organizer gets "upgrade to reopen",
+                because they can; a guest gets "you can still browse and
+                download", because being sold to for someone else's event is the
+                bug UX-1 was about.
+              */}
+              {explainUploadState(getUploadState(event), isOrganizer ? 'organizer' : 'guest')}
             </Typography>
           )}
         </Box>
@@ -1460,26 +1495,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           open={showUpgradeModal}
           onClose={() => setShowUpgradeModal(false)}
           eventId={event.id}
-          currentPhotoCount={event.photoCount || 0}
           onUpgradeSuccess={async () => {
             setShowUpgradeModal(false);
-            console.log('🔄 Upgrade successful, refreshing event data...');
-            
+
             try {
-              // Wait a moment for server to process upgrade
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Force refresh event data
               const updatedEvent = await getEvent(event.id);
-              if (updatedEvent) {
-                setEvent(updatedEvent);
-                console.log('✅ Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
-              } else {
-                console.warn('⚠️ Failed to get updated event data');
-              }
+              if (updatedEvent) setEvent(updatedEvent);
             } catch (error) {
-              console.error('❌ Error refreshing event data:', error);
-              // Fallback: reload the page to ensure fresh data
+              console.error('Could not refresh event after upgrade:', error);
               window.location.reload();
             }
           }}

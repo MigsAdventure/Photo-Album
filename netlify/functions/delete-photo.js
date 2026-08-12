@@ -33,7 +33,8 @@
  */
 
 const crypto = require('crypto');
-const { admin, getApp, getDb, getBucket, FieldValue, isConfigured } = require('./_lib/firebase-admin');
+const { getDb, getBucket, FieldValue, isConfigured } = require('./_lib/firebase-admin');
+const { verifyOrganizer } = require('./_lib/organizer-auth');
 const r2 = require('./_lib/r2');
 
 const CORS = {
@@ -94,42 +95,10 @@ function ownsPhoto(photoData, ownerSecret) {
   return safeEquals(recorded, sha256Hex(ownerSecret));
 }
 
-/**
- * Verify a Firebase ID token and confirm the holder organizes this event.
- *
- * verifyIdToken checks the signature against Google's rotating public keys and
- * the expiry, so this is a real identity check rather than a claim we are taking
- * on trust — which is what separates it from the uploader path above.
- *
- * Returns the organizer's email when authorised, or null.
- */
-async function verifyOrganizer(idToken, eventId, db) {
-  if (!idToken || !eventId) return null;
-
-  try {
-    const decoded = await admin.auth(getApp()).verifyIdToken(idToken);
-
-    // An unverified email proves nothing. Email-link sign-in sets this, so a
-    // legitimate organizer always has it.
-    if (!decoded.email || decoded.email_verified !== true) {
-      console.warn('delete-photo: token has no verified email');
-      return null;
-    }
-
-    const eventDoc = await db.collection('events').doc(eventId).get();
-    if (!eventDoc.exists) return null;
-
-    const organizerEmail = String(eventDoc.data().organizerEmail || '').toLowerCase();
-    if (!organizerEmail) return null;
-
-    return decoded.email.toLowerCase() === organizerEmail ? organizerEmail : null;
-  } catch (error) {
-    // Expired or forged tokens land here. Not an error worth surfacing — the
-    // caller simply is not authorised.
-    console.warn('delete-photo: could not verify ID token:', error.message);
-    return null;
-  }
-}
+// verifyOrganizer moved to _lib/organizer-auth.js when checkout-start needed the
+// same check. Deciding who may moderate an event and deciding who may buy an
+// upgrade for it are the same question, and two copies of an authorisation check
+// is how one of them ends up weaker than the other.
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {

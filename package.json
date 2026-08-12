@@ -55,8 +55,9 @@
     "test:archive": "node --test tests/archive-entries.test.js",
     "test:plan": "node --test tests/plan-parity.test.js",
     "test:upload": "node --test tests/upload-contract.test.js",
+    "test:checkout": "node --test tests/checkout.test.js",
     "test:security": "npm run test:functions && npm run test:rules",
-    "test:all": "npm run test:functions && npm run test:archive && npm run test:plan && npm run test:upload && npm run test:rules",
+    "test:all": "npm run test:functions && npm run test:archive && npm run test:plan && npm run test:upload && npm run test:checkout && npm run test:rules",
     "deploy:rules": "firebase deploy --only firestore:rules,storage",
     "eject": "react-scripts eject"
   },
