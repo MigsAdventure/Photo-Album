@@ -44,6 +44,11 @@ convention in the old `project-state.md` is the direct reason finding ZIP-3 surv
 seven months of debugging: a fix was declared final, so nobody looked at it again.
 Describe what the code does now and when we last verified it.
 
+## Starting a new session?
+
+Read [`HANDOFF.md`](HANDOFF.md) first. It covers where things stand, what the
+connected MCPs can and cannot do, the deployment order, and what to test first.
+
 ## Current state
 
 | Phase | Status |
