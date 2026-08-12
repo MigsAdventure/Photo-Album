@@ -3,6 +3,34 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — The four remaining review findings
+
+Session: [`sessions/2026-08-12_review-findings.md`](sessions/2026-08-12_review-findings.md)
+
+### Fixed
+
+- **Archives arrived short without saying so** — the processor counts files it
+  could not fetch, but `email-download` dropped the number, so the ZIP-7 notice
+  could never render. Also fixed on the archive-reuse path, which had the same
+  defect and was not part of the original finding.
+- **`.HEIC` and some Android uploads were rejected after the app accepted them** —
+  the client falls back to the file extension when the browser supplies no MIME
+  type; the server judged by MIME type alone and returned 400. The server now
+  resolves a media type from the extension and returns it, because `ContentType`
+  is a signed header on the presigned URL and the client has to PUT with the same
+  value.
+- **The credential-rotation runbook fired a real production job** — its smoke
+  test queued SQS and launched an EC2 instance. Replaced with configuration
+  checks that have no side effects.
+
+### Added
+
+- `scripts/backfill-organizer-email.js` — normalises `organizerEmail` on events
+  created before the casing fix, which are otherwise invisible to their own
+  organizers. Dry-run by default. **Not yet run against production.**
+- `tests/upload-contract.test.js` — 14 tests over the two client/server contracts
+  that broke. `npm run test:all` is now 136 across five suites.
+
 ## 2026-08-12 — Post-review correction
 
 The pre-handoff adversarial review found that the ZIP-3 fix — the headline

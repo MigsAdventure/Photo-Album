@@ -98,6 +98,45 @@ function isAllowedContentType(contentType) {
   return /^(image|video)\//.test(String(contentType || ''));
 }
 
+// The browser leaves `file.type` empty for .HEIC and for some Android pickers,
+// and the client sends 'application/octet-stream' when it does. The client's own
+// validation (src/services/mediaUploadService.ts) falls back to the extension and
+// accepts the file, so a server that judged only by MIME type rejected uploads
+// the app had already told the guest were fine — a 400 for a perfectly good photo.
+const EXTENSION_CONTENT_TYPES = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  mp4: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  avi: 'video/x-msvideo',
+  '3gp': 'video/3gpp',
+  wmv: 'video/x-ms-wmv',
+};
+
+/**
+ * Decide what this upload actually is.
+ *
+ * Returns a content type guaranteed to be image/* or video/*, or null when the
+ * file is neither. A declared media type wins; the extension is the fallback.
+ *
+ * We deliberately never pass an arbitrary client string through. Whatever is
+ * returned here is signed into the presigned URL and is what R2 stores and later
+ * serves from the public bucket host, so honouring a declared 'text/html' on a
+ * file named .jpg would be a stored-XSS vector on our own domain.
+ */
+function resolveContentType(contentType, fileName) {
+  if (isAllowedContentType(contentType)) return String(contentType);
+
+  const ext = String(fileName || '').toLowerCase().split('.').pop();
+  return EXTENSION_CONTENT_TYPES[ext] || null;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: CORS, body: '' };
@@ -123,7 +162,8 @@ exports.handler = async (event) => {
   if (!eventId || typeof eventId !== 'string') {
     return json(400, { error: 'eventId is required' });
   }
-  if (!isAllowedContentType(contentType)) {
+  const resolvedContentType = resolveContentType(contentType, fileName);
+  if (!resolvedContentType) {
     return json(400, { error: 'Only photos and videos can be uploaded' });
   }
 
@@ -170,25 +210,37 @@ exports.handler = async (event) => {
 
     const client = getClient();
     const Bucket = getBucketName();
-    const r2Key = `media/${eventId}/${randomUUID()}.${extensionFor(fileName, contentType)}`;
+    const r2Key = `media/${eventId}/${randomUUID()}.${extensionFor(fileName, resolvedContentType)}`;
 
     // A little headroom over the declared size: browsers occasionally re-encode
     // during transfer, and a hard equality here would reject legitimate uploads.
     const maxBytes = Math.min(Math.ceil(byteSize * 1.05) + 1024, MAX_UPLOAD_BYTES);
-    const uploadToken = signUpload({ eventId, r2Key, maxBytes, contentType });
+    const uploadToken = signUpload({ eventId, r2Key, maxBytes, contentType: resolvedContentType });
 
     if (byteSize <= MULTIPART_THRESHOLD) {
       const uploadUrl = await getSignedUrl(
         client,
-        new PutObjectCommand({ Bucket, Key: r2Key, ContentType: contentType }),
+        new PutObjectCommand({ Bucket, Key: r2Key, ContentType: resolvedContentType }),
         { expiresIn: URL_TTL_SECONDS }
       );
 
-      return json(200, { mode: 'single', r2Key, uploadUrl, uploadToken, maxBytes });
+      // contentType comes back because ContentType is a *signed* header on the
+      // presigned URL. If we resolved it to something other than what the client
+      // declared, the client has to PUT with the resolved value or R2 rejects the
+      // request as a signature mismatch — and upload-complete recomputes the same
+      // HMAC, so it has to send the resolved value there too.
+      return json(200, {
+        mode: 'single',
+        r2Key,
+        uploadUrl,
+        uploadToken,
+        maxBytes,
+        contentType: resolvedContentType,
+      });
     }
 
     const created = await client.send(
-      new CreateMultipartUploadCommand({ Bucket, Key: r2Key, ContentType: contentType })
+      new CreateMultipartUploadCommand({ Bucket, Key: r2Key, ContentType: resolvedContentType })
     );
 
     const partCount = Math.ceil(byteSize / PART_SIZE);
@@ -223,6 +275,7 @@ exports.handler = async (event) => {
       partUrls,
       uploadToken,
       maxBytes,
+      contentType: resolvedContentType,
     });
   } catch (error) {
     console.error('upload-init failed:', error);
@@ -231,5 +284,6 @@ exports.handler = async (event) => {
 };
 
 module.exports.signUpload = signUpload;
+module.exports.resolveContentType = resolveContentType;
 module.exports.MULTIPART_THRESHOLD = MULTIPART_THRESHOLD;
 module.exports.PART_SIZE = PART_SIZE;

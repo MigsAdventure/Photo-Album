@@ -157,7 +157,7 @@ exports.handler = async (event) => {
     return json(400, { error: 'Invalid JSON in request body', requestId });
   }
 
-  const { eventId, email, source, downloadUrl, fileCount, finalSizeMB } = body;
+  const { eventId, email, source, downloadUrl, fileCount, finalSizeMB, failedCount } = body;
 
   // ------------------------------------------------ processor callback branch
   //
@@ -181,7 +181,18 @@ exports.handler = async (event) => {
     }
 
     try {
-      await sendArchiveReadyEmail({ email, downloadUrl, fileCount, finalSizeMB, requestId });
+      // failedCount has to be forwarded, not just accepted. The processor counts
+      // the files it could not fetch and sends the number here; dropping it on
+      // the floor meant the "some files are missing" notice built for ZIP-7
+      // could never render, and a short archive arrived looking complete.
+      await sendArchiveReadyEmail({
+        email,
+        downloadUrl,
+        fileCount,
+        finalSizeMB,
+        failedCount: Number(failedCount) || 0,
+        requestId,
+      });
 
       // Record it so a repeat request within the reuse window gets this URL back
       // instead of starting another job.
@@ -192,6 +203,7 @@ exports.handler = async (event) => {
             downloadUrl,
             fileCount: fileCount || null,
             finalSizeMB: finalSizeMB || null,
+            failedCount: Number(failedCount) || 0,
             completedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
@@ -261,6 +273,10 @@ exports.handler = async (event) => {
         downloadUrl: existing.downloadUrl,
         fileCount: existing.fileCount || photos.length,
         finalSizeMB: existing.finalSizeMB || totalSizeMB,
+        // The reused archive is the same bytes, so it is short by the same
+        // files. Reading the count back keeps the second email as honest as the
+        // first rather than quietly dropping the notice on the reuse path.
+        failedCount: Number(existing.failedCount) || 0,
         requestId,
       });
 

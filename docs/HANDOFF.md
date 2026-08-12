@@ -19,7 +19,7 @@ Four phases of the audit are **code complete and pushed**, none deployed.
 | 6 — Differentiate | Not started | — |
 
 Branch: `claude/photo-album-audit-be5aap` · 18 commits from `b897696`
-Tests: `npm run test:all` → **119 passing** across four suites
+Tests: `npm run test:all` → **136 passing** across five suites
 Build: clean, no warnings
 
 **Nothing has run against real infrastructure.** No AWS, R2 or Firebase
@@ -193,45 +193,64 @@ cannot be tested without real SQS.
 
 ---
 
-## Open findings from the pre-handoff review — start here
+## Findings from the pre-handoff review
 
 An adversarial review of all four phases raised 30 findings; **10 survived
-refutation**. Six are fixed (commits `c59fdd1`, `78f848a`). **Four remain, and
-they are the first work for a new session.** All were introduced by phases 1–4.
+refutation**. Six were fixed in commits `c59fdd1` and `78f848a`. The remaining
+four were addressed on 2026-08-12 — see
+[`sessions/2026-08-12_review-findings.md`](sessions/2026-08-12_review-findings.md).
+All ten were introduced by phases 1–4.
 
-### 1. `failedCount` is dropped, so the "files missing" notice never renders
-`netlify/functions/email-download.js:184` · medium
+None of it is deployed, and the content-type change in particular has never been
+run against real R2 — read the "Not exercised" section of that session log before
+trusting it.
 
-The processor sends `failedCount` in its callback; the handler destructures the
-body without it and never passes it to `sendArchiveReadyEmail`. So the notice
-built for ZIP-7 — the one telling a customer some files could not be included —
-cannot ever appear. The archive silently arrives short, which is the exact
-failure ZIP-7 was about. One-line fix plus a test.
+### 1. `failedCount` reaches the email
+`netlify/functions/email-download.js` · was: dropped
 
-### 2. Client accepts media by extension; the server rejects it by MIME type
-`netlify/functions/upload-init.js:126` · medium
+The processor sends `failedCount` in its callback; the handler destructured the
+body without it, so the notice built for ZIP-7 — telling a customer some files
+could not be included — could never render. The handler now forwards it, stores
+it on the `downloadJobs` record, and reads it back on the **reuse path**, which
+had the same defect and was not part of the original finding: a reused archive is
+short by the same files, and the second requester was being told nothing was
+missing.
 
-`isVideoFile`/`isImageFile` fall back to the file extension when `file.type` is
-empty — which happens for `.HEIC` and some Android pickers. `upload-init` only
-checks the MIME type, so those uploads pass client validation and come back 400.
-The guest sees a failure for a file the app told them was fine. Fix by having
-`upload-init` accept an extension fallback, matching the client.
+### 2. Client and server agree on what counts as media
+`netlify/functions/upload-init.js`, `src/services/r2UploadService.ts` · was: 400 on valid files
 
-### 3. The credential-rotation runbook's smoke test hits production
-`docs/runbooks/credential-rotation.md:45` · medium
+The client falls back to the extension when `file.type` is empty (`.HEIC`, some
+Android pickers) and sends `application/octet-stream`; `upload-init` checked the
+MIME type alone and returned 400 for a file the app had already accepted.
 
-The `aws lambda invoke` example queues a real SQS job and launches a real EC2
-instance, with an email address in the payload. Anyone following the runbook
-during a rotation triggers a production job. Replace with a dry-run or a check
-that asserts configuration without side effects.
+`resolveContentType()` now derives a media type from the extension when the
+declared one is not `image/*` or `video/*`. Note this could not be fixed
+server-side alone: `ContentType` is a **signed header** on the presigned URL and
+is HMAC'd into the upload token, so the resolved value is returned to the client
+and used for the PUT, the parts, and the completion call. It resolves from an
+allowlist rather than trusting the declared string — whatever is signed here is
+what R2 serves from the public host, so accepting `text/html` on a `.jpg` would be
+stored XSS on our own domain.
 
-### 4. Existing events need an `organizerEmail` backfill
-· medium, operational
+### 3. The credential-rotation runbook no longer touches production
+`docs/runbooks/credential-rotation.md`
 
-The casing fix normalizes at write time, so **events created before it still
-store whatever was typed** and remain invisible to their organizers. A one-off
-Admin SDK script lowercasing and trimming `organizerEmail` across the collection
-fixes it. Do this before telling any existing customer the dashboard exists.
+The `aws lambda invoke` example queued a real SQS job and launched a real EC2
+instance — the launcher requires only `eventId` and `email`, so an empty `photos`
+array is still a real job. Replaced with `get-function-configuration` checks that
+assert the variables are set without invoking anything and without printing
+secret values.
+
+### 4. Existing events still need the `organizerEmail` backfill — **operational, not done**
+
+The casing fix normalises at write time, so **events created before it still
+store whatever was typed** and remain invisible to their organizers.
+
+[`scripts/backfill-organizer-email.js`](../scripts/backfill-organizer-email.js)
+now exists. It is dry-run by default, idempotent, and prints every proposed
+change. **It has not been run** — it needs `FIREBASE_SERVICE_ACCOUNT` and a
+production Firestore, neither of which exists in a cloud session. Run it, dry
+first, before telling any existing customer the dashboard exists.
 
 The full verified output, including the 20 refuted findings and the evidence for
 each, is in the workflow journal referenced in that session's transcript.

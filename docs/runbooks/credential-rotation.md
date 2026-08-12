@@ -39,13 +39,41 @@ there is no window where a job fails.
 
 Verify the Lambda first — it now throws on a missing variable rather than baking
 an empty credential into an instance, so a misconfiguration surfaces immediately
-instead of producing a processor that fails every job with an opaque auth error:
+instead of producing a processor that fails every job with an opaque auth error.
+
+Read the configuration rather than invoking the function. The launcher requires
+only `eventId` and `email`; it does not validate that `photos` is non-empty, so
+an "empty" test payload still writes a real SQS message and starts a real spot
+instance — during a rotation, on production, billed, with a live email address in
+it. This check has no side effects and prints no secret values:
 
 ```bash
-aws lambda invoke --function-name wedding-photo-spot-launcher \
-  --payload '{"eventId":"smoke-test","email":"you@example.com","photos":[]}' \
-  /dev/stdout
+for var in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID \
+           R2_BUCKET_NAME R2_PUBLIC_URL; do
+  value=$(aws lambda get-function-configuration \
+    --function-name wedding-photo-spot-launcher \
+    --query "Environment.Variables.$var" --output text 2>/dev/null)
+  if [ -n "$value" ] && [ "$value" != "None" ]; then
+    echo "  ok       $var"
+  else
+    echo "  MISSING  $var"
+  fi
+done
 ```
+
+To confirm the new key pair specifically — not just that something is set —
+compare the access key ID, which is not itself a secret:
+
+```bash
+aws lambda get-function-configuration \
+  --function-name wedding-photo-spot-launcher \
+  --query 'Environment.Variables.R2_ACCESS_KEY_ID' --output text
+```
+
+That the credentials actually *work* is only proven by a real archive job. Do
+that deliberately, after the rotation is complete, using the first-real-test
+cases in [`../HANDOFF.md`](../HANDOFF.md) — not as a side effect of a
+configuration check.
 
 ## 3. Revoke the old tokens
 

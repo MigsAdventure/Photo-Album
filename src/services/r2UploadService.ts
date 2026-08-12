@@ -32,6 +32,14 @@ interface UploadTarget {
   partUrls?: string[];
   uploadToken: string;
   maxBytes: number;
+  /**
+   * What the server decided this file is, which is not always what we declared.
+   * The browser gives us no `file.type` for .HEIC and some Android pickers, so
+   * upload-init resolves the type from the extension. That resolved value is
+   * signed into the presigned URL and into the upload token, so every later step
+   * must use it rather than the value we sent.
+   */
+  contentType?: string;
 }
 
 /**
@@ -178,7 +186,7 @@ async function uploadThumbnail(
 
     if (target.mode !== 'single' || !target.uploadUrl) return null;
 
-    await putWithProgress(target.uploadUrl, thumb.blob, thumb.contentType);
+    await putWithProgress(target.uploadUrl, thumb.blob, target.contentType || thumb.contentType);
     return target.r2Key;
   } catch (error) {
     console.warn('⚠️ Thumbnail upload failed, continuing without one:', error);
@@ -215,6 +223,11 @@ export const uploadMediaToR2 = async (
 
   onProgress?.(5);
 
+  // Use the server's resolved type from here on. ContentType is a signed header
+  // on the presigned URL, so PUTting with our own guess after the server
+  // corrected it fails the signature check outright.
+  const effectiveContentType = target.contentType || contentType;
+
   // 5% start, 90% for the bytes, 5% to finalise.
   const reportBytes = (uploaded: number) => {
     onProgress?.(5 + Math.min(90, (uploaded / file.size) * 90));
@@ -224,7 +237,9 @@ export const uploadMediaToR2 = async (
 
   if (target.mode === 'single') {
     if (!target.uploadUrl) throw new Error('Upload target was incomplete');
-    await putWithProgress(target.uploadUrl, file, contentType, (loaded) => reportBytes(loaded));
+    await putWithProgress(target.uploadUrl, file, effectiveContentType, (loaded) =>
+      reportBytes(loaded)
+    );
   } else {
     const partSize = target.partSize ?? 16 * 1024 * 1024;
     const urls = target.partUrls ?? [];
@@ -246,7 +261,7 @@ export const uploadMediaToR2 = async (
       // obvious to a reader and to eslint, rather than relying on the timing.
       const bytesBeforeThisPart = confirmedBytes;
 
-      const eTag = await putPartWithRetry(urls[i], chunk, contentType, (loaded) =>
+      const eTag = await putPartWithRetry(urls[i], chunk, effectiveContentType, (loaded) =>
         reportBytes(bytesBeforeThisPart + loaded)
       );
 
@@ -267,7 +282,7 @@ export const uploadMediaToR2 = async (
     parts,
     uploadToken: target.uploadToken,
     maxBytes: target.maxBytes,
-    contentType,
+    contentType: effectiveContentType,
     fileName: file.name,
     ownerToken: await getOwnerToken(),
     thumbnailKey,
