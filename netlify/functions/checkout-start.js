@@ -46,6 +46,11 @@ const { checkoutBaseUrl, upgradeOffer } = require('./_lib/pricing');
 const { createRef } = require('./_lib/checkout-ref');
 const { getUploadState } = require('./_lib/plan');
 
+// Must match the route in src/App.tsx. Nothing checks these agree, and the app
+// has no catch-all route, so a mismatch drops a customer who has just paid onto a
+// blank page.
+const PAYMENT_RETURN_PATH = '/payment/success';
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -71,8 +76,11 @@ function json(statusCode, body) {
  * existed at all: the order form needs the event id to send back to `ghl-webhook`
  * when payment completes.
  *
- * Best-effort. A CRM that is down must not stop a customer from paying us, so
- * failures are logged and swallowed.
+ * Best-effort, but still awaited. Fire-and-forget is not an option on Netlify:
+ * the container is frozen the moment a response is returned, so an un-awaited
+ * request is simply cancelled — the same mistake that made `email-download`'s old
+ * background path silently do nothing. The timeout is therefore kept short,
+ * because it lands directly in the customer's wait before the redirect.
  */
 async function notifyCheckoutStarted({ eventId, eventTitle, organizerEmail, ref, offer }) {
   const url = process.env.GHL_CHECKOUT_WEBHOOK_URL;
@@ -93,7 +101,7 @@ async function notifyCheckoutStarted({ eventId, eventTitle, organizerEmail, ref,
         started_at: new Date().toISOString(),
         source: 'sharedmoments',
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(2500),
     });
 
     if (!response.ok) {
@@ -130,6 +138,17 @@ exports.handler = async (event) => {
     return json(400, { error: 'eventId is required' });
   }
 
+  try {
+    return await issueCheckout(event, eventId);
+  } catch (error) {
+    // Firestore and the CRM are both reachable from here. An unhandled throw
+    // would surface as a bare 500 to someone trying to give us money.
+    console.error('checkout-start failed:', error);
+    return json(500, { error: 'Could not start the upgrade. Please try again.' });
+  }
+};
+
+async function issueCheckout(event, eventId) {
   const db = getDb();
   const idToken = bearerToken(event.headers);
 
@@ -158,17 +177,22 @@ exports.handler = async (event) => {
     return json(200, { alreadyPremium: true, eventId });
   }
 
+  // createRef belongs in here with the pricing lookup: it throws when neither
+  // CHECKOUT_REF_SECRET nor INTERNAL_SERVICE_SECRET is set, and that is precisely
+  // the state a freshly deployed site is in. Outside the catch it produced an
+  // unhandled rejection and a bare 500, so the one misconfiguration most likely
+  // to happen was the one that reported itself worst.
   let offer;
   let baseUrl;
+  let ref;
   try {
     offer = upgradeOffer();
     baseUrl = checkoutBaseUrl();
+    ref = createRef(eventId);
   } catch (error) {
-    console.error('checkout-start: pricing is not configured —', error.message);
+    console.error('checkout-start: checkout is not configured —', error.message);
     return json(503, { error: 'Upgrades are unavailable right now. Please try again shortly.' });
   }
-
-  const ref = createRef(eventId);
 
   // The order form gets what it needs to identify and describe the purchase.
   // Note what is absent: no amount. The order form owns the price; sending our
@@ -184,7 +208,11 @@ exports.handler = async (event) => {
   if (siteUrl) {
     // Carry the ref home so the success page can identify the event without
     // depending on storage that may not exist on the device that paid.
-    params.set('return_url', `${siteUrl.replace(/\/$/, '')}/payment-success?ref=${ref}`);
+    //
+    // The path must match src/App.tsx exactly. It is `/payment/success`, not
+    // `/payment-success` — there is no catch-all route, so a wrong path lands a
+    // paying customer on a blank page with no way back.
+    params.set('return_url', `${siteUrl.replace(/\/$/, '')}${PAYMENT_RETURN_PATH}?ref=${ref}`);
   }
 
   const separator = baseUrl.includes('?') ? '&' : '?';
@@ -210,4 +238,4 @@ exports.handler = async (event) => {
     uploadsClosed: !uploadState.canUpload,
     closesAt: uploadState.closesAt ? uploadState.closesAt.toISOString() : null,
   });
-};
+}

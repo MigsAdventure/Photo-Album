@@ -81,9 +81,15 @@ function createRef(eventId) {
  *          enumeration hole the signature exists to close.
  */
 function readRef(ref) {
-  if (typeof ref !== 'string' || !ref.includes('.')) return null;
+  if (typeof ref !== 'string') return null;
 
-  const [payloadB64, signature] = ref.split('.');
+  // Exactly two parts. Destructuring `split('.')` would silently ignore anything
+  // after the second, so `<payload>.<signature>.anything` verified fine and the
+  // reference had no single canonical form.
+  const parts = ref.split('.');
+  if (parts.length !== 2) return null;
+
+  const [payloadB64, signature] = parts;
   if (!payloadB64 || !signature) return null;
 
   let expected;

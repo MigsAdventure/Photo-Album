@@ -5,7 +5,7 @@
  *
  * Why polling, rather than trusting the redirect
  * ----------------------------------------------
- * Coming back to `/payment-success` means the customer finished the form. It
+ * Coming back to `/payment/success` means the customer finished the form. It
  * does not mean the money has settled or that GoHighLevel has called our
  * webhook yet — the redirect and the webhook are two independent races, and the
  * redirect usually wins. The old page assumed otherwise: it said "Payment

@@ -182,12 +182,57 @@ so there is now one place to change rather than three to remember.
 - [ ] Configure the order form to accept `ref`, `event_id`, `event_title`,
       `organizer_email` and to send `ref`/`event_id` back on the payment webhook.
 - [ ] Remove `REACT_APP_GHL_UPGRADE_WEBHOOK` — now unused.
-- [ ] Point the order form's return URL at `/payment-success?ref=...`. Links
+- [ ] Point the order form's return URL at **`/payment/success?ref=...`** — with a
+      slash, matching the route in `App.tsx`. There is no catch-all route, so the
+      hyphenated form lands a paying customer on a blank page. Links
       without a ref still work via the legacy `event_id` path.
+
+## Defects found reviewing this session's own work
+
+A pass back over everything above, before finalising. All five were introduced by
+this session; none were in the original code.
+
+**The return URL pointed at a route that does not exist.** `checkout-start` built
+`/payment-success?ref=…`; the route in `App.tsx` is `/payment/success`. There is
+no catch-all route, so **every customer completing a payment would have landed on
+a blank page** — the single worst outcome available in this flow, and it would
+have looked like the payment failed. The path is now a named constant and
+`tests/checkout.test.js` parses `App.tsx`'s `<Route>` list and asserts it is one
+of them.
+
+**The upgrade modal re-issued checkout on every parent render.** Its effect
+listed `onClose` and `onUpgradeSuccess` in the dependency array, which reads as
+correct and is not: the parent supplies both as inline arrows, so their identity
+changes every render, and `EnhancedPhotoGallery` re-renders on every Firestore
+photo update because the gallery is live. With the modal open during a real
+event, **every photo a guest uploaded issued a fresh checkout reference and
+posted another `checkout_started` to the CRM** — the same category of defect as
+the pre-payment CRM call this session removed. The callbacks now live in refs.
+
+**`createRef` could throw a bare 500.** It sits outside the try/catch that gives
+pricing a graceful 503, and it throws when neither `CHECKOUT_REF_SECRET` nor
+`INTERNAL_SERVICE_SECRET` is set — exactly the state a freshly deployed site is
+in. The most likely misconfiguration reported itself worst.
+
+**`readRef` accepted trailing junk.** Destructuring `split('.')` ignores anything
+after the second part, so `<payload>.<signature>.anything` verified. Not
+exploitable on its own — a valid signature is still required — but it meant the
+reference had no canonical form.
+
+**No top-level error handling.** Firestore and the CRM are both reachable from
+`checkout-start`, and an unhandled throw would have surfaced as a bare 500 to
+someone trying to pay.
+
+The lesson worth keeping: **three of these are invisible to the type checker, the
+build and the tests as they stood.** A wrong URL string, a dependency array that
+is wrong in a way that looks right, and an unguarded throw all type-check
+perfectly. The two that are now tested are tested by *parsing the other file* —
+the same technique as the client/server parity tests, and the only thing that
+catches this class.
 
 ## Verification
 
-`npm run test:all` → **151 passing** across six suites, up from 136. Build clean,
+`npm run test:all` → **153 passing** across six suites, up from 136. Build clean,
 `tsc --noEmit` clean.
 
 The 15 new tests concentrate on the negative cases for the signed ref — swapped

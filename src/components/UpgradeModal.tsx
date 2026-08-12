@@ -20,7 +20,7 @@
 //
 // Refs: AUDIT_2026-08.md UX-1, GHL-2
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -82,10 +82,31 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ open, onClose, eventId, onU
   const [error, setError] = useState<string | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
 
+  // The parent passes these as inline arrows, so they get a new identity on every
+  // one of its renders. Holding them in refs keeps them out of the effect's
+  // dependencies below — see the note there for why that matters here
+  // specifically.
+  const onCloseRef = useRef(onClose);
+  const onUpgradeSuccessRef = useRef(onUpgradeSuccess);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    onUpgradeSuccessRef.current = onUpgradeSuccess;
+  });
+
   // Fetch the offer when the dialog opens, so the price and the closing date are
   // on screen before the customer decides — rather than being discovered on the
   // payment page. This also surfaces "you are not the organizer" here, instead of
   // after a redirect to a form they cannot complete.
+  //
+  // This must run once per opening, and nothing else. `onClose` and
+  // `onUpgradeSuccess` were in the dependency array, which looked correct and was
+  // not: the parent supplies them as inline arrows, and EnhancedPhotoGallery
+  // re-renders on every Firestore photo update because the gallery is live. So
+  // with the modal open during an actual event, every photo a guest uploaded
+  // re-ran this — issuing a fresh checkout reference and posting another
+  // `checkout_started` to the CRM each time. Which is the same category of defect
+  // as the pre-payment CRM call this whole change set removed.
   useEffect(() => {
     if (!open) return;
 
@@ -103,8 +124,8 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ open, onClose, eventId, onU
         if (cancelled) return;
 
         if (err instanceof AlreadyPremiumError) {
-          onUpgradeSuccess();
-          onClose();
+          onUpgradeSuccessRef.current();
+          onCloseRef.current();
           return;
         }
 
@@ -124,7 +145,7 @@ const UpgradeModal: React.FC<UpgradeModalProps> = ({ open, onClose, eventId, onU
     return () => {
       cancelled = true;
     };
-  }, [open, eventId, onClose, onUpgradeSuccess]);
+  }, [open, eventId]);
 
   const handleUpgrade = () => {
     if (!session) return;

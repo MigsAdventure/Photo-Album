@@ -14,6 +14,8 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 
@@ -166,6 +168,17 @@ describe('the checkout reference refuses anything it did not sign', () => {
       assert.strictEqual(readRef(bad), null, `expected null for ${JSON.stringify(bad)}`);
     }
   });
+
+  test('a valid ref with anything appended is rejected', () => {
+    const { createRef, readRef } = loadRef();
+    const ref = createRef('evt_1');
+
+    // Destructuring split('.') ignores a third part, so this verified fine and
+    // the reference had no canonical form — two different strings resolving to
+    // the same event.
+    assert.strictEqual(readRef(`${ref}.junk`), null);
+    assert.strictEqual(readRef(`${ref}.`), null);
+  });
 });
 
 describe('the checkout reference fails closed when unconfigured', () => {
@@ -191,6 +204,39 @@ describe('the checkout reference fails closed when unconfigured', () => {
     delete process.env.INTERNAL_SERVICE_SECRET;
 
     assert.throws(() => loadRef().createRef('evt_1'), /not configured/i);
+  });
+});
+
+// ------------------------------------------------------- the return path agrees
+
+describe('the checkout return path matches a real route', () => {
+  // checkout-start builds the URL the customer comes back to. Nothing links it to
+  // the router, and the app has no catch-all route, so a mismatch drops someone
+  // who has just paid onto a blank page with no way back. It was written as
+  // `/payment-success` while the route is `/payment/success`.
+  test('PAYMENT_RETURN_PATH is a route defined in App.tsx', () => {
+    const fnSource = fs.readFileSync(
+      path.join(__dirname, '..', 'netlify', 'functions', 'checkout-start.js'),
+      'utf8'
+    );
+
+    const match = fnSource.match(/const PAYMENT_RETURN_PATH = '([^']+)'/);
+    assert.ok(match, 'checkout-start.js should define PAYMENT_RETURN_PATH');
+
+    const returnPath = match[1];
+
+    const appSource = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'App.tsx'),
+      'utf8'
+    );
+
+    const routes = [...appSource.matchAll(/<Route\s+path="([^"]+)"/g)].map((m) => m[1]);
+
+    assert.ok(
+      routes.includes(returnPath),
+      `checkout-start returns customers to "${returnPath}", which is not one of the ` +
+        `routes in App.tsx: ${routes.join(', ')}`
+    );
   });
 });
 
