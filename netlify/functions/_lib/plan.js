@@ -53,10 +53,20 @@ const ABUSE_CEILING = 5000;
 function uploadWindowEnd(event) {
   const created = toDate(event.createdAt) || new Date();
 
-  // Event dates are stored as 'YYYY-MM-DD'. Treat them as ending at local
-  // midnight, so an event "on the 14th" stays open through the whole of the
-  // 14th plus the window, rather than closing at 00:00 on the 14th.
-  const parsed = typeof event.date === 'string' ? new Date(`${event.date}T23:59:59`) : null;
+  // Event dates are stored as 'YYYY-MM-DD'. Anchor to the end of that day so an
+  // event "on the 14th" stays open through the 14th, not until 00:00 on it.
+  //
+  // The Z is load-bearing. Without a zone suffix, JavaScript parses a datetime
+  // string as LOCAL time — so this file computed one answer in the browser (the
+  // guest's timezone) and a different one in a Netlify function (UTC), up to 13
+  // hours apart. The UI would invite an upload the server then refused, or hide
+  // one it would have accepted, and which happened depended on where the guest
+  // was standing.
+  //
+  // The parity test could not catch this: both copies run in the same process
+  // under the same TZ, so they agreed there and disagreed only in production.
+  // Pinning both to UTC makes the answer independent of where it is computed.
+  const parsed = typeof event.date === 'string' ? new Date(`${event.date}T23:59:59Z`) : null;
   const anchor = parsed && !Number.isNaN(parsed.getTime()) && parsed > created ? parsed : created;
 
   return new Date(anchor.getTime() + FREE_UPLOAD_WINDOW_HOURS * 60 * 60 * 1000);

@@ -65,18 +65,33 @@ function safeEquals(a, b) {
 /**
  * Does the presented secret prove ownership of this photo?
  *
- * Current scheme: the document holds sha256(secret).
- * LEGACY scheme:  the document holds the raw session id. Accepted for photos
- *                 uploaded before this change; remove once those have aged out.
+ * The document holds sha256(secret). The secret itself never leaves the
+ * uploader's browser except in a call to this endpoint.
+ *
+ * REMOVED — a legacy branch that also accepted `recorded === ownerSecret`
+ * -----------------------------------------------------------------------
+ * It was there so photos uploaded before the hashing change stayed deletable by
+ * their uploader. It was a complete bypass of the thing this function exists to
+ * enforce.
+ *
+ * `uploadedBy` is returned to every client by subscribeToPhotos — the whole
+ * reason we moved to storing a hash. So any gallery viewer could read another
+ * guest's `uploadedBy` value and simply send it back as `ownerSecret`: the
+ * legacy comparison matched it against itself and returned true. That is
+ * precisely the cross-guest deletion hole SEC-5 was written to close,
+ * reintroduced by the compatibility branch meant to soften the migration.
+ *
+ * The scheme it was preserving was never safe either — a plaintext session id in
+ * a world-readable document is not a secret. So there is nothing to migrate
+ * carefully: pre-hash photos are simply no longer deletable by their uploader.
+ * The event organizer can still delete anything in their own event via the
+ * verified-ID-token path below, which is the better answer anyway.
  */
 function ownsPhoto(photoData, ownerSecret) {
   const recorded = photoData.uploadedBy;
   if (!recorded || !ownerSecret) return false;
 
-  if (safeEquals(recorded, sha256Hex(ownerSecret))) return true;
-  if (safeEquals(recorded, ownerSecret)) return true; // LEGACY
-
-  return false;
+  return safeEquals(recorded, sha256Hex(ownerSecret));
 }
 
 /**

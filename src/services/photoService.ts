@@ -104,6 +104,19 @@ export const subscribeToPhotos = (
 };
 
 export const createEvent = async (title: string, date: string, organizerEmail: string): Promise<string> => {
+  // Normalize at the point of storage. The organizer dashboard queries
+  // where('organizerEmail','==', signedInEmail.toLowerCase()), and Firestore's
+  // == is byte-exact — so an event created by someone typing
+  // "Sarah.Jones@Gmail.com" was invisible to its own organizer forever, showing
+  // the empty "No events yet" state with no error to explain it.
+  //
+  // The security rules and every other consumer already lowercase both sides;
+  // the query filter was the one place that could not, because a Firestore
+  // filter cannot transform the stored value. Fixing it here is the only place
+  // that works for new events. Pre-existing events need the backfill noted in
+  // docs/HANDOFF.md.
+  const normalizedEmail = organizerEmail.trim().toLowerCase();
+
   // Generate custom event ID using event date, title, and random hash
   const customEventId = generateEventId(title, date);
   
@@ -117,7 +130,7 @@ export const createEvent = async (title: string, date: string, organizerEmail: s
     date,
     createdAt: new Date(),
     isActive: true,
-    organizerEmail,
+    organizerEmail: normalizedEmail,
     planType: 'free',
     photoLimit: 2,
     photoCount: 0

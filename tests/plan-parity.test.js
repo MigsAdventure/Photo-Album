@@ -190,6 +190,70 @@ describe('what we tell people', () => {
   });
 });
 
+// ------------------------------------------------------------- timezone
+
+describe('the answer does not depend on where it is computed', () => {
+  // The parity block below cannot catch this class of bug by construction: both
+  // implementations run in the same process under the same TZ, so they agree
+  // there and diverge only in production, where the browser is in the guest's
+  // timezone and the Netlify function is in UTC.
+  //
+  // The original code parsed `${date}T23:59:59` with no zone suffix, which
+  // JavaScript reads as LOCAL time — up to a 13-hour disagreement about when
+  // uploads close. These tests pin the behaviour to UTC by running the same
+  // input under several TZ settings.
+
+  const TIMEZONES = ['UTC', 'America/Los_Angeles', 'Asia/Tokyo', 'Pacific/Kiritimati', 'Etc/GMT+12'];
+
+  function withTimezone(tz, fn) {
+    const previous = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      return fn();
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  }
+
+  test('the closing time is identical in every timezone', () => {
+    const evt = event({ date: '2026-06-14' });
+
+    const results = TIMEZONES.map((tz) =>
+      withTimezone(tz, () => server.uploadWindowEnd(evt).getTime())
+    );
+
+    assert.strictEqual(
+      new Set(results).size,
+      1,
+      `uploadWindowEnd differs by timezone: ${TIMEZONES.map((tz, i) => `${tz}=${new Date(results[i]).toISOString()}`).join(', ')}`
+    );
+  });
+
+  test('the upload decision is identical in every timezone', () => {
+    // A moment deliberately close to the boundary, where a local-time parse
+    // would flip the answer between zones.
+    const evt = event({ date: '2026-06-14' });
+    const boundary = new Date('2026-06-17T20:00:00Z');
+
+    const decisions = TIMEZONES.map((tz) =>
+      withTimezone(tz, () => server.getUploadState(evt, boundary).canUpload)
+    );
+
+    assert.strictEqual(
+      new Set(decisions).size,
+      1,
+      `canUpload differs by timezone: ${TIMEZONES.map((tz, i) => `${tz}=${decisions[i]}`).join(', ')}`
+    );
+  });
+
+  test('the window closes exactly 72 hours after the end of the event day, UTC', () => {
+    const closesAt = server.uploadWindowEnd(event({ date: '2026-06-14' }));
+    // 2026-06-14T23:59:59Z + 72h
+    assert.strictEqual(closesAt.toISOString(), '2026-06-17T23:59:59.000Z');
+  });
+});
+
 // ---------------------------------------------------------------- parity
 
 describe('client and server agree', () => {

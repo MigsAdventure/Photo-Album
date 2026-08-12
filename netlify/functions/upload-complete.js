@@ -161,6 +161,23 @@ exports.handler = async (event) => {
       return json(413, { error: 'The uploaded file was larger than expected' });
     }
 
+    // thumbnailKey is NOT covered by the upload token, because the thumbnail
+    // gets its own upload-init call with its own token. Left unchecked it is an
+    // arbitrary-object handle: whatever it names is written onto the photo
+    // document, and delete-photo later deletes it. Chained with a deletion
+    // primitive that is a way to remove any object in the bucket.
+    //
+    // Constrain it to this event's own media prefix — the same shape upload-init
+    // generates — so the worst case is scoped to one event's own files.
+    const safeThumbnailKey =
+      typeof thumbnailKey === 'string' && thumbnailKey.startsWith(`media/${eventId}/`)
+        ? thumbnailKey
+        : null;
+
+    if (thumbnailKey && !safeThumbnailKey) {
+      console.warn(`upload-complete: rejected out-of-prefix thumbnailKey for ${eventId}`);
+    }
+
     const db = getDb();
     const mediaType = isVideo(contentType, fileName) ? 'video' : 'photo';
 
@@ -172,8 +189,8 @@ exports.handler = async (event) => {
       mediaType,
       r2Key,
       url: publicUrlFor(r2Key),
-      thumbnailUrl: thumbnailKey ? publicUrlFor(thumbnailKey) : null,
-      thumbnailKey: thumbnailKey || null,
+      thumbnailUrl: safeThumbnailKey ? publicUrlFor(safeThumbnailKey) : null,
+      thumbnailKey: safeThumbnailKey,
       width: Number.isFinite(Number(width)) ? Number(width) : null,
       height: Number.isFinite(Number(height)) ? Number(height) : null,
       duration: Number.isFinite(Number(duration)) ? Number(duration) : null,

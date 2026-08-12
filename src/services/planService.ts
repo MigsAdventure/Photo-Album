@@ -48,7 +48,11 @@ export function uploadWindowEnd(event: Pick<Event, 'date' | 'createdAt'>): Date 
 
   // Dates are stored 'YYYY-MM-DD'. Anchor to the end of that day so an event
   // "on the 14th" stays open through the 14th, not until 00:00 on it.
-  const parsed = typeof event.date === 'string' ? new Date(`${event.date}T23:59:59`) : null;
+  //
+  // The Z is load-bearing — see the note in netlify/functions/_lib/plan.js.
+  // Without it JavaScript parses this as LOCAL time, so the browser and the
+  // Netlify function disagreed by up to 13 hours about when uploads close.
+  const parsed = typeof event.date === 'string' ? new Date(`${event.date}T23:59:59Z`) : null;
   const anchor = parsed && !Number.isNaN(parsed.getTime()) && parsed > created ? parsed : created;
 
   return new Date(anchor.getTime() + FREE_UPLOAD_WINDOW_HOURS * 60 * 60 * 1000);

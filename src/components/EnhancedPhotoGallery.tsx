@@ -41,6 +41,7 @@ import {
 import { useSwipeable } from 'react-swipeable';
 import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, getPhotoOwnershipInfo } from '../services/photoService';
 import { getCurrentUserEmail, onAuthChange } from '../services/authService';
+import { getUploadState, explainUploadState } from '../services/planService';
 import { preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
@@ -600,14 +601,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 label={
                   event.planType === 'premium' 
                     ? `${photos.length} photos • Unlimited`
-                    : `${photos.length}/${event.photoLimit} photos`
+                    : `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'}`
                 }
                 color={
-                  event.planType === 'premium' 
+                  event.planType === 'premium'
                     ? 'success'
-                    : photos.length >= event.photoLimit 
-                      ? 'error' 
-                      : 'primary'
+                    : getUploadState(event).canUpload
+                      ? 'primary'
+                      : 'default'
                 }
                 variant="outlined"
                 sx={{ fontWeight: 'bold' }}
@@ -669,9 +670,16 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           </Box>
           
           {/* Limit Warning for Free Users */}
-          {!eventLoading && event && event.planType === 'free' && photos.length >= event.photoLimit && (
+          {/*
+            Was: photos.length >= event.photoLimit — the count-based paywall UX-1
+            removed. It survived here after BottomNavbar was fixed, so free events
+            still showed guests "Upload limit reached • Upgrade" permanently while
+            uploads carried on working. Now driven by the actual window state, and
+            only shown once uploads have genuinely closed.
+          */}
+          {!eventLoading && event && !getUploadState(event).canUpload && (
             <Typography variant="body2" color="error" sx={{ fontWeight: 'bold' }}>
-              Upload limit reached • Upgrade for unlimited photos
+              {explainUploadState(getUploadState(event), 'guest')}
             </Typography>
           )}
         </Box>
@@ -745,10 +753,25 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               onTouchMove={handleTouchMove}
             >
               {isVideo(photo) ? (
-                // Video thumbnail with actual frame
+                /*
+                  A video tile shows a still, not a <video> element.
+                  Phase 3 pointed this at getThumbnailUrl but left
+                  component="video". thumbnailUrl is a WebP/JPEG frame grab
+                  (thumbnailService.generateVideoThumbnail), and a video element
+                  cannot decode a still image — so it fired onError and every
+                  video tile in every gallery fell back to a 🎬 emoji on a
+                  gradient. Strictly worse than before the thumbnail work, which
+                  at least loaded the video and seeked to a real frame.
+
+                  When the photo predates thumbnails, getThumbnailUrl falls back
+                  to the media URL, which an <img> cannot render either — so
+                  those keep the placeholder, which is the correct outcome for a
+                  video with no poster.
+                */
                 <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
                   <Box
-                    component="video"
+                    component={photo.thumbnailUrl ? 'img' : 'video'}
+                    loading="lazy"
                     src={getThumbnailUrl(photo)}
                     muted
                     preload="metadata"
@@ -758,13 +781,17 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       objectFit: 'cover',
                       backgroundColor: 'grey.900'
                     }}
-                    onLoadedMetadata={(e) => {
+                    onLoadedMetadata={(e: React.SyntheticEvent<HTMLElement>) => {
+                      // Only meaningful on the <video> fallback path, for photos
+                      // that predate thumbnails. Seek in a little way — the first
+                      // frame of a phone video is usually black.
                       const video = e.target as HTMLVideoElement;
-                      // Seek to 3 seconds for thumbnail
-                      video.currentTime = Math.min(3, video.duration * 0.1);
+                      if (video.tagName === 'VIDEO') {
+                        video.currentTime = Math.min(3, video.duration * 0.1);
+                      }
                     }}
-                    onError={(e) => {
-                      // Fallback: show video icon if frame extraction fails
+                    onError={(e: React.SyntheticEvent<HTMLElement>) => {
+                      // Last resort: no poster and the video will not preview.
                       const video = e.target as HTMLVideoElement;
                       const parent = video.parentElement;
                       if (parent) {
