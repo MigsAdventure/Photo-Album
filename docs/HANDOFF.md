@@ -7,7 +7,8 @@ session log for whatever phase you are touching.
 
 ## Where things stand
 
-Four phases of the audit are **code complete and pushed**, none deployed.
+Four phases of the audit are **code complete and pushed**, plus two follow-up
+pieces of work. None of it is deployed.
 
 | Phase | State | Blocked on |
 |---|---|---|
@@ -15,10 +16,17 @@ Four phases of the audit are **code complete and pushed**, none deployed.
 | 2 — Download pipeline | Complete | Lambda must deploy before Netlify |
 | 3 — Storage plane | Complete | **R2 CORS policy** — uploads fail without it |
 | 4 — Product | Complete | Two Firebase console settings |
+| Post-review fixes | Complete | Nothing — but the `organizerEmail` backfill still needs running |
+| Payments & upgrade UX | Complete | **`CHECKOUT_URL`** + order-form config, or nobody can pay |
 | 5 — Modernize | Not started | — |
 | 6 — Differentiate | Not started | — |
 
-Branch: `claude/photo-album-audit-be5aap` · 18 commits from `b897696`
+The two follow-ups are [`sessions/2026-08-12_review-findings.md`](sessions/2026-08-12_review-findings.md)
+(the four findings the adversarial review left open) and
+[`sessions/2026-08-12_payment-flow-and-upgrade-ux.md`](sessions/2026-08-12_payment-flow-and-upgrade-ux.md)
+(the payment surfaces still describing the paywall phase 4 removed).
+
+Branch: `claude/photo-album-audit-be5aap` · 20 commits from `b897696`
 Tests: `npm run test:all` → **151 passing** across six suites
 Build: clean, no warnings
 

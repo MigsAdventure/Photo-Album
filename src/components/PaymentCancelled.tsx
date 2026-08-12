@@ -1,5 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+// Shown when someone backs out of checkout.
+//
+// This is the least alarming of the three return pages and had the most alarming
+// copy: it told customers they were "on the free plan with a limit of
+// {photoLimit || 20} photos". There is no photo limit — UX-1 replaced the count
+// with an upload window — and the number was wrong twice over, since the field
+// was written as 2 at creation, so the 20 fallback only ever showed when the
+// data was missing.
+//
+// It also resolved the event through `localStorage.pendingUpgrade`, which does
+// not survive paying on a second device. That is now the shared resolver.
+//
+// Refs: AUDIT_2026-08.md UX-1, UX-7
+
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Container,
   Typography,
@@ -7,284 +21,90 @@ import {
   Card,
   CardContent,
   Button,
-  Alert,
-  CircularProgress
+  CircularProgress,
+  Stack,
 } from '@mui/material';
-import {
-  Cancel,
-  ArrowBack,
-  Star,
-  PhotoLibrary
-} from '@mui/icons-material';
-import { getEvent } from '../services/photoService';
-import { getUploadState } from '../services/planService';
-import { Event } from '../types';
-
-/** The closing date, phrased for a customer rather than as a timestamp. */
-function formatClosesAt(event: Event | null): string | null {
-  if (!event) return null;
-
-  const closesAt = getUploadState(event).closesAt;
-  if (!closesAt) return null;
-
-  return closesAt.toLocaleDateString(undefined, {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-  });
-}
+import { ArrowBack, Star } from '@mui/icons-material';
+import { useCheckoutEvent } from '../services/paymentReturn';
 
 const PaymentCancelled: React.FC = () => {
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [event, setEvent] = useState<Event | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Try URL parameter first, then localStorage as fallback
-  const getEventId = (): string | null => {
-    const urlEventId = searchParams.get('event_id');
-    if (urlEventId && urlEventId !== '{event_id}') {
-      console.log('✅ PaymentCancelled: Got event_id from URL:', urlEventId);
-      return urlEventId;
-    }
-    
-    console.log('⚠️ PaymentCancelled: No valid event_id in URL, checking localStorage...');
-    
-    try {
-      const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
-      if (pendingUpgradeData) {
-        const upgradeData = JSON.parse(pendingUpgradeData);
-        const isRecent = upgradeData.timestamp && (Date.now() - upgradeData.timestamp < 3600000); // 1 hour
-        
-        if (isRecent && upgradeData.eventId) {
-          console.log('✅ PaymentCancelled: Got event_id from localStorage:', upgradeData.eventId);
-          // Don't clear localStorage here since user cancelled - they might try again
-          return upgradeData.eventId;
-        } else if (!isRecent) {
-          console.log('⚠️ PaymentCancelled: localStorage data expired, clearing...');
-          localStorage.removeItem('pendingUpgrade');
-        }
-      }
-    } catch (error) {
-      console.error('❌ PaymentCancelled: Error reading localStorage:', error);
-      localStorage.removeItem('pendingUpgrade');
-    }
-    
-    return null;
-  };
-
-  const eventId = getEventId();
-
-  useEffect(() => {
-    const loadEventData = async () => {
-      if (!eventId) {
-        console.error('❌ PaymentCancelled: No event_id found in URL or localStorage');
-        setError('Event ID not found. Please return to your event gallery.');
-        setLoading(false);
-        return;
-      }
-
-      console.log('🔍 PaymentCancelled: Loading event data for ID:', eventId);
-
-      try {
-        const eventData = await getEvent(eventId);
-        console.log('📊 PaymentCancelled: Event data loaded:', eventData);
-        
-        if (eventData) {
-          setEvent(eventData);
-          console.log('✅ PaymentCancelled: Event loaded successfully:', eventData.title);
-        } else {
-          console.error('❌ PaymentCancelled: Event not found for ID:', eventId);
-          setError(`Event not found (ID: ${eventId})`);
-        }
-      } catch (error) {
-        console.error('❌ PaymentCancelled: Failed to load event:', error);
-        setError('Failed to load event data: ' + String(error));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadEventData();
-  }, [eventId]);
-
-  const handleReturnToGallery = () => {
-    if (eventId) {
-      navigate(`/event/${eventId}`);
-    } else {
-      navigate('/');
-    }
-  };
-
-  const handleTryAgain = () => {
-    if (eventId) {
-      // Navigate back to the event page where they can try upgrading again
-      navigate(`/event/${eventId}`);
-    } else {
-      navigate('/');
-    }
-  };
+  const { eventId, eventTitle, loading } = useCheckoutEvent();
 
   if (loading) {
     return (
-      <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
-        <CircularProgress size={60} sx={{ mb: 2 }} />
-        <Typography variant="h6" color="text.secondary">
-          Loading event details...
-        </Typography>
+      <Container maxWidth="sm" sx={{ py: 10, textAlign: 'center' }}>
+        <CircularProgress size={48} />
       </Container>
     );
   }
-
-  if (error) {
-    return (
-      <Container maxWidth="sm" sx={{ py: 8 }}>
-        <Alert severity="error" sx={{ mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Error Loading Event
-          </Typography>
-          <Typography variant="body1">
-            {error}
-          </Typography>
-        </Alert>
-        <Button
-          variant="outlined"
-          onClick={() => {
-            if (eventId) {
-              navigate(`/event/${eventId}`);
-            } else {
-              navigate('/');
-            }
-          }}
-          fullWidth
-        >
-          {eventId ? 'Go to Event Gallery' : 'Go to Home'}
-        </Button>
-      </Container>
-    );
-  }
-
-  const closesAtText = formatClosesAt(event);
 
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box textAlign="center" mb={4}>
-        <Cancel
-          sx={{ 
-            fontSize: 80, 
-            color: 'warning.main', 
-            mb: 2
-          }} 
-        />
-        <Typography variant="h3" gutterBottom color="warning.main" sx={{ fontWeight: 600 }}>
-          Payment Cancelled
-        </Typography>
-        <Typography variant="h6" color="text.secondary" sx={{ mb: 3 }}>
-          No worries! You can upgrade to premium anytime.
-        </Typography>
-      </Box>
-
-      {/* Event Details Card */}
-      <Card elevation={3} sx={{ mb: 4, borderRadius: 3 }}>
-        <CardContent sx={{ p: 4 }}>
-          <Typography variant="h5" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-            <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
-            {event?.title || 'Event Gallery'}
-          </Typography>
-          
-          {/*
-            Was: "you're on the free plan with a limit of {photoLimit || 20}
-            photos". There is no photo limit — UX-1 replaced the count with an
-            upload window — and the number shown was doubly wrong: the field is
-            written as 2 at creation, so the fallback of 20 only ever appeared
-            when the data was missing. Now it states the actual rule, and the
-            actual date where we have one.
-          */}
-          <Alert severity="info" sx={{ my: 3 }}>
-            <Typography variant="body1">
-              Nothing has changed — your gallery is still live and guests can keep uploading.
-              {closesAtText
-                ? ` Free uploads run until ${closesAtText}.`
-                : ' Free uploads run for a limited window after your event date.'}
-            </Typography>
-          </Alert>
-
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-            Upgrading later gets you:
+    <Container maxWidth="sm" sx={{ py: { xs: 6, sm: 10 } }}>
+      <Card elevation={0} sx={{ borderRadius: 4, border: '1px solid', borderColor: 'grey.200' }}>
+        <CardContent sx={{ p: { xs: 3, sm: 5 }, textAlign: 'center' }}>
+          <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+            No problem — nothing was charged
           </Typography>
 
-          <Box component="ul" sx={{ pl: 2, m: 0 }}>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              Uploads that stay open, with no closing date
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              Every photo and video at full quality
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              Full-album downloads whenever you want them
-            </Typography>
-            <Typography component="li" variant="body1">
-              Your own cover photo and colours on the gallery
-            </Typography>
-          </Box>
-        </CardContent>
-      </Card>
+          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+            {eventTitle ? (
+              <>
+                <strong>{eventTitle}</strong> is exactly as you left it. Guests can still upload,
+                and everything already in the gallery stays there.
+              </>
+            ) : (
+              'Your gallery is exactly as you left it. Guests can still upload, and everything already in it stays there.'
+            )}
+          </Typography>
 
-      {/* Action Buttons */}
-      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
-        <Button
-          variant="contained"
-          size="large"
-          onClick={handleReturnToGallery}
-          startIcon={<ArrowBack />}
-          sx={{ 
-            px: 4, 
-            py: 1.5,
-            fontWeight: 600
-          }}
-        >
-          Return to Gallery
-        </Button>
-        
-        <Button
-          variant="outlined"
-          size="large"
-          onClick={handleTryAgain}
-          startIcon={<Star />}
-          sx={{ 
-            px: 4, 
-            py: 1.5,
-            fontWeight: 600,
-            borderColor: 'primary.main',
-            color: 'primary.main',
-            '&:hover': {
-              borderColor: 'primary.dark',
-              backgroundColor: 'primary.50'
-            }
-          }}
-        >
-          Try Upgrade Again
-        </Button>
-      </Box>
-
-      {/* Support Note */}
-      <Box textAlign="center" sx={{ mt: 4 }}>
-        <Typography variant="body2" color="text.secondary">
-          Need help? Contact us at{' '}
-          <Typography 
-            component="a" 
-            href="mailto:support@socialboostai.com"
-            sx={{ 
-              color: 'primary.main',
-              textDecoration: 'none',
-              '&:hover': { textDecoration: 'underline' }
+          <Box
+            sx={{
+              textAlign: 'left',
+              p: 2.5,
+              mb: 3,
+              borderRadius: 2,
+              bgcolor: 'grey.50',
+              border: '1px solid',
+              borderColor: 'grey.200',
             }}
           >
-            support@socialboostai.com
-          </Typography>
-        </Typography>
-      </Box>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+              If you upgrade later, you get:
+            </Typography>
+            <Typography variant="body2" color="text.secondary" component="ul" sx={{ pl: 2, m: 0 }}>
+              <li>Uploads that stay open, with no closing date</li>
+              <li>Every photo and video at full quality</li>
+              <li>Full-album downloads whenever you want them</li>
+              <li>Your own cover photo and colours on the gallery</li>
+            </Typography>
+          </Box>
+
+          <Stack spacing={1}>
+            <Button
+              variant="contained"
+              size="large"
+              fullWidth
+              startIcon={<ArrowBack />}
+              onClick={() => navigate(eventId ? `/event/${eventId}` : '/')}
+              sx={{ py: 1.5, textTransform: 'none', fontWeight: 600 }}
+            >
+              {eventId ? 'Back to the gallery' : 'Go to SharedMoments'}
+            </Button>
+
+            {eventId && (
+              <Button
+                fullWidth
+                startIcon={<Star />}
+                onClick={() => navigate(`/event/${eventId}`)}
+                sx={{ textTransform: 'none' }}
+              >
+                Change your mind? Upgrade from the gallery
+              </Button>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
     </Container>
   );
 };

@@ -32,6 +32,11 @@ explanation had not.
   the URL, so scanning the QR on a phone and paying on a laptop works.
 - **The post-payment page showed customers debug output**, and announced success
   before the upgrade existed. It now polls until the plan actually flips.
+- **The failed-payment page rendered `?reason=` from the URL** inside an alert
+  headed "Payment Error Details" and styled as ours — usable to display arbitrary
+  text under our branding. Failure codes now map to copy we control.
+- All three return pages (success, cancelled, **failed**) share one resolver.
+  Cancelled and failed were still on `localStorage` after the first pass.
 - Removed an `UpgradeModal` in `BottomNavbar` that could never open, and stopped
   writing the dead `photoLimit` field that was still being rendered to customers
   as "a limit of 2 photos".

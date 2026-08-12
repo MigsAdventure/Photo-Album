@@ -62,13 +62,24 @@ GoHighLevel calls `ghl-webhook`. Those are independent races and the redirect
 usually wins, so a customer could read "your unlimited gallery is now active",
 return to the gallery, and find uploads still closed.
 
-Two more found while working:
+**PAY-8 · The failed-payment page rendered `?reason=` verbatim**, inside an alert
+headed "Payment Error Details" and styled as ours. Anyone could send a link that
+displayed arbitrary text there under our branding — "your card was declined, call
+this number to resolve it" is the obvious abuse. React escapes the string, which
+prevents script injection and does nothing at all about the actual problem.
+
+Three more found while working:
 
 - `ghl-webhook`'s `reset_to_free` wrote `photoLimit: 2`, re-creating the removed
   paywall field on any reset event.
 - `BottomNavbar` mounted an `UpgradeModal` that could never open —
   `setShowUpgradeModal(true)` is never called anywhere, local state, so it was
   unreachable. Left behind when the UX-1 fix removed the trigger.
+- **There are three payment return pages, not two.** `PaymentFailed` was missed
+  entirely on the first pass through this work, and `PaymentCancelled` had its
+  copy corrected but not its event lookup. Both were still resolving the event
+  through `localStorage.pendingUpgrade` — so PAY-5 was only fixed on the success
+  page until the second pass. See "What we learned".
 
 ## What changed
 
@@ -82,7 +93,9 @@ Two more found while working:
 | `UpgradeModal.tsx` | Rewritten. Window-model copy, real closing date, server-supplied price | PAY-1, PAY-3 |
 | `EnhancedPhotoGallery.tsx` | CTA gated to organizers; deadline chip replaces "Free Trial"; closed-uploads message is audience-aware | PAY-2 |
 | `PaymentSuccess.tsx` | Rewritten. Polls until the plan flips; no debug output | PAY-6, PAY-7 |
-| `PaymentCancelled.tsx` | Copy corrected to the window model | PAY-1 |
+| `paymentReturn.ts` | New. One resolver for all three return pages, plus a failure-code allowlist | PAY-5, PAY-8 |
+| `PaymentCancelled.tsx` | Rewritten. Window-model copy, shared resolver | PAY-1, PAY-5 |
+| `PaymentFailed.tsx` | Rewritten. Shared resolver; failure reasons no longer rendered from the URL | PAY-5, PAY-6, PAY-8 |
 | `BottomNavbar.tsx` | Unreachable modal removed | — |
 | `ghlService.ts` | Browser CRM client fully retired | PAY-3 |
 | `ghl-webhook.js` | `reset_to_free` no longer writes `photoLimit` | — |
@@ -142,6 +155,20 @@ other CTA gated on event state rather than viewer identity.
 was corrected during phase 4; `EnhancedPhotoGallery` was not, and nothing linked
 the two. The dead modal in `BottomNavbar` is the fingerprint of a fix applied in
 one place.
+
+**And then I did exactly the same thing.** The first pass through this session
+fixed the localStorage lookup on `PaymentSuccess` and left it in `PaymentCancelled`
+and `PaymentFailed` — the second of which I had not opened at all. It only
+surfaced on a sweep for leftover references to the old flow, run because the
+work was being checked over rather than because anything failed. Nothing in the
+build, the types or the tests could have caught it: three components quietly
+disagreeing is invisible to all three.
+
+The generalisable bit: **when a fix is "stop doing X", grep for X across the
+whole tree before claiming it is done**, and count the surfaces first. "Three
+payment result pages" was written down in the audit (§05, UX-2's route list) and
+I still worked from the two I happened to have open. The shared resolver exists
+so there is now one place to change rather than three to remember.
 
 ## Deployment steps required
 
@@ -203,3 +230,13 @@ credentials exist in this environment:
   untouched.
 - **No abandoned-checkout follow-up exists yet** — `checkout_started` is emitted
   but nothing consumes it. That is a GoHighLevel workflow, not code.
+- **`PaymentSuccess` does not use the shared resolver.** It needs to *poll*,
+  where the other two resolve once, so it keeps its own loop and duplicates the
+  `ref`/`event_id` extraction. Small, and deliberate, but it is the kind of
+  near-duplication that drifts — if the parameter names ever change, there are
+  two places.
+- **The failure-reason allowlist is a guess.** `describeFailureReason` covers the
+  codes a payment processor typically sends; nothing has confirmed which ones
+  GoHighLevel actually puts in the URL. Unknown codes fall back to a generic
+  message, so the failure mode is vague copy rather than a leak — check the real
+  codes against the list once a payment has genuinely failed.

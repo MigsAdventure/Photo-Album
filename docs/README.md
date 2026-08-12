@@ -57,10 +57,16 @@ connected MCPs can and cannot do, the deployment order, and what to test first.
 | 2 — One download pipeline | Code complete, **not deployed, not exercised end to end**. [Session](sessions/2026-08-12_phase-2-download-pipeline.md) |
 | 3 — Storage plane | Code complete, **blocked on R2 CORS config**. [Session](sessions/2026-08-12_phase-3-storage-plane.md) |
 | 4 — Make it a product | Code complete, **needs Firebase console settings**. [Session](sessions/2026-08-12_phase-4-product.md) |
-| 5 — Modernize | Not started |
+| Post-review fixes | The four findings left open by the adversarial review. [Session](sessions/2026-08-12_review-findings.md) |
+| Payments & upgrade UX | Code complete, **needs `CHECKOUT_URL` + order-form config**. [Session](sessions/2026-08-12_payment-flow-and-upgrade-ux.md) |
+| 5 — Modernize | Not started. Still on `react-scripts` 5.0.1 and TypeScript 4.9; no CI; 26 status docs in the repo root |
 | 6 — Differentiate | Not started |
 
 Phases 3–6 are described in `AUDIT_2026-08.md` §07.
+
+The payment work is filed under phase 5 in its session log because it is product
+correctness rather than a new audit phase — it fixed surfaces that still
+described the two-photo paywall phase 4 removed.
 
 **Deploy order matters between phases 1 and 2**: phase 2 depends on the secrets
 introduced in phase 1, and within phase 2 the Lambda must be deployed before
@@ -69,9 +75,11 @@ Netlify. Both session logs carry their own checklist.
 ## Tests
 
 ```bash
-npm run test:all        # everything (114 tests)
+npm run test:all        # everything (151 tests across six suites)
 npm run test:security   # rules + webhook auth
 npm run test:archive    # the ZIP-3 regression tests
 npm run test:plan       # upload-window rules, and client/server parity
+npm run test:upload     # the client/server contracts: failedCount, content types
+npm run test:checkout   # the signed checkout reference, and server-side pricing
 npm run test:rules      # Firestore rules + rate limiter, needs Java for the emulator
 ```
