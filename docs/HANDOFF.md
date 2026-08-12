@@ -18,8 +18,8 @@ Four phases of the audit are **code complete and pushed**, none deployed.
 | 5 — Modernize | Not started | — |
 | 6 — Differentiate | Not started | — |
 
-Branch: `claude/photo-album-audit-be5aap` · 16 commits from `b897696`
-Tests: `npm run test:all` → **114 passing** across four suites
+Branch: `claude/photo-album-audit-be5aap` · 18 commits from `b897696`
+Tests: `npm run test:all` → **119 passing** across four suites
 Build: clean, no warnings
 
 **Nothing has run against real infrastructure.** No AWS, R2 or Firebase
@@ -204,7 +204,7 @@ written for.** When an origin accepts a request then drops the socket mid-body
 raised an unhandled error that the processor turned into `process.exit(1)`, or
 left the append hanging forever. Reproduced both ways.
 
-Fixed in commit `4e12dbe`: files stage to a temp file with retry, then append
+Fixed in commit `c59fdd1`: files stage to a temp file with retry, then append
 from local disk. Five regression tests against a socket-destroying server.
 
 **Why it survived my own testing:** my tests simulated *clean* HTTP failures — a

@@ -3,6 +3,16 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — Post-review correction
+
+The pre-handoff adversarial review found that the ZIP-3 fix — the headline
+change of this whole effort — could not survive the failure it was written for.
+An origin that accepts a request then drops the socket mid-body either crashed
+the processor (unhandled stream error → `process.exit(1)`, killing the whole job
+for one bad file) or hung the append forever. Fixed by staging each file to disk
+with retry before appending. Five regression tests against a socket-destroying
+server. See `sessions/2026-08-12_phase-2-download-pipeline.md`.
+
 ## 2026-08-12 — Phase 4: Making it a product
 
 Session: [`sessions/2026-08-12_phase-4-product.md`](sessions/2026-08-12_phase-4-product.md)
