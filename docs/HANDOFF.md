@@ -193,7 +193,50 @@ cannot be tested without real SQS.
 
 ---
 
-## A real bug the pre-handoff review caught
+## Open findings from the pre-handoff review — start here
+
+An adversarial review of all four phases raised 30 findings; **10 survived
+refutation**. Six are fixed (commits `c59fdd1`, `78f848a`). **Four remain, and
+they are the first work for a new session.** All were introduced by phases 1–4.
+
+### 1. `failedCount` is dropped, so the "files missing" notice never renders
+`netlify/functions/email-download.js:184` · medium
+
+The processor sends `failedCount` in its callback; the handler destructures the
+body without it and never passes it to `sendArchiveReadyEmail`. So the notice
+built for ZIP-7 — the one telling a customer some files could not be included —
+cannot ever appear. The archive silently arrives short, which is the exact
+failure ZIP-7 was about. One-line fix plus a test.
+
+### 2. Client accepts media by extension; the server rejects it by MIME type
+`netlify/functions/upload-init.js:126` · medium
+
+`isVideoFile`/`isImageFile` fall back to the file extension when `file.type` is
+empty — which happens for `.HEIC` and some Android pickers. `upload-init` only
+checks the MIME type, so those uploads pass client validation and come back 400.
+The guest sees a failure for a file the app told them was fine. Fix by having
+`upload-init` accept an extension fallback, matching the client.
+
+### 3. The credential-rotation runbook's smoke test hits production
+`docs/runbooks/credential-rotation.md:45` · medium
+
+The `aws lambda invoke` example queues a real SQS job and launches a real EC2
+instance, with an email address in the payload. Anyone following the runbook
+during a rotation triggers a production job. Replace with a dry-run or a check
+that asserts configuration without side effects.
+
+### 4. Existing events need an `organizerEmail` backfill
+· medium, operational
+
+The casing fix normalizes at write time, so **events created before it still
+store whatever was typed** and remain invisible to their organizers. A one-off
+Admin SDK script lowercasing and trimming `organizerEmail` across the collection
+fixes it. Do this before telling any existing customer the dashboard exists.
+
+The full verified output, including the 20 refuted findings and the evidence for
+each, is in the workflow journal referenced in that session's transcript.
+
+## The review also caught a bug in the headline fix
 
 Worth reading before trusting the rest of this work.
 
