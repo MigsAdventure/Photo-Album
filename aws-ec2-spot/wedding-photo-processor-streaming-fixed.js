@@ -28,7 +28,11 @@ const config = {
     region: process.env.AWS_REGION
   },
   netlify: {
-    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email',
+    // Points at email-download rather than direct-email. Both send the same
+    // template now, but email-download also records the completed archive so a
+    // repeat request within the reuse window returns this URL instead of
+    // rebuilding the same bytes on a fresh instance.
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/email-download',
     // Proves to the email endpoint that this request came from our own backend
     // rather than from anyone who found the URL (finding SEC-8).
     internalSecret: process.env.INTERNAL_SERVICE_SECRET
@@ -527,10 +531,13 @@ async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB, fa
         'x-sharedmoments-internal': config.netlify.internalSecret
       },
       body: JSON.stringify({
+        source: 'processor',
+        eventId: eventId,
         email: email,
         downloadUrl: downloadUrl,
         fileCount: fileCount,
-        finalSizeMB: finalSizeMB
+        finalSizeMB: finalSizeMB,
+        failedCount: failedCount
       })
     });
 

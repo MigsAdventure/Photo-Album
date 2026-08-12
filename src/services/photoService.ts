@@ -6,7 +6,6 @@ import {
   where,
   doc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
   increment,
@@ -22,15 +21,6 @@ import {
   removeOwnedPhoto,
   getPhotoOwnership
 } from './sessionService';
-
-// Interface for photo analysis data
-interface PhotoAnalysisData {
-  id: string;
-  fileName: string;
-  size: number;
-  sizeMB: number;
-  mediaType: string;
-}
 
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
@@ -318,269 +308,76 @@ export const downloadPhoto = async (photoId: string): Promise<void> => {
   }
 };
 
-// Professional bulk download with email delivery - enhanced with smart routing
+// Request an emailed archive of the event's media.
+//
+// This used to analyse the whole collection in the browser and pick a processing
+// backend from the result (findings ZIP-1, ZIP-4). Three things were wrong with
+// that:
+//
+//   1. The first branch called a Google Cloud Run URL that was decommissioned in
+//      January 2025. Any collection with an 80MB+ video, over 500MB total, or
+//      more than 10 videos hit it first and sat through the full 30-second
+//      AbortSignal timeout before falling back. project-state.md recorded the
+//      removal; the frontend never got the memo.
+//   2. It posted the resulting photo array onward, so a client could nominate
+//      arbitrary URLs for our processor to fetch and package into an archive we
+//      then email out.
+//   3. Its size thresholds disagreed with the three server-side routers behind
+//      it, so identical collections took different paths depending on which
+//      entry point saw them first.
+//
+// The browser now states what it wants and lets the server decide how. The
+// server reads the collection from Firestore rather than trusting this call.
 export const requestEmailDownload = async (
   eventId: string,
   email: string
 ): Promise<{
   success: boolean;
-  processing: 'immediate' | 'background' | 'google-cloud';
+  processing: string;
   message: string;
   fileCount?: number;
   estimatedSizeMB?: number;
   videoCount?: number;
   estimatedWaitTime?: string;
   requestId: string;
-  processingEngine?: string;
 }> => {
-  try {
-    console.log('📧 Requesting email download for event:', eventId, 'to:', email);
-    
-    // Step 1: Analyze collection to determine optimal processing route
-    console.log('🔍 Analyzing collection for smart routing...');
-    const q = query(
-      collection(db, 'photos'),
-      where('eventId', '==', eventId)
-    );
-    
-    const snapshot = await getDocs(q);
-    const photos: PhotoAnalysisData[] = [];
-    let totalSizeMB = 0;
-    let videoCount = 0;
-    let largeVideoCount = 0;
-    let maxVideoSizeMB = 0;
-    
-    snapshot.forEach((doc) => {
-      const data = doc.data();
-      const fileSizeMB = (data.size || 0) / 1024 / 1024;
-      totalSizeMB += fileSizeMB;
-      
-      photos.push({
-        id: doc.id,
-        fileName: data.fileName || `photo_${doc.id}.jpg`,
-        size: data.size || 0,
-        sizeMB: fileSizeMB,
-        mediaType: data.mediaType || 'photo'
-      });
-      
-      // Check for videos
-      const isVideo = data.mediaType === 'video' || 
-                     /\.(mp4|mov|avi|webm|mkv)$/i.test(data.fileName || '');
-      if (isVideo) {
-        videoCount++;
-        maxVideoSizeMB = Math.max(maxVideoSizeMB, fileSizeMB);
-        
-        // Check for large videos (80MB+ threshold) 
-        if ((data.size || 0) > 80 * 1024 * 1024) {
-          largeVideoCount++;
-        }
+  console.log('📧 Requesting email download for event:', eventId);
+
+  const response = await fetch('/.netlify/functions/email-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventId, email })
+  });
+
+  if (!response.ok) {
+    let message = 'We could not start your download. Please try again in a moment.';
+
+    try {
+      const body = await response.json();
+      // The server writes messages meant to be read by a person, including the
+      // rate-limit case where the wait time matters. Prefer them over a generic
+      // string, and keep the follow-up action if one was given.
+      if (body?.error) {
+        message = body.action ? `${body.error} ${body.action}` : body.error;
       }
-    });
-
-    console.log('📊 Collection analysis:', {
-      totalFiles: photos.length,
-      totalSizeMB: totalSizeMB.toFixed(2),
-      videoCount,
-      largeVideoCount,
-      maxVideoSizeMB: maxVideoSizeMB.toFixed(2)
-    });
-
-    // Step 2: Smart routing decision
-    let shouldUseGoogleCloud = false;
-    let routingReason = '';
-
-    if (largeVideoCount > 0) {
-      shouldUseGoogleCloud = true;
-      routingReason = `${largeVideoCount} video(s) above 80MB detected`;
-    } else if (totalSizeMB > 500) {
-      shouldUseGoogleCloud = true;
-      routingReason = `Collection size ${totalSizeMB.toFixed(0)}MB exceeds 500MB limit`;
-    } else if (videoCount > 10) {
-      shouldUseGoogleCloud = true;
-      routingReason = `${videoCount} videos require enhanced processing`;
+    } catch {
+      // A non-JSON body means something upstream returned an error page rather
+      // than the function running. Don't show the customer raw HTML.
+      message = 'The download service is temporarily unavailable. Please try again shortly.';
     }
 
-    console.log(`🎯 Routing decision: ${shouldUseGoogleCloud ? 'Google Cloud Run' : 'Netlify/Cloudflare'}`);
-    if (shouldUseGoogleCloud) {
-      console.log(`📋 Reason: ${routingReason}`);
-    }
-
-    // Step 3: Route to appropriate processing engine
-    if (shouldUseGoogleCloud) {
-      console.log('🚀 Routing to Google Cloud Run for large video processing...');
-      return await routeToGoogleCloudRun(eventId, email, photos, routingReason);
-    } else {
-      console.log('⚡ Using standard Netlify/Cloudflare processing...');
-      return await routeToNetlifyCloudflare(eventId, email);
-    }
-    
-  } catch (error) {
-    console.error('❌ Email download request failed:', error);
-    throw error;
+    throw new Error(message);
   }
+
+  const result = await response.json();
+  console.log('✅ Download request accepted:', result.requestId);
+  return result;
 };
 
-// Route to Google Cloud Run for large video processing
-const routeToGoogleCloudRun = async (
-  eventId: string, 
-  email: string, 
-  photos: any[], 
-  reason: string
-): Promise<any> => {
-  try {
-    console.log('☁️ Calling Google Cloud Run processor...');
-    
-    const CLOUD_RUN_URL = 'https://wedding-photo-processor-767610841427.us-west1.run.app';
-    
-    const response = await fetch(`${CLOUD_RUN_URL}/process-photos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'SharedMoments/1.0',
-      },
-      body: JSON.stringify({
-        eventId,
-        email,
-        photos: photos.slice(0, 100), // Limit to first 100 for payload size
-        source: 'frontend-smart-routing',
-        routingReason: reason
-      }),
-      // 30 second timeout for Cloud Run communication
-      signal: AbortSignal.timeout(30000)
-    });
-
-    if (!response.ok) {
-      let errorMessage = `Google Cloud Run responded with ${response.status}`;
-      try {
-        const errorText = await response.text();
-        if (errorText) {
-          errorMessage += `: ${errorText}`;
-        }
-      } catch (e) {
-        // Ignore text parsing errors
-      }
-      throw new Error(errorMessage);
-    }
-
-    const result = await response.json();
-    console.log('✅ Google Cloud Run accepted request:', result);
-    
-    return {
-      success: true,
-      processing: 'google-cloud' as const,
-      message: result.message || `Processing ${photos.length} files with Google Cloud Run. Large videos detected - using enhanced processing engine. You'll receive an email in 3-8 minutes.`,
-      fileCount: photos.length,
-      estimatedSizeMB: Math.round(photos.reduce((sum, p) => sum + p.sizeMB, 0)),
-      videoCount: photos.filter(p => p.mediaType === 'video' || /\.(mp4|mov|avi|webm)$/i.test(p.fileName)).length,
-      estimatedWaitTime: '3-8 minutes',
-      requestId: result.requestId || `gcr-${Date.now()}`,
-      processingEngine: 'google-cloud-run'
-    };
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('❌ Google Cloud Run routing failed:', errorMessage);
-    console.log('🔄 Falling back to Netlify/Cloudflare...');
-    
-    // Fallback to standard processing
-    return await routeToNetlifyCloudflare(eventId, email, true);
-  }
-};
-
-// Route to Netlify/Cloudflare for standard processing
-const routeToNetlifyCloudflare = async (
-  eventId: string, 
-  email: string, 
-  isFallback: boolean = false
-): Promise<any> => {
-  try {
-    console.log(isFallback ? '🔄 Using Netlify fallback processing...' : '⚡ Using standard Netlify/Cloudflare processing...');
-    
-    const response = await fetch('/.netlify/functions/email-download', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        eventId,
-        email,
-        source: isFallback ? 'fallback-from-cloud-run' : 'standard-routing'
-      }),
-    });
-
-    if (!response.ok) {
-      let errorMessage = 'Failed to request email download';
-      try {
-        const responseText = await response.text();
-        try {
-          const errorData = JSON.parse(responseText);
-          errorMessage = errorData.error || errorData.details || errorMessage;
-        } catch (parseError) {
-          if (responseText.includes('DOCTYPE')) {
-            errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
-          } else {
-            errorMessage = `Server error (${response.status}): ${response.statusText}`;
-          }
-        }
-      } catch (textError) {
-        errorMessage = `Server error (${response.status}): ${response.statusText}`;
-      }
-      throw new Error(errorMessage);
-    }
-
-    const result = await response.json();
-    console.log('✅ Netlify/Cloudflare processing requested:', result);
-    
-    // Add processing engine info
-    result.processingEngine = isFallback ? 'netlify-fallback' : 'netlify-cloudflare';
-    
-    return result;
-    
-  } catch (error) {
-    console.error('❌ Netlify/Cloudflare processing failed:', error);
-    throw error;
-  }
-};
-
-// Legacy bulk download - will be replaced with email system
-export const downloadAllPhotos = async (
-  eventId: string,
-  onProgress?: (downloaded: number, total: number) => void
-): Promise<void> => {
-  try {
-    console.log('📥 Legacy bulk download - opening photos individually');
-    
-    // Get all photos for this event
-    const q = query(
-      collection(db, 'photos'),
-      where('eventId', '==', eventId)
-    );
-    
-    const snapshot = await getDocs(q);
-    const photos: any[] = [];
-    snapshot.forEach((docSnapshot) => {
-      photos.push(docSnapshot.data());
-    });
-    
-    if (photos.length === 0) {
-      throw new Error('No photos found for this event');
-    }
-    
-    console.log(`Opening ${photos.length} photos individually`);
-    
-    // Open each photo in a new tab with delay
-    for (let i = 0; i < photos.length; i++) {
-      setTimeout(() => {
-        window.open(photos[i].url, '_blank');
-        onProgress?.(i + 1, photos.length);
-      }, i * 300); // 300ms delay between each tab
-    }
-    
-  } catch (error) {
-    console.error('Legacy bulk download failed:', error);
-    throw error;
-  }
-};
+// downloadAllPhotos used to live here: it opened every photo in its own browser
+// tab, 300ms apart. Nothing has called it since the email flow landed, and every
+// popup blocker in existence stops it after the third tab. Removed rather than
+// left as a trap for whoever finds it next.
 
 // Freemium & Premium functions
 
