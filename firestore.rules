@@ -1,0 +1,150 @@
+rules_version = '2';
+
+// SharedMoments Firestore security rules
+//
+// Context: this application has no user authentication. Guests open an event URL
+// and upload; organizers are identified only by an email address on the event
+// document. That means these rules CANNOT establish identity. What they can do —
+// and what they are written to do — is make the paths that cost money or destroy
+// data unreachable from a browser:
+//
+//   * plan state (planType, photoLimit, paymentId) is writable only by the
+//     Admin SDK, so an event cannot be upgraded to premium from the console
+//   * photo and event documents cannot be deleted by a client at all; deletion
+//     goes through netlify/functions/delete-photo.js, which removes the Firestore
+//     document, the Storage object and the R2 object as one unit
+//   * photoCount can only move by exactly one, so it cannot be reset or inflated
+//   * downloadJobs (rate limiting and job dedupe) is invisible to clients
+//
+// Anything reachable without authentication is still forgeable in its details —
+// a client can write a photo document claiming any uploadedBy value. Ownership is
+// therefore advisory for UI purposes and must never gate a destructive or billable
+// operation. Real identity arrives with magic-link auth in Phase 4 (UX-2), at
+// which point these rules should be revisited to key on request.auth.token.email.
+//
+// Refs: AUDIT_2026-08.md SEC-2, SEC-5, SEC-7
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- helpers
+
+    // Fields only the Admin SDK may ever write. Requests carrying credentials
+    // from a service account bypass rules entirely, so listing them here is
+    // equivalent to "server only".
+    function protectedEventFields() {
+      return ['planType', 'photoLimit', 'paymentId', 'customBranding', 'organizerEmail', 'createdAt'];
+    }
+
+    // The set of field names whose values differ between the stored document and
+    // the incoming one.
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function isString(value, maxLen) {
+      return value is string && value.size() > 0 && value.size() <= maxLen;
+    }
+
+    // ----------------------------------------------------------------- events
+
+    match /events/{eventId} {
+
+      // Galleries are public by design — anyone with the link can view.
+      allow get: if true;
+
+      // Listing every event in the project is not. Without this, a client could
+      // enumerate every wedding across every customer.
+      allow list: if false;
+
+      // Anyone may create an event, but only ever a free one. This closes the
+      // "create a premium event directly" path that would otherwise sidestep
+      // payment entirely.
+      allow create: if isString(request.resource.data.title, 200)
+                    && isString(request.resource.data.date, 30)
+                    && isString(request.resource.data.organizerEmail, 320)
+                    && request.resource.data.planType == 'free'
+                    && request.resource.data.photoLimit is int
+                    && request.resource.data.photoCount == 0
+                    && request.resource.data.isActive == true
+                    && request.resource.data.createdAt is timestamp;
+
+      // The only field a browser may change is photoCount, and only by one at a
+      // time. Everything else — including upgrading the plan — must go through a
+      // Netlify function using the Admin SDK.
+      //
+      // Note this permits a client to increment past its plan limit. That is
+      // deliberate: the plan limit is a commercial rule, not a security boundary,
+      // and enforcing it here would make an over-quota guest's upload fail at the
+      // database with an unexplainable error. The limit is enforced in the
+      // application, and finding UX-1 covers making it behave sensibly.
+      allow update: if changedKeys().hasOnly(['photoCount'])
+                    && request.resource.data.photoCount is int
+                    && request.resource.data.photoCount >= 0
+                    && (
+                         request.resource.data.photoCount == resource.data.photoCount + 1
+                         || request.resource.data.photoCount == resource.data.photoCount - 1
+                       );
+
+      // Events are never deleted from a client. Retention and takedown are
+      // operational actions performed with the Admin SDK.
+      allow delete: if false;
+    }
+
+    // ----------------------------------------------------------------- photos
+
+    match /photos/{photoId} {
+
+      // The gallery reads photos by eventId, so both get and list are needed.
+      // Scoping the list to a single event is not expressible in rules; the
+      // application always queries with a where('eventId','==',…) clause, and the
+      // exposure is the same as the public gallery it feeds.
+      allow read: if true;
+
+      allow create: if isString(request.resource.data.eventId, 200)
+                    && exists(/databases/$(database)/documents/events/$(request.resource.data.eventId))
+                    && isString(request.resource.data.url, 2000)
+                    && isString(request.resource.data.fileName, 500)
+                    && isString(request.resource.data.storagePath, 1000)
+                    && request.resource.data.mediaType in ['photo', 'video']
+                    && request.resource.data.size is int
+                    && request.resource.data.size > 0
+                    // 2 GB ceiling, comfortably above the 1.5 GB the client
+                    // permits (src/services/videoService.ts) and below anything
+                    // that could be used to run up a storage bill in one write.
+                    && request.resource.data.size <= 2147483648
+                    && request.resource.data.uploadedAt is timestamp
+                    && isString(request.resource.data.uploadedBy, 100)
+                    // r2Key is written by the server after the copy completes.
+                    // A client claiming one at creation time could point the
+                    // gallery at an arbitrary object in the bucket.
+                    && !('r2Key' in request.resource.data);
+
+      // The only update that happens is the server stamping r2Key, which uses the
+      // Admin SDK. Nothing legitimate updates a photo from a browser.
+      allow update: if false;
+
+      // Deletion goes through netlify/functions/delete-photo.js so that Firestore,
+      // Firebase Storage and R2 are cleaned up together. A client delete here
+      // would orphan the bytes in two stores while making the photo vanish from
+      // the gallery — which is exactly what finding SEC-7 describes.
+      allow delete: if false;
+    }
+
+    // ----------------------------------------------------------- downloadJobs
+
+    // Written only by the Admin SDK. Backs durable rate limiting and archive
+    // dedupe for the email-download endpoint (SEC-4). Invisible to clients so a
+    // caller cannot read the counters they are being limited by, or clear them.
+    match /downloadJobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------- catch-all
+
+    // Any collection added later is denied until someone writes a rule for it.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

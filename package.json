@@ -49,6 +49,8 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:rules": "firebase emulators:exec --only firestore --project sharedmoments-rules-test \"node --test tests/firestore.rules.test.js\"",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -70,9 +72,11 @@
     ]
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
     "@types/archiver": "^6.0.3",
     "@types/multer": "^2.0.0",
     "@types/qrcode": "^1.5.5",
-    "@vercel/node": "^5.3.4"
+    "@vercel/node": "^5.3.4",
+    "firebase-tools": "^13.35.1"
   }
 }
