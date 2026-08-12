@@ -29,13 +29,6 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------- helpers
 
-    // Fields only the Admin SDK may ever write. Requests carrying credentials
-    // from a service account bypass rules entirely, so listing them here is
-    // equivalent to "server only".
-    function protectedEventFields() {
-      return ['planType', 'photoLimit', 'paymentId', 'customBranding', 'organizerEmail', 'createdAt'];
-    }
-
     // The set of field names whose values differ between the stored document and
     // the incoming one.
     function changedKeys() {
@@ -46,6 +39,28 @@ service cloud.firestore {
       return value is string && value.size() > 0 && value.size() <= maxLen;
     }
 
+    // Is the caller signed in as the organizer of this event?
+    //
+    // New in Phase 4. Until magic-link sign-in existed there was no identity to
+    // check, so every organizer action had to go through a server function
+    // holding a secret. Email-link sign-in proves control of the mailbox, which
+    // is exactly the claim the organizerEmail field encodes.
+    //
+    // Emails are compared lowercased because Firebase preserves the case the
+    // user typed while our events store whatever was entered at creation.
+    function isOrganizerOf(eventData) {
+      return request.auth != null
+             && request.auth.token.email_verified == true
+             && eventData.organizerEmail is string
+             && request.auth.token.email.lower() == eventData.organizerEmail.lower();
+    }
+
+    // Fields an organizer may edit on their own event. Deliberately excludes
+    // everything that decides what they have paid for.
+    function organizerEditableFields() {
+      return ['title', 'date', 'isActive', 'customBranding', 'coverPhotoId', 'updatedAt'];
+    }
+
     // ----------------------------------------------------------------- events
 
     match /events/{eventId} {
@@ -53,9 +68,15 @@ service cloud.firestore {
       // Galleries are public by design — anyone with the link can view.
       allow get: if true;
 
-      // Listing every event in the project is not. Without this, a client could
-      // enumerate every wedding across every customer.
-      allow list: if false;
+      // Listing is restricted to your own events. Firestore evaluates this
+      // against the query rather than the results, so the client query must
+      // carry a matching where('organizerEmail','==',...) clause or the whole
+      // query is refused — which is what stops this becoming an enumeration of
+      // every wedding across every customer.
+      allow list: if request.auth != null
+                  && request.auth.token.email_verified == true
+                  && resource.data.organizerEmail is string
+                  && request.auth.token.email.lower() == resource.data.organizerEmail.lower();
 
       // Anyone may create an event, but only ever a free one. This closes the
       // "create a premium event directly" path that would otherwise sidestep
@@ -69,20 +90,23 @@ service cloud.firestore {
                     && request.resource.data.isActive == true
                     && request.resource.data.createdAt is timestamp;
 
-      // Nothing on an event is client-writable any more.
+      // Guests write nothing. photoCount used to be client-incremented after
+      // each upload; since uploads became server-side (upload-complete.js
+      // increments, delete-photo.js decrements) there is no guest write left.
       //
-      // This previously allowed photoCount to move by one, because the browser
-      // incremented it after each upload. Since uploads became server-side
-      // (upload-complete.js increments it, delete-photo.js decrements it) there
-      // is no legitimate client write left, so the narrowest correct rule is
-      // none at all.
+      // That also fixed a silent bug: the count and the gallery could disagree,
+      // because the upload wrote the photo document and then made a *separate*
+      // client write to bump the count. A guest closing the tab in between left
+      // the event permanently miscounted.
       //
-      // Worth noting what that fixed as a side effect: the count and the gallery
-      // could previously disagree, because the upload wrote the photo document
-      // and then made a *separate* client write to bump the count. If a guest
-      // closed the tab in between, or the second write failed, the event was
-      // permanently miscounted — and the plan limit is computed from that count.
-      allow update: if false;
+      // A signed-in organizer may edit the presentation of their own event —
+      // title, date, branding, whether it is open — but nothing that decides
+      // what they have paid for. planType, photoLimit, paymentId and photoCount
+      // stay Admin-SDK-only, so an organizer cannot grant themselves premium
+      // any more than a guest could.
+      allow update: if isOrganizerOf(resource.data)
+                    && isOrganizerOf(request.resource.data)
+                    && changedKeys().hasOnly(organizerEditableFields());
 
       // Events are never deleted from a client. Retention and takedown are
       // operational actions performed with the Admin SDK.

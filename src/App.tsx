@@ -34,6 +34,7 @@ import BottomNavbar from './components/BottomNavbar';
 import PaymentSuccess from './components/PaymentSuccess';
 import PaymentCancelled from './components/PaymentCancelled';
 import PaymentFailed from './components/PaymentFailed';
+import OrganizerDashboard from './components/OrganizerDashboard';
 import { createEvent, getEvent, subscribeToPhotos } from './services/photoService';
 import { Event, Photo } from './types';
 
@@ -531,6 +532,9 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<AdminDashboard />} />
           <Route path="/event/:eventId" element={<GuestView />} />
+          {/* The organizer console (finding UX-2). Sign-in is by magic link, so
+              this route is also where those links land. */}
+          <Route path="/dashboard" element={<OrganizerDashboard />} />
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/payment/cancelled" element={<PaymentCancelled />} />
           <Route path="/payment/failed" element={<PaymentFailed />} />

@@ -39,7 +39,8 @@ import {
   Download
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
+import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, getPhotoOwnershipInfo } from '../services/photoService';
+import { getCurrentUserEmail, onAuthChange } from '../services/authService';
 import { preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
@@ -150,21 +151,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
       setPhotos(newPhotos);
       setLoading(false);
-      
-      // Check ownership for all photos
-      const owned = new Set<string>();
-      for (const photo of newPhotos) {
-        try {
-          const canDelete = await canDeletePhoto(photo.id);
-          if (canDelete) {
-            owned.add(photo.id);
-          }
-        } catch (error) {
-          console.warn('Failed to check ownership for photo:', photo.id, error);
-        }
-      }
-      setOwnedPhotos(owned);
-      
+
       // Optimize URLs for cost savings using R2 when available
       if (newPhotos.length > 0) {
         optimizeMediaUrls(newPhotos);
@@ -174,6 +161,41 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     return () => unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
+
+  // Track sign-in, so an organizer opening their own gallery gets moderation
+  // controls without having to go via the dashboard.
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(getCurrentUserEmail());
+
+  useEffect(() => onAuthChange((user) => setSignedInEmail(user?.email?.toLowerCase() ?? null)), []);
+
+  // Which photos does this browser get a delete affordance for?
+  //
+  // A guest sees it on their own uploads. An organizer signed in as this event's
+  // owner sees it on everything, because moderation is the point — they need to
+  // remove something a guest should not have posted (finding UX-2).
+  //
+  // Derived rather than computed inside the photo subscription: `event` and
+  // `photos` load from two independent effects, so a subscription callback that
+  // read `event` would see null whenever photos arrived first, and never
+  // recompute once the event landed. Organizers would intermittently get no
+  // controls, depending on which request won — the kind of bug that reproduces
+  // only on a slow connection.
+  //
+  // Both paths are UI hints. delete-photo.js re-checks independently, so being
+  // wrong here shows or hides an icon and nothing more.
+  useEffect(() => {
+    const isOrganizer = Boolean(
+      signedInEmail && event?.organizerEmail?.toLowerCase() === signedInEmail
+    );
+
+    const owned = new Set<string>();
+    for (const photo of photos) {
+      if (isOrganizer || getPhotoOwnershipInfo(photo.id).canDelete) {
+        owned.add(photo.id);
+      }
+    }
+    setOwnedPhotos(owned);
+  }, [photos, event, signedInEmail]);
 
   // Preview URL for grid tiles.
   //

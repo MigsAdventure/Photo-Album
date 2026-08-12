@@ -10,9 +10,9 @@
  *
  * Security model — read this before changing the check below
  * ----------------------------------------------------------
- * The application has no user authentication, so the server cannot know who is
- * calling. What it can do is require the caller to present a secret that only
- * the uploader holds. Each browser generates a high-entropy session secret and
+ * Guests are anonymous, so for them the server cannot know who is calling. What
+ * it can do is require the caller to present a secret that only the uploader
+ * holds. Each browser generates a high-entropy session secret and
  * stores it in localStorage; the photo document records only its SHA-256 hash,
  * so the secret is never broadcast to other guests reading the gallery.
  *
@@ -22,17 +22,18 @@
  * still accepted here (see LEGACY below) so existing events keep working, but
  * they carry that weakness until the photo ages out.
  *
- * This is deliberately best-effort. It restores the property the old client
- * check was pretending to have, and it makes deletion consistent across stores.
- * Robust authorisation needs real identity, which arrives with magic-link auth
- * in Phase 4 (finding UX-2). At that point this endpoint should additionally
- * allow the event organizer to delete anything in their own event.
+ * Since Phase 4 there is a second, stronger path: a signed-in organizer may
+ * delete anything in their own event. That one is real authorisation — the
+ * Firebase ID token is verified against Google's signing keys, so a caller
+ * cannot simply assert an email address — and it is what makes moderation
+ * possible. An organizer needs to be able to remove a photo a guest should not
+ * have posted, and until now nobody could.
  *
  * Refs: AUDIT_2026-08.md SEC-5, SEC-7
  */
 
 const crypto = require('crypto');
-const { getDb, getBucket, FieldValue, isConfigured } = require('./_lib/firebase-admin');
+const { admin, getApp, getDb, getBucket, FieldValue, isConfigured } = require('./_lib/firebase-admin');
 const r2 = require('./_lib/r2');
 
 const CORS = {
@@ -78,6 +79,43 @@ function ownsPhoto(photoData, ownerSecret) {
   return false;
 }
 
+/**
+ * Verify a Firebase ID token and confirm the holder organizes this event.
+ *
+ * verifyIdToken checks the signature against Google's rotating public keys and
+ * the expiry, so this is a real identity check rather than a claim we are taking
+ * on trust — which is what separates it from the uploader path above.
+ *
+ * Returns the organizer's email when authorised, or null.
+ */
+async function verifyOrganizer(idToken, eventId, db) {
+  if (!idToken || !eventId) return null;
+
+  try {
+    const decoded = await admin.auth(getApp()).verifyIdToken(idToken);
+
+    // An unverified email proves nothing. Email-link sign-in sets this, so a
+    // legitimate organizer always has it.
+    if (!decoded.email || decoded.email_verified !== true) {
+      console.warn('delete-photo: token has no verified email');
+      return null;
+    }
+
+    const eventDoc = await db.collection('events').doc(eventId).get();
+    if (!eventDoc.exists) return null;
+
+    const organizerEmail = String(eventDoc.data().organizerEmail || '').toLowerCase();
+    if (!organizerEmail) return null;
+
+    return decoded.email.toLowerCase() === organizerEmail ? organizerEmail : null;
+  } catch (error) {
+    // Expired or forged tokens land here. Not an error worth surfacing — the
+    // caller simply is not authorised.
+    console.warn('delete-photo: could not verify ID token:', error.message);
+    return null;
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: CORS, body: '' };
@@ -101,13 +139,13 @@ exports.handler = async (event) => {
     return json(400, { error: 'Invalid JSON in request body' });
   }
 
-  const { photoId, ownerSecret } = body;
+  const { photoId, ownerSecret, idToken } = body;
 
   if (!photoId || typeof photoId !== 'string') {
     return json(400, { error: 'photoId is required' });
   }
-  if (!ownerSecret || typeof ownerSecret !== 'string') {
-    return json(400, { error: 'ownerSecret is required' });
+  if (!ownerSecret && !idToken) {
+    return json(400, { error: 'ownerSecret or idToken is required' });
   }
 
   const db = getDb();
@@ -124,12 +162,26 @@ exports.handler = async (event) => {
 
     const photo = snapshot.data();
 
-    if (!ownsPhoto(photo, ownerSecret)) {
-      console.warn(`delete-photo: ownership check failed for ${photoId}`);
-      return json(403, { error: 'You can only delete photos that you uploaded' });
+    // Two ways to be allowed. Uploader first because it needs no round trip.
+    let authorised = ownsPhoto(photo, ownerSecret);
+    let actor = 'uploader';
+
+    if (!authorised && idToken) {
+      const organizer = await verifyOrganizer(idToken, photo.eventId, db);
+      if (organizer) {
+        authorised = true;
+        actor = `organizer:${organizer}`;
+      }
     }
 
-    const results = { firestore: false, storage: false, r2: false };
+    if (!authorised) {
+      console.warn(`delete-photo: authorisation failed for ${photoId}`);
+      return json(403, {
+        error: 'You can only delete photos you uploaded, or any photo in an event you organize',
+      });
+    }
+
+    const results = { firestore: false, storage: false, r2: false, thumbnail: false };
 
     // Storage and R2 first. If either throws we stop before removing the
     // Firestore document, so the photo is still listed and the delete can be
@@ -147,9 +199,20 @@ exports.handler = async (event) => {
       }
     }
 
-    if (photo.r2Key && r2.isConfigured()) {
-      const outcome = await r2.deleteObject(photo.r2Key);
-      results.r2 = outcome.deleted ? true : outcome.reason;
+    if (r2.isConfigured()) {
+      if (photo.r2Key) {
+        const outcome = await r2.deleteObject(photo.r2Key);
+        results.r2 = outcome.deleted ? true : outcome.reason;
+      }
+
+      // The thumbnail is a second object (Phase 3, finding UX-3). Missing this
+      // would recreate exactly the orphan problem SEC-7 was about — bytes left
+      // in the bucket with no document referencing them, billed forever and
+      // unreachable from any UI.
+      if (photo.thumbnailKey) {
+        const outcome = await r2.deleteObject(photo.thumbnailKey);
+        results.thumbnail = outcome.deleted ? true : outcome.reason;
+      }
     }
 
     await photoRef.delete();
@@ -171,8 +234,8 @@ exports.handler = async (event) => {
       }
     }
 
-    console.log(`delete-photo: removed ${photoId}`, results);
-    return json(200, { success: true, results });
+    console.log(`delete-photo: removed ${photoId} by ${actor}`, results);
+    return json(200, { success: true, results, deletedBy: actor });
   } catch (error) {
     console.error(`delete-photo: failed for ${photoId}:`, error);
     return json(500, {

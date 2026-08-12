@@ -333,6 +333,147 @@ describe('photos', () => {
   });
 });
 
+describe('organizer access (UX-2)', () => {
+  const ORGANIZER = 'organizer@example.com';
+  const STRANGER = 'someone-else@example.com';
+
+  /** A signed-in organizer, as Firebase email-link sign-in presents them. */
+  function asUser(email, emailVerified = true) {
+    return testEnv
+      .authenticatedContext(`uid_${email}`, { email, email_verified: emailVerified })
+      .firestore();
+  }
+
+  beforeEach(async () => {
+    await seed(async (db) => {
+      await setDoc(doc(db, 'events', EVENT_ID), validEvent());
+      await setDoc(doc(db, 'events', 'other-event'), validEvent({ organizerEmail: STRANGER }));
+    });
+  });
+
+  test('an organizer can list their own events', async () => {
+    const db = asUser(ORGANIZER);
+    await assertSucceeds(
+      getDocs(query(collection(db, 'events'), where('organizerEmail', '==', ORGANIZER)))
+    );
+  });
+
+  test('an organizer cannot list somebody else’s events', async () => {
+    const db = asUser(ORGANIZER);
+    await assertFails(
+      getDocs(query(collection(db, 'events'), where('organizerEmail', '==', STRANGER)))
+    );
+  });
+
+  test('a signed-in user still cannot enumerate every event', async () => {
+    // The whole point of scoping list rather than just allowing it.
+    const db = asUser(ORGANIZER);
+    await assertFails(getDocs(collection(db, 'events')));
+  });
+
+  test('an anonymous visitor cannot list events at all', async () => {
+    const db = testEnv.unauthenticatedContext().firestore();
+    await assertFails(
+      getDocs(query(collection(db, 'events'), where('organizerEmail', '==', ORGANIZER)))
+    );
+  });
+
+  test('an unverified email is not an identity', async () => {
+    const db = asUser(ORGANIZER, false);
+    await assertFails(
+      getDocs(query(collection(db, 'events'), where('organizerEmail', '==', ORGANIZER)))
+    );
+  });
+
+  test('address casing does not lock an organizer out of their own event', async () => {
+    // Firebase preserves the case the user typed; our events store whatever was
+    // entered at creation. Comparing exactly would strand people.
+    const db = asUser('Organizer@Example.com');
+    await assertSucceeds(
+      updateDoc(doc(db, 'events', EVENT_ID), { title: 'Renamed by organizer' })
+    );
+  });
+
+  test('an organizer can edit their own event’s presentation', async () => {
+    const db = asUser(ORGANIZER);
+    await assertSucceeds(
+      updateDoc(doc(db, 'events', EVENT_ID), {
+        title: 'Smith Wedding — Reception',
+        date: '2026-06-15',
+        isActive: false,
+      })
+    );
+  });
+
+  test('an organizer cannot grant themselves premium', async () => {
+    // The whole reason the editable set is an allowlist rather than a denylist.
+    const db = asUser(ORGANIZER);
+    await assertFails(
+      updateDoc(doc(db, 'events', EVENT_ID), { planType: 'premium', photoLimit: -1 })
+    );
+  });
+
+  test('an organizer cannot smuggle planType alongside a legitimate edit', async () => {
+    const db = asUser(ORGANIZER);
+    await assertFails(
+      updateDoc(doc(db, 'events', EVENT_ID), { title: 'New title', planType: 'premium' })
+    );
+  });
+
+  test('an organizer cannot inflate their own photo count', async () => {
+    // Must be a *different* value. Writing the current value back changes no
+    // keys, so diff().affectedKeys() is empty and hasOnly() trivially passes —
+    // a harmless no-op, but it means the first version of this test passed
+    // without exercising the rule at all.
+    await seed((db) =>
+      setDoc(doc(db, 'events', EVENT_ID), validEvent({ photoCount: 7 }))
+    );
+
+    const db = asUser(ORGANIZER);
+    await assertFails(updateDoc(doc(db, 'events', EVENT_ID), { photoCount: 9999 }));
+  });
+
+  test('an organizer cannot reset their photo count to dodge the ceiling', async () => {
+    await seed((db) =>
+      setDoc(doc(db, 'events', EVENT_ID), validEvent({ photoCount: 4999 }))
+    );
+
+    const db = asUser(ORGANIZER);
+    await assertFails(updateDoc(doc(db, 'events', EVENT_ID), { photoCount: 0 }));
+  });
+
+  test('an organizer cannot edit somebody else’s event', async () => {
+    const db = asUser(ORGANIZER);
+    await assertFails(updateDoc(doc(db, 'events', 'other-event'), { title: 'Hijacked' }));
+  });
+
+  test('an organizer cannot hand their event to another address', async () => {
+    // organizerEmail is outside the editable set, so ownership cannot be moved
+    // from a browser.
+    const db = asUser(ORGANIZER);
+    await assertFails(
+      updateDoc(doc(db, 'events', EVENT_ID), { organizerEmail: STRANGER })
+    );
+  });
+
+  test('an organizer still cannot delete an event', async () => {
+    const db = asUser(ORGANIZER);
+    await assertFails(deleteDoc(doc(db, 'events', EVENT_ID)));
+  });
+
+  test('an organizer still cannot delete a photo directly', async () => {
+    // Moderation goes through delete-photo.js with an ID token, so that
+    // Firestore, Storage and R2 stay consistent.
+    let photoId;
+    await seed(async (db) => {
+      const ref = await addDoc(collection(db, 'photos'), validPhoto());
+      photoId = ref.id;
+    });
+    const db = asUser(ORGANIZER);
+    await assertFails(deleteDoc(doc(db, 'photos', photoId)));
+  });
+});
+
 describe('downloadJobs — server-only (SEC-4)', () => {
   test('a client cannot read the rate-limit counters it is subject to', async () => {
     await seed((db) =>

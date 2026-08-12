@@ -11,6 +11,7 @@ import { db } from '../firebase';
 import { Photo, Event } from '../types';
 import { getUploadState, UploadState } from './planService';
 import { getOwnerSecret, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
+import { getIdToken } from './authService';
 
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
@@ -328,12 +329,20 @@ export const canDeletePhoto = async (photoId: string): Promise<boolean> => {
 export const deletePhoto = async (photoId: string): Promise<void> => {
   console.log('🗑️ Requesting photo deletion:', photoId);
 
+  // Two ways to be allowed, and we send both when we have them: the uploader's
+  // session secret, and — if an organizer is signed in — a Firebase ID token.
+  // The server verifies the token properly, so this is real authorisation
+  // rather than a claim, and it is what lets an organizer moderate their own
+  // event (finding UX-2).
+  const idToken = await getIdToken().catch(() => null);
+
   const response = await fetch('/.netlify/functions/delete-photo', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       photoId,
-      ownerSecret: getOwnerSecret()
+      ownerSecret: getOwnerSecret(),
+      idToken
     })
   });
 
