@@ -1,17 +1,112 @@
 const { EC2Client, RunInstancesCommand, DescribeInstancesCommand } = require('@aws-sdk/client-ec2');
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 // AWS EC2 Spot Instance Launcher for 500MB Wedding Videos
 // Ultra Cost-Efficient: ~$0.01-0.02 per job vs $0.80+ for Lambda
+//
+// SECURITY (finding SEC-3)
+// ------------------------
+// This runs behind a Lambda Function URL with AuthType NONE, and its address is
+// committed in cloudflare-worker/wrangler.toml and three test scripts. Until
+// this change it accepted any POST: anyone who found the URL could queue jobs
+// and launch EC2 instances on our account indefinitely, and have email sent from
+// our domain to any address they chose. That is a denial-of-wallet endpoint.
+//
+// Callers must now present LAUNCHER_SHARED_SECRET in x-sharedmoments-secret.
+// The Cloudflare Worker sends it from its own secret binding.
+//
+// The shared secret is a stopgap that can ship without touching IAM. The better
+// control is switching the Function URL to AuthType AWS_IAM and signing requests
+// with SigV4 from the Worker, which removes the standing credential entirely.
+// See docs/runbooks/lambda-url-auth.md.
+
+const MAX_CONCURRENT_INSTANCES = Number(process.env.MAX_CONCURRENT_INSTANCES || 2);
+
+/**
+ * Read a required value from the Lambda's environment (finding SEC-9).
+ *
+ * The user-data script below is a systemd unit file, and it used to carry live
+ * R2 credentials as string literals — committed to this repository, in seven
+ * files, across two different key pairs. Anyone with repository access held
+ * read, write and delete on the production photo bucket.
+ *
+ * Configure these in the Lambda's own environment variables instead, where they
+ * can be rotated without a code change. Throwing on a missing value is
+ * deliberate: silently baking an empty credential into an instance produces a
+ * processor that starts, polls the queue, and fails every job with an opaque
+ * auth error.
+ */
+function requireEnv(name) {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(
+            `${name} is not set on the launcher Lambda. The processor cannot be ` +
+            `configured without it. See docs/runbooks/credential-rotation.md.`
+        );
+    }
+    return value;
+}
+
+/** Constant-time comparison so the secret cannot be recovered by timing. */
+function safeEquals(a, b) {
+    const bufA = Buffer.from(String(a || ''), 'utf8');
+    const bufB = Buffer.from(String(b || ''), 'utf8');
+    if (bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/** Case-insensitive header lookup — API Gateway and Function URLs differ. */
+function getHeader(headers, name) {
+    if (!headers) return undefined;
+    const target = name.toLowerCase();
+    const key = Object.keys(headers).find(k => k.toLowerCase() === target);
+    return key ? headers[key] : undefined;
+}
+
+/**
+ * Reject callers who cannot prove they hold the shared secret.
+ * Returns null when the request is authorised, or a response to return.
+ */
+function rejectIfUnauthorised(event) {
+    // Direct Lambda invocations (no HTTP envelope) already required IAM
+    // permission to call InvokeFunction, so they are trusted.
+    const isHttp = Boolean(event.httpMethod || event.requestContext);
+    if (!isHttp) return null;
+
+    const expected = process.env.LAUNCHER_SHARED_SECRET;
+
+    if (!expected) {
+        // Fail closed. An unset secret must not mean "accept everything" —
+        // that is the vulnerability being fixed.
+        console.error('LAUNCHER_SHARED_SECRET is not set; refusing all HTTP requests');
+        return { statusCode: 503, body: JSON.stringify({ error: 'Service unavailable' }) };
+    }
+
+    const presented = getHeader(event.headers, 'x-sharedmoments-secret');
+
+    if (!presented || !safeEquals(presented, expected)) {
+        console.warn('Rejected unauthenticated launcher request');
+        return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
+    }
+
+    return null;
+}
 
 exports.handler = async (event) => {
     console.log('🚀 AWS EC2 Spot Launcher triggered for 500MB video processing');
-    console.log('Event received:', JSON.stringify(event, null, 2));
-    
+
+    const unauthorised = rejectIfUnauthorised(event);
+    if (unauthorised) return unauthorised;
+
+    // Only logged after authentication, and without headers — the request
+    // carries a shared secret and the body carries customer email addresses.
+    console.log('Authenticated launcher request received');
+
     const ec2 = new EC2Client({ region: process.env.AWS_REGION || 'us-east-1' });
-    
+
     try {
         // Parse event data - handle both direct invocation and HTTP requests
         let requestData;
@@ -102,7 +197,32 @@ exports.handler = async (event) => {
         
         const existingInstances = await ec2.send(new DescribeInstancesCommand(describeParams));
         const runningInstances = existingInstances.Reservations.flatMap(r => r.Instances || []);
-        
+
+        // Hard ceiling on concurrent processors (SEC-3). Without this, a burst
+        // of requests - malicious or a retry storm - launches an unbounded
+        // number of instances. The job is already safely queued in SQS at this
+        // point, so refusing to launch costs latency, not the job.
+        if (runningInstances.length >= MAX_CONCURRENT_INSTANCES) {
+            console.warn(`At instance cap (${runningInstances.length}/${MAX_CONCURRENT_INSTANCES}); job stays queued`);
+
+            return {
+                statusCode: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, x-sharedmoments-secret'
+                },
+                body: JSON.stringify({
+                    success: true,
+                    message: 'Job queued - processing capacity is full, an existing instance will pick it up',
+                    eventId: eventId,
+                    queued: true,
+                    atCapacity: true
+                })
+            };
+        }
+
         if (runningInstances.length > 0) {
             const instanceId = runningInstances[0].InstanceId;
             const publicIP = runningInstances[0].PublicIpAddress;
@@ -199,14 +319,15 @@ TimeoutStopSec=120
 KillMode=process
 SuccessExitStatus=0
 Environment="NODE_ENV=production"
-Environment="R2_ACCOUNT_ID=98a9cce92e578cafdb9025fa24a6ee7e"
-Environment="R2_ACCESS_KEY_ID=06da59a3b3aa1315ed2c9a38efa7579e"
-Environment="R2_SECRET_ACCESS_KEY=e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27"
-Environment="R2_BUCKET_NAME=sharedmoments-photos-production"
-Environment="R2_PUBLIC_URL=https://sharedmomentsphotos.socialboostai.com"
-Environment="AWS_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue"
-Environment="AWS_REGION=us-east-1"
-Environment="NETLIFY_EMAIL_ENDPOINT=https://sharedmoments.socialboostai.com/.netlify/functions/direct-email"
+Environment="R2_ACCOUNT_ID=${requireEnv('R2_ACCOUNT_ID')}"
+Environment="R2_ACCESS_KEY_ID=${requireEnv('R2_ACCESS_KEY_ID')}"
+Environment="R2_SECRET_ACCESS_KEY=${requireEnv('R2_SECRET_ACCESS_KEY')}"
+Environment="R2_BUCKET_NAME=${requireEnv('R2_BUCKET_NAME')}"
+Environment="R2_PUBLIC_URL=${requireEnv('R2_PUBLIC_URL')}"
+Environment="AWS_SQS_QUEUE_URL=${requireEnv('AWS_SQS_QUEUE_URL')}"
+Environment="AWS_REGION=${process.env.AWS_REGION || 'us-east-1'}"
+Environment="NETLIFY_EMAIL_ENDPOINT=${requireEnv('NETLIFY_EMAIL_ENDPOINT')}"
+Environment="INTERNAL_SERVICE_SECRET=${requireEnv('INTERNAL_SERVICE_SECRET')}"
 [Install]
 WantedBy=multi-user.target
 SERVICE_EOF

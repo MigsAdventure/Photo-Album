@@ -50,9 +50,9 @@ SuccessExitStatus=0
 StandardOutput=append:/app/logs/processor.log
 StandardError=append:/app/logs/processor-error.log
 Environment="NODE_ENV=production"
-Environment="R2_ACCOUNT_ID=98a9cce92e578cafdb9025fa24a6ee7e"
-Environment="R2_ACCESS_KEY_ID=06da59a3b3aa1315ed2c9a38efa7579e"
-Environment="R2_SECRET_ACCESS_KEY=e14eb0a73cac515e1e9fd400268449411e67e0ce78433ac8b9289cab5a9f6e27"
+Environment="R2_ACCOUNT_ID=${R2_ACCOUNT_ID}"
+Environment="R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}"
+Environment="R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}"
 Environment="R2_BUCKET_NAME=sharedmoments-photos-production"
 Environment="R2_PUBLIC_URL=https://sharedmomentsphotos.socialboostai.com"
 Environment="AWS_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue"

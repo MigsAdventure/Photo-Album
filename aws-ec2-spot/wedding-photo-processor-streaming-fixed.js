@@ -21,14 +21,18 @@ const config = {
     region: process.env.AWS_REGION
   },
   netlify: {
-    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email',
+    // Proves to the email endpoint that this request came from our own backend
+    // rather than from anyone who found the URL (finding SEC-8).
+    internalSecret: process.env.INTERNAL_SERVICE_SECRET
   }
 };
 
 // Validate environment variables
 const requiredEnvVars = [
-  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 
-  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION'
+  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY',
+  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION',
+  'INTERNAL_SERVICE_SECRET'
 ];
 
 for (const envVar of requiredEnvVars) {
@@ -443,7 +447,10 @@ async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB, fa
   try {
     const response = await fetch(config.netlify.emailEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-sharedmoments-internal': config.netlify.internalSecret
+      },
       body: JSON.stringify({
         email: email,
         downloadUrl: downloadUrl,

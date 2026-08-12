@@ -39,10 +39,10 @@ SyslogIdentifier=wedding-processor
 
 Environment="AWS_REGION=us-east-1"
 Environment="NODE_ENV=production"
-Environment="R2_ACCESS_KEY_ID=726f0a5bdc6875ec2aa7a8102c6c8b29"
-Environment="R2_SECRET_ACCESS_KEY=3b01b8e969d99c3bb0c3e7db50edf3de6e8c59dea87cfa967c18dc956c07ff77"
+Environment="R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}"
+Environment="R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}"
 Environment="R2_BUCKET_NAME=miguels-wedding-photos"
-Environment="R2_ACCOUNT_ID=9c04be9cb00bf3b56e2c509e2f58f69c"
+Environment="R2_ACCOUNT_ID=${R2_ACCOUNT_ID}"
 Environment="R2_PUBLIC_URL=https://photos.lovewithoutborders.email"
 Environment="AWS_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/782720046962/wedding-photo-processing-queue"
 Environment="NETLIFY_EMAIL_ENDPOINT=https://sharedmoments.socialboostai.com/.netlify/functions/direct-email"
