@@ -13,7 +13,7 @@
 //
 // Refs: AUDIT_2026-08.md ZIP-10, UX-3
 
-import { getOwnerToken } from './sessionService';
+import { getOwnerToken, addOwnedPhoto } from './sessionService';
 import { generateThumbnail } from './thumbnailService';
 
 export interface UploadResult {
@@ -34,16 +34,26 @@ interface UploadTarget {
   maxBytes: number;
 }
 
-/** Thrown when the event has hit its plan limit, so the UI can offer an upgrade. */
-export class PlanLimitError extends Error {
-  photoCount: number;
-  photoLimit: number;
+/**
+ * Thrown when the event is not accepting uploads, carrying the reason so the UI
+ * can say something useful.
+ *
+ * This replaced a PlanLimitError that keyed on HTTP 402 and reason
+ * 'plan_limit' — a contract upload-init stopped speaking when UX-1 moved from a
+ * photo count to a time window. It was left matching a status the server no
+ * longer returns, so it silently degraded to a generic "Upload failed (403)".
+ * Worth remembering that changing a status code orphans every client branch
+ * that matched the old one, and nothing type-checks that.
+ */
+export class UploadNotAllowedError extends Error {
+  reason: string;
+  closesAt: Date | null;
 
-  constructor(message: string, photoCount: number, photoLimit: number) {
+  constructor(message: string, reason: string, closesAt: string | null) {
     super(message);
-    this.name = 'PlanLimitError';
-    this.photoCount = photoCount;
-    this.photoLimit = photoLimit;
+    this.name = 'UploadNotAllowedError';
+    this.reason = reason;
+    this.closesAt = closesAt ? new Date(closesAt) : null;
   }
 }
 
@@ -62,11 +72,14 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       /* non-JSON error body */
     }
 
-    if (response.status === 402 && payload?.reason === 'plan_limit') {
-      throw new PlanLimitError(
-        payload.error || 'This event has reached its upload limit.',
-        payload.photoCount ?? 0,
-        payload.photoLimit ?? 0
+    // 403 with a reason means the event is closed to uploads — a fact about the
+    // event, not a payment demand. Kept distinct so the UI can explain rather
+    // than showing a generic failure.
+    if (response.status === 403 && payload?.reason) {
+      throw new UploadNotAllowedError(
+        payload.error || 'This event is not accepting uploads right now.',
+        payload.reason,
+        payload.closesAt ?? null
       );
     }
 
@@ -227,8 +240,14 @@ export const uploadMediaToR2 = async (
       const start = i * partSize;
       const chunk = file.slice(start, Math.min(start + partSize, file.size));
 
+      // Snapshot the running total before the await. The closure below is
+      // correct either way — it only fires while this part is in flight, before
+      // the mutation on the next line — but capturing a const makes that
+      // obvious to a reader and to eslint, rather than relying on the timing.
+      const bytesBeforeThisPart = confirmedBytes;
+
       const eTag = await putPartWithRetry(urls[i], chunk, contentType, (loaded) =>
-        reportBytes(confirmedBytes + loaded)
+        reportBytes(bytesBeforeThisPart + loaded)
       );
 
       confirmedBytes += chunk.size;
@@ -256,6 +275,19 @@ export const uploadMediaToR2 = async (
     height: thumb?.sourceHeight,
     duration: thumb?.duration,
   });
+
+  // Record it locally so the gallery offers this browser a delete affordance for
+  // its own photos.
+  //
+  // This is easy to lose in a refactor and fails silently when you do: the
+  // gallery reads ownership from the local list, so without this line every
+  // guest sees a gallery they cannot delete anything from, with no error. It
+  // went missing when uploads moved off photoService and was caught only
+  // because an unused-import warning pointed at the orphaned addOwnedPhoto.
+  //
+  // The server check is independent (delete-photo verifies the session secret
+  // against the recorded hash), so this list is a UI hint, not the authority.
+  addOwnedPhoto(result.photoId);
 
   onProgress?.(100);
   return result;

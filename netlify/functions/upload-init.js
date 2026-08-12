@@ -43,6 +43,7 @@ const {
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { getClient, getBucketName, isConfigured: r2Configured } = require('./_lib/r2');
 const { getDb, isConfigured: firebaseConfigured } = require('./_lib/firebase-admin');
+const { getUploadState, explainUploadState } = require('./_lib/plan');
 
 // Above this, use multipart. R2 accepts a single PUT well beyond this, but a
 // failed 500 MB PUT restarts from zero — on hotel wifi at a wedding reception
@@ -149,21 +150,22 @@ exports.handler = async (event) => {
       return json(403, { error: 'This event is no longer accepting uploads' });
     }
 
-    // The plan limit is checked here as well as in the client so that a guest
-    // cannot bypass it by calling the API directly. It is deliberately NOT in
-    // firestore.rules — see the note there; a database-level rejection produces
-    // an error nobody can act on.
-    if (eventData.planType !== 'premium') {
-      const limit = Number(eventData.photoLimit ?? 2);
-      const count = Number(eventData.photoCount ?? 0);
-      if (limit >= 0 && count >= limit) {
-        return json(402, {
-          error: 'This event has reached its upload limit.',
-          reason: 'plan_limit',
-          photoCount: count,
-          photoLimit: limit,
-        });
-      }
+    // This is the authoritative check. The client runs the same logic
+    // (src/services/planService.ts) so it can explain the state before a guest
+    // picks a file, but nothing depends on the client being right.
+    //
+    // Note the status code: 403, not 402. A closed upload window is a fact about
+    // the event, not a payment demand — the guest hitting it is usually not the
+    // person who could pay, and telling them otherwise is finding UX-1.
+    const uploadState = getUploadState(eventData);
+
+    if (!uploadState.canUpload) {
+      return json(403, {
+        error: explainUploadState(uploadState, 'guest'),
+        reason: uploadState.reason,
+        closesAt: uploadState.closesAt ? uploadState.closesAt.toISOString() : null,
+        photoCount: uploadState.photoCount,
+      });
     }
 
     const client = getClient();

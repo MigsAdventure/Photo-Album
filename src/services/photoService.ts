@@ -1,26 +1,16 @@
-import { 
-  collection, 
-  addDoc,
-  onSnapshot, 
-  query, 
+import {
+  collection,
+  onSnapshot,
+  query,
   where,
   doc,
   getDoc,
-  setDoc,
-  updateDoc,
-  increment,
-  deleteDoc
+  setDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
-import {
-  getCurrentSessionId,
-  getOwnerToken,
-  getOwnerSecret,
-  addOwnedPhoto,
-  removeOwnedPhoto,
-  getPhotoOwnership
-} from './sessionService';
+import { getUploadState, UploadState } from './planService';
+import { getOwnerSecret, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
 
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
@@ -150,7 +140,12 @@ export const getEvent = async (eventId: string): Promise<Event | null> => {
       isActive: data.isActive,
       organizerEmail: data.organizerEmail || '',
       planType: data.planType || 'free',
-      photoLimit: data.planType === 'free' ? 2 : (data.photoLimit || 2), // Force 2-photo limit for all free events
+      // photoLimit is retained on the document for older events but no longer
+      // drives anything. Uploads are governed by a time window now
+      // (src/services/planService.ts, finding UX-1) — the old line here forced
+      // every free event to 2 regardless of what the document said, which is
+      // what blocked the third guest at a wedding.
+      photoLimit: data.photoLimit ?? -1,
       photoCount: data.photoCount || 0,
       paymentId: data.paymentId,
       customBranding: data.customBranding
@@ -268,14 +263,22 @@ export const requestEmailDownload = async (
 // closed the tab between saving the photo and bumping the count, the event was
 // permanently miscounted, and the plan limit is computed from that count.
 
-// Check if event can accept more photos (freemium limit)
+// Can this event accept uploads right now?
+//
+// Delegates to the shared window logic. The server runs the same check in
+// upload-init.js and is authoritative; this is so the UI can explain the state
+// before a guest picks a file rather than failing afterwards.
 export const canUploadPhoto = async (eventId: string): Promise<boolean> => {
   const event = await getEvent(eventId);
   if (!event) return false;
-  
-  if (event.planType === 'premium') return true;
-  
-  return event.photoCount < event.photoLimit;
+
+  return getUploadState(event).canUpload;
+};
+
+// The full state, for UI that needs to explain itself rather than just gate.
+export const getEventUploadState = async (eventId: string): Promise<UploadState | null> => {
+  const event = await getEvent(eventId);
+  return event ? getUploadState(event) : null;
 };
 
 // Upgrading an event to premium is deliberately NOT available on the client.
