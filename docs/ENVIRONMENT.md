@@ -55,6 +55,8 @@ readable by every visitor**. Only public values belong here.
 | `REACT_APP_FIREBASE_MESSAGING_SENDER_ID` | |
 | `REACT_APP_FIREBASE_APP_ID` | |
 | `REACT_APP_R2_PUBLIC_DOMAIN` | Public R2 hostname used to build display URLs |
+| `REACT_APP_FIREBASE_MEASUREMENT_ID` | Analytics id; optional |
+| `REACT_APP_GHL_UPGRADE_WEBHOOK` | GoHighLevel workflow trigger URL for the upgrade notification. Optional — the notification is skipped with a warning if unset. It is a notification only and carries no authority to change plan state. |
 | ~~`REACT_APP_GHL_API_KEY`~~ | **Remove this.** A GoHighLevel API key in the bundle exposes the whole location to every visitor (finding GHL-1). If it was ever deployed, rotate it. |
 
 ## Netlify Functions (server-side)
@@ -74,6 +76,11 @@ readable by every visitor**. Only public values belong here.
 | `EMAIL_USER` | Mailgun SMTP user |
 | `EMAIL_PASSWORD` | Mailgun SMTP password. Rotate — it was reachable from the leaked instances. |
 | `CLOUDFLARE_WORKER_URL` | Where large collections are routed |
+| `UPLOAD_TOKEN_SECRET` | Signs the upload token that `upload-complete` verifies. Falls back to `INTERNAL_SERVICE_SECRET` if unset — acceptable, but a separate value is better. |
+| `DOWNLOAD_URL_ALLOWED_HOST` | Optional extra host allowed in emailed download links, alongside `R2_PUBLIC_URL` |
+| `ARCHIVE_REUSE_WINDOW_MS` | Optional, default `1800000` (30 min). How long a completed archive is reused rather than rebuilt. |
+| `EMAIL_HOST` | Optional, default `smtp.mailgun.org` |
+| `EMAIL_PORT` | Optional, default `587` |
 | `DOWNLOAD_LIMIT_PER_EVENT` | Optional, default `5` per hour |
 | `DOWNLOAD_LIMIT_PER_EMAIL` | Optional, default `10` per hour |
 | `DOWNLOAD_LIMIT_WINDOW_MS` | Optional, default `3600000` |
@@ -112,6 +119,15 @@ Set by the launcher into the systemd unit — do not configure by hand.
 `INTERNAL_SERVICE_SECRET`.
 
 The processor validates all of these at startup and exits if any are missing.
+
+## Firebase console settings
+
+Not environment variables, but the application does not work without them.
+
+| Setting | Where | Why |
+|---|---|---|
+| **Email link (passwordless) sign-in** | Authentication → Sign-in method → Email/Password → enable the "Email link" toggle underneath | Organizer sign-in (UX-2). Without it `sendSignInLinkToEmail` fails. |
+| **Authorized domains** | Authentication → Settings → Authorized domains | Add every domain the app is served from. Magic links refuse to complete on an unlisted domain. |
 
 ## Local development
 

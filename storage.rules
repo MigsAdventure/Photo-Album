@@ -12,10 +12,15 @@ rules_version = '2';
 // an anonymous write can be: a photo or a video, under 2 GB, inside an event
 // prefix, carrying a sessionId.
 //
-// This surface shrinks considerably in Phase 3, when uploads move to R2 through a
-// server-issued presigned URL that encodes the event, the size limit and an
-// expiry (findings ZIP-10, UX-3). At that point Firebase Storage leaves the write
-// path and these rules can become read-only.
+// UPDATE (Phase 3): that migration has happened. Uploads go straight to R2 via
+// presigned URLs, and nothing in the application writes to Firebase Storage any
+// more. The create rule below is retained deliberately for one deploy cycle so a
+// rollback has somewhere to land — once the R2 path is confirmed in production,
+// change it to `allow create: if false` and this becomes a read-only archive of
+// everything uploaded before the migration.
+//
+// Read access must stay: photos uploaded before Phase 3 still live here and are
+// still served from here.
 //
 // Refs: AUDIT_2026-08.md SEC-6, ZIP-10
 

@@ -99,9 +99,8 @@ const PaymentSuccess: React.FC = () => {
         // Add test function call for debugging
         try {
           console.log('🧪 Testing event lookup via debug function...');
-          const debugResponse = await fetch(`/.netlify/functions/test-event-lookup?eventId=${eventId}`);
-          const debugData = await debugResponse.json();
-          console.log('🧪 Debug lookup result:', debugData);
+          // Removed: this called a debug endpoint that dumped raw event
+          // documents to anyone who asked. The endpoint is deleted.
         } catch (debugError) {
           console.log('⚠️ Debug function failed (this is ok):', debugError instanceof Error ? debugError.message : String(debugError));
         }

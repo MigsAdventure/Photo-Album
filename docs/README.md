@@ -51,7 +51,7 @@ Describe what the code does now and when we last verified it.
 | 1 — Security hardening | Code complete, **not deployed**. [Session](sessions/2026-08-12_phase-1-security.md) |
 | 2 — One download pipeline | Code complete, **not deployed, not exercised end to end**. [Session](sessions/2026-08-12_phase-2-download-pipeline.md) |
 | 3 — Storage plane | Code complete, **blocked on R2 CORS config**. [Session](sessions/2026-08-12_phase-3-storage-plane.md) |
-| 4 — Make it a product | Not started |
+| 4 — Make it a product | Code complete, **needs Firebase console settings**. [Session](sessions/2026-08-12_phase-4-product.md) |
 | 5 — Modernize | Not started |
 | 6 — Differentiate | Not started |
 
@@ -64,8 +64,9 @@ Netlify. Both session logs carry their own checklist.
 ## Tests
 
 ```bash
-npm run test:all        # everything (74 tests)
+npm run test:all        # everything (114 tests)
 npm run test:security   # rules + webhook auth
 npm run test:archive    # the ZIP-3 regression tests
+npm run test:plan       # upload-window rules, and client/server parity
 npm run test:rules      # Firestore rules + rate limiter, needs Java for the emulator
 ```

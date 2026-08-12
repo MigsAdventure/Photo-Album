@@ -3,6 +3,41 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — Phase 4: Making it a product
+
+Session: [`sessions/2026-08-12_phase-4-product.md`](sessions/2026-08-12_phase-4-product.md)
+
+**Requires two Firebase console settings** — email-link sign-in and authorized
+domains — or organizer sign-in fails.
+
+### Fixed
+
+- **The free plan blocked guests** (UX-1) — two photos per *event*, so the third
+  person at a wedding was shown an upgrade modal for an event they neither owned
+  nor could pay for, and their photos were lost for good. Free events now accept
+  everything until 72 hours after the event date, then go view-only. Guests are
+  never asked to pay; the organizer gets the prompt.
+- **Organizers had nowhere to stand** (UX-2) — no way to see your events, reopen
+  one, check what came in, or moderate. Lose the confirmation email and the event
+  was gone. There is now magic-link sign-in and a `/dashboard`.
+- **Nobody could remove an inappropriate photo** — organizers can now delete
+  anything in their own event, authorised by a verified Firebase ID token.
+- **Thumbnail objects were orphaned on delete** — Phase 3 started writing a
+  second R2 object per photo and nothing removed it, recreating the SEC-7 orphan
+  class.
+
+### Added
+
+- First real identity in the codebase. `firestore.rules` now grants organizers
+  scoped access to their own events, with an allowlist of editable fields so
+  plan state stays server-only.
+- 44 new tests (29 plan and parity, 15 organizer rules). Suite total: 114.
+
+### Removed
+
+- Seven orphaned production endpoints, including a debug function that dumped
+  raw event documents to anyone who asked.
+
 ## 2026-08-12 — Phase 3: Storage plane
 
 Session: [`sessions/2026-08-12_phase-3-storage-plane.md`](sessions/2026-08-12_phase-3-storage-plane.md)
