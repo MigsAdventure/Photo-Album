@@ -5,146 +5,21 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const https = require('https');
 const archiver = require('archiver');
 const nodemailer = require('nodemailer');
+const { requireInternalCaller, isAllowedDownloadUrl } = require('./_lib/internal-auth');
+const { checkDownloadRequest } = require('./_lib/rate-limit');
 
-// Circuit breaker configuration to prevent infinite loops (Netlify version)
-const REQUEST_TRACKING = new Map();
-const MAX_RETRIES = 3;
-const BACKOFF_MULTIPLIER = 2;
-const CIRCUIT_BREAKER_TIMEOUT = 30 * 60 * 1000; // 30 minutes
-
-// GLOBAL RATE LIMITING - Prevents infinite loops by tracking email+IP (like Cloudflare Worker)
-const GLOBAL_REQUEST_TRACKING = new Map();
-const GLOBAL_RATE_LIMIT = 3; // Max 3 requests per minute per email+IP (stricter protection)
-const GLOBAL_RATE_WINDOW = 60 * 1000; // 1 minute window
-
-/**
- * Global rate limiting system to prevent infinite loops (Netlify version)
- * Tracks by email+IP combination to prevent bypass with new requestIds
- * @param {string} email - User email address
- * @param {string} clientIP - Client IP address
- * @returns {boolean} - True if request allowed, false if rate limited
- */
-function checkGlobalRateLimit(email, clientIP) {
-  const now = Date.now();
-  const key = `${email}:${clientIP}`;
-  
-  // Get or create tracking for this email+IP
-  const tracking = GLOBAL_REQUEST_TRACKING.get(key) || [];
-  
-  // Remove old entries outside the window
-  const recentRequests = tracking.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
-  
-  console.log(`🌐 Netlify Global rate limit check [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests in last ${GLOBAL_RATE_WINDOW/1000}s`);
-  
-  // Check if limit exceeded
-  if (recentRequests.length >= GLOBAL_RATE_LIMIT) {
-    console.error(`🚫 NETLIFY GLOBAL RATE LIMIT EXCEEDED [${key}]: ${recentRequests.length} requests in ${GLOBAL_RATE_WINDOW/1000}s (limit: ${GLOBAL_RATE_LIMIT})`);
-    return false;
-  }
-  
-  // Add current request timestamp
-  recentRequests.push(now);
-  GLOBAL_REQUEST_TRACKING.set(key, recentRequests);
-  
-  console.log(`✅ Netlify Global rate limit OK [${key}]: ${recentRequests.length}/${GLOBAL_RATE_LIMIT} requests`);
-  return true;
-}
-
-/**
- * Clean up old rate limit entries to prevent memory leaks
- */
-function cleanupGlobalRateLimit() {
-  const now = Date.now();
-  const keysToDelete = [];
-  
-  for (const [key, timestamps] of GLOBAL_REQUEST_TRACKING.entries()) {
-    const recentRequests = timestamps.filter(timestamp => now - timestamp < GLOBAL_RATE_WINDOW);
-    if (recentRequests.length === 0) {
-      keysToDelete.push(key);
-    } else {
-      GLOBAL_REQUEST_TRACKING.set(key, recentRequests);
-    }
-  }
-  
-  keysToDelete.forEach(key => GLOBAL_REQUEST_TRACKING.delete(key));
-  
-  if (keysToDelete.length > 0) {
-    console.log(`🧹 Netlify Global rate limit cleanup: Removed ${keysToDelete.length} expired entries`);
-  }
-}
-
-/**
- * Circuit breaker system to prevent infinite retry loops (Netlify version)
- * @param {string} requestId - Unique request identifier
- * @returns {object} - Tracking information
- * @throws {Error} - If circuit breaker prevents processing
- */
-function checkCircuitBreaker(requestId) {
-  const now = Date.now();
-  const tracking = REQUEST_TRACKING.get(requestId) || { 
-    attempts: 0, 
-    lastAttempt: 0,
-    firstAttempt: now,
-    errors: []
-  };
-  
-  // Clean up old tracking entries (older than 30 minutes)
-  if (now - tracking.firstAttempt > CIRCUIT_BREAKER_TIMEOUT) {
-    REQUEST_TRACKING.delete(requestId);
-    return checkCircuitBreaker(requestId); // Start fresh
-  }
-  
-  // Check max retries exceeded
-  if (tracking.attempts >= MAX_RETRIES) {
-    console.error(`🚫 Netlify Circuit breaker OPEN [${requestId}]: Max retries (${MAX_RETRIES}) exceeded`);
-    throw new Error(`Circuit breaker: Maximum ${MAX_RETRIES} attempts exceeded. Request blocked to prevent infinite loops.`);
-  }
-  
-  // Check backoff period
-  const timeSinceLastAttempt = now - tracking.lastAttempt;
-  const requiredBackoff = Math.pow(BACKOFF_MULTIPLIER, tracking.attempts) * 1000;
-  
-  if (tracking.attempts > 0 && timeSinceLastAttempt < requiredBackoff) {
-    console.warn(`⏳ Netlify Circuit breaker BACKOFF [${requestId}]: ${requiredBackoff}ms required, ${timeSinceLastAttempt}ms elapsed`);
-    throw new Error(`Circuit breaker: Backoff period not met. Wait ${Math.ceil((requiredBackoff - timeSinceLastAttempt) / 1000)}s before retry.`);
-  }
-  
-  // Update tracking
-  tracking.attempts++;
-  tracking.lastAttempt = now;
-  REQUEST_TRACKING.set(requestId, tracking);
-  
-  console.log(`✅ Netlify Circuit breaker CHECK [${requestId}]: Attempt ${tracking.attempts}/${MAX_RETRIES}, backoff ${requiredBackoff}ms`);
-  
-  return tracking;
-}
-
-/**
- * Record circuit breaker success - resets failure count
- * @param {string} requestId - Request identifier
- */
-function recordCircuitBreakerSuccess(requestId) {
-  REQUEST_TRACKING.delete(requestId);
-  console.log(`🎉 Netlify Circuit breaker SUCCESS [${requestId}]: Request completed successfully, tracking cleared`);
-}
-
-/**
- * Record circuit breaker failure - adds to error history
- * @param {string} requestId - Request identifier
- * @param {Error} error - Error that occurred
- */
-function recordCircuitBreakerFailure(requestId, error) {
-  const tracking = REQUEST_TRACKING.get(requestId);
-  if (tracking) {
-    tracking.errors.push({
-      timestamp: Date.now(),
-      message: error.message,
-      type: error.constructor.name
-    });
-    REQUEST_TRACKING.set(requestId, tracking);
-    console.error(`❌ Netlify Circuit breaker FAILURE [${requestId}]: ${error.message} (Attempt ${tracking.attempts}/${MAX_RETRIES})`);
-  }
-}
+// Rate limiting and retry control used to live here as ~250 lines of in-memory
+// bookkeeping: a Map of request timestamps and a "circuit breaker" keyed by
+// requestId. Neither worked (finding ZIP-9).
+//
+// Netlify starts a fresh container on every cold start, so the Map was empty
+// most of the time and never saw a meaningful share of traffic. The circuit
+// breaker keyed on a requestId generated inside the handler itself, so its
+// attempt counter read zero on every call and it could never open.
+//
+// Both are replaced by _lib/rate-limit.js, which keeps counters in Firestore
+// where they are actually shared. Do not reintroduce process-local state for
+// this in a serverless function.
 
 /**
  * Analyze collection size and determine optimal processing strategy
@@ -320,10 +195,31 @@ exports.handler = async (event, context) => {
     };
   }
 
-  // Check if this is a pre-processed payload from Cloudflare Worker
+  // Check if this is a pre-processed payload from Cloudflare Worker.
+  //
+  // This branch sends a branded email containing a caller-supplied link, so it
+  // is the same phishing relay as direct-email (finding SEC-8): before this
+  // change, setting source to 'cloudflare-worker' and passing any downloadUrl
+  // was enough to send mail from our domain pointing anywhere. The caller must
+  // now hold INTERNAL_SERVICE_SECRET, and the link must be on the R2 host.
   if (source === 'cloudflare-worker' && downloadUrl) {
-    console.log(`📧 Processing Worker email request [${requestId}] for ${email}`);
-    
+    const unauthorised = requireInternalCaller(event, headers);
+    if (unauthorised) return unauthorised;
+
+    if (!isAllowedDownloadUrl(downloadUrl)) {
+      console.error(`❌ Rejected worker download URL [${requestId}]`);
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({
+          error: 'downloadUrl must be an https link on the configured R2 host',
+          requestId
+        }),
+      };
+    }
+
+    console.log(`📧 Processing Worker email request [${requestId}]`);
+
     try {
       // Send email with pre-processed download link
       await sendWorkerSuccessEmail(email, requestId, fileCount, finalSizeMB, downloadUrl, compressionStats, processingTimeSeconds);
@@ -372,58 +268,34 @@ exports.handler = async (event, context) => {
   try {
     console.log(`📧 Processing email download [${requestId}]:`, { eventId, email });
 
-    // GLOBAL RATE LIMITING - Check BEFORE any processing to prevent infinite loops
-    const clientIP = event.headers['x-forwarded-for']?.split(',')[0] || 
-                     event.headers['x-real-ip'] || 
-                     event.requestContext?.identity?.sourceIp || 
-                     'unknown';
-    
-    if (!checkGlobalRateLimit(email, clientIP)) {
-      console.error(`🚫 NETLIFY GLOBAL RATE LIMIT blocking request [${requestId}] for ${email}:${clientIP}`);
-      
-      // Cleanup old entries to prevent memory leaks
-      cleanupGlobalRateLimit();
-      
-      return {
-        statusCode: 429, // Too Many Requests
-        headers: {
-          ...headers,
-          'Retry-After': '60'
-        },
-        body: JSON.stringify({
-          error: 'Too many requests',
-          reason: 'Rate limit exceeded: maximum 5 requests per minute',
-          requestId,
-          action: 'Stop retrying. Wait 1 minute before submitting a new request.',
-          email: email,
-          clientIP: clientIP
-        }),
-      };
-    }
+    // Rate limiting, backed by Firestore so the counter is shared across cold
+    // starts and regions (findings SEC-4, ZIP-9). The previous implementation
+    // used an in-process Map, which Netlify discards on every cold start, and a
+    // "circuit breaker" keyed on a requestId generated inside this same handler
+    // — so its attempt count was always zero and it could never open. Both are
+    // deleted; see _lib/rate-limit.js.
+    const rateCheck = await checkDownloadRequest(eventId, email);
 
-    // Circuit breaker check to prevent infinite loops (backup protection)
-    try {
-      checkCircuitBreaker(requestId);
-    } catch (circuitBreakerError) {
-      console.error(`🚫 Netlify Circuit breaker blocked request [${requestId}]:`, circuitBreakerError.message);
+    if (!rateCheck.allowed) {
+      console.warn(`🚫 Rate limited [${requestId}] for event ${eventId}`);
       return {
-        statusCode: 429, // Too Many Requests
+        statusCode: 429,
         headers: {
           ...headers,
-          'Retry-After': '60' // Suggest 60 second retry
+          'Retry-After': String(rateCheck.retryAfterSeconds)
         },
         body: JSON.stringify({
-          error: 'Request blocked by circuit breaker',
-          reason: circuitBreakerError.message,
-          requestId,
-          action: 'Request blocked to prevent infinite loops. Please wait before retrying.'
+          error: rateCheck.reason,
+          action: `Please wait about ${Math.ceil(rateCheck.retryAfterSeconds / 60)} minute(s) and try again. Your photos are safe — nothing was lost.`,
+          retryAfterSeconds: rateCheck.retryAfterSeconds,
+          requestId
         }),
       };
     }
 
     // Step 1: Quick file analysis to determine processing strategy
     console.log(`🔍 Analyzing files for event [${requestId}]:`, eventId);
-    
+
     const q = query(
       collection(db, 'photos'),
       where('eventId', '==', eventId)
@@ -628,16 +500,10 @@ async function processLargeCollectionInBackground(photos, eventId, email, reques
     await uploadToR2AndSendEmail(zipBuffer, eventId, email, requestId, totalProcessed, finalSizeMB);
     
     console.log(`✅ Background processing complete [${requestId}]`);
-    
-    // Record circuit breaker success - clears retry tracking
-    recordCircuitBreakerSuccess(requestId);
-    
+
   } catch (error) {
     console.error(`❌ Background processing failed [${requestId}]:`, error);
-    
-    // Record circuit breaker failure - adds to error history
-    recordCircuitBreakerFailure(requestId, error);
-    
+
     // Send error email to user
     try {
       await sendErrorEmail(email, requestId, error.message);
