@@ -14,7 +14,14 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
-import { getCurrentSessionId, addOwnedPhoto, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
+import {
+  getCurrentSessionId,
+  getOwnerToken,
+  getOwnerSecret,
+  addOwnedPhoto,
+  removeOwnedPhoto,
+  getPhotoOwnership
+} from './sessionService';
 
 // Interface for photo analysis data
 interface PhotoAnalysisData {
@@ -86,9 +93,14 @@ export const uploadPhoto = async (
   const extension = file.name.split('.').pop() || 'jpg';
   const storageRef = ref(storage, `events/${eventId}/photos/${photoId}.${extension}`);
   
-  // Get current session ID for ownership tracking
+  // Get current session ID for ownership tracking. The raw id is a bearer
+  // secret — it goes into Storage metadata (which only the server and the
+  // uploader can read) but never into the Firestore document, which every guest
+  // in the gallery can read. The document gets the hash instead. See
+  // netlify/functions/delete-photo.js for why (finding SEC-5).
   const sessionId = getCurrentSessionId();
-  
+  const ownerToken = await getOwnerToken();
+
   // Add metadata with sessionId for security rules compliance
   const metadata = {
     customMetadata: {
@@ -126,7 +138,7 @@ export const uploadPhoto = async (
             contentType: file.type,
             storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
             mediaType: 'photo' as const,
-            uploadedBy: sessionId // Track ownership
+            uploadedBy: ownerToken // Hash of the session secret, safe to publish
           });
           
           // Add to user's owned photos list
@@ -590,117 +602,79 @@ export const canUploadPhoto = async (eventId: string): Promise<boolean> => {
   return event.photoCount < event.photoLimit;
 };
 
-// Upgrade event to premium
-export const upgradeEventToPremium = async (
-  eventId: string, 
-  paymentId: string,
-  customBranding?: any
-): Promise<void> => {
-  const eventRef = doc(db, 'events', eventId);
-  await updateDoc(eventRef, {
-    planType: 'premium',
-    paymentId,
-    photoLimit: -1, // Unlimited
-    customBranding: customBranding || null
-  });
-  
-  console.log('✅ Event upgraded to premium:', eventId);
-};
+// Upgrading an event to premium is deliberately NOT available on the client.
+//
+// This function used to write planType, photoLimit and paymentId directly from
+// the browser. Because it was an exported module function, unlocking unlimited
+// uploads for any event was a single call from the developer console with no
+// payment involved (finding SEC-2).
+//
+// Plan state is now Admin-SDK-only, enforced by firestore.rules, and is written
+// exclusively by netlify/functions/ghl-webhook.js after it has verified the
+// payment signature. If you need to upgrade an event manually, do it from the
+// Firebase console or add an authenticated admin endpoint — do not reintroduce
+// a client-side path.
 
 // Photo deletion functions with ownership checking
 
-// Check if current user can delete a photo
+// Can the current browser offer a delete affordance for this photo?
+//
+// This is a UI hint, answered entirely from the local owned-photos list. The
+// real check happens in netlify/functions/delete-photo.js, which requires the
+// session secret — so being wrong here costs nothing worse than showing or
+// hiding an icon.
+//
+// It previously fetched the photo document from Firestore to read uploadedBy.
+// The gallery calls it once per photo on every snapshot, so a 400-photo event
+// issued 400 Firestore reads every time anyone uploaded anything, purely to
+// decide whether to draw a delete button (finding UX-3). It is now synchronous
+// and free; the async signature is kept so existing call sites don't change.
 export const canDeletePhoto = async (photoId: string): Promise<boolean> => {
-  try {
-    // Get photo metadata from Firestore
-    const docRef = doc(db, 'photos', photoId);
-    const docSnap = await getDoc(docRef);
-    
-    if (!docSnap.exists()) {
-      console.warn('⚠️ Photo not found for deletion check:', photoId);
-      return false;
-    }
-    
-    const photoData = docSnap.data();
-    const uploaderSessionId = photoData.uploadedBy;
-    
-    // Check ownership using session service
-    const ownership = getPhotoOwnership(photoId, uploaderSessionId);
-    
-    console.log('🔍 Delete permission check for', photoId, ':', ownership.canDelete ? 'ALLOWED' : 'DENIED');
-    return ownership.canDelete;
-    
-  } catch (error) {
-    console.error('❌ Error checking delete permission:', error);
-    return false;
-  }
+  return getPhotoOwnership(photoId).canDelete;
 };
 
-// Delete a photo (with ownership validation)
+// Delete a photo.
+//
+// This used to run entirely in the browser: check localStorage, delete the
+// Firestore document, attempt the Storage object, never touch R2. Two things
+// were wrong with that. The ownership check was advisory — nothing stopped a
+// caller skipping it — and the Storage delete was denied by the storage rules,
+// so the photo disappeared from the gallery while its bytes stayed in Firebase
+// Storage and R2, billed forever and unreachable by any UI (findings SEC-5,
+// SEC-7).
+//
+// Deletion now happens server-side in one operation across all three stores.
+// The browser presents its session secret; the server checks it against the
+// hash recorded on the photo.
 export const deletePhoto = async (photoId: string): Promise<void> => {
-  try {
-    console.log('🗑️ Initiating photo deletion:', photoId);
-    
-    // First verify ownership
-    const canDelete = await canDeletePhoto(photoId);
-    if (!canDelete) {
-      throw new Error('You can only delete photos that you uploaded');
-    }
-    
-    // Get photo metadata to find storage path
-    const docRef = doc(db, 'photos', photoId);
-    const docSnap = await getDoc(docRef);
-    
-    if (!docSnap.exists()) {
-      throw new Error('Photo not found');
-    }
-    
-    const photoData = docSnap.data();
-    const storagePath = photoData.storagePath;
-    const eventId = photoData.eventId;
-    
-    console.log('📁 Deleting from storage path:', storagePath);
-    
-    // Delete from Firebase Storage
-    if (storagePath) {
-      try {
-        const { ref, deleteObject } = await import('firebase/storage');
-        const { storage } = await import('../firebase');
-        
-        const storageRef = ref(storage, storagePath);
-        await deleteObject(storageRef);
-        console.log('✅ Photo deleted from Firebase Storage');
-      } catch (storageError) {
-        console.warn('⚠️ Failed to delete from storage (may not exist):', storageError);
-        // Continue with Firestore deletion even if storage deletion fails
-      }
-    }
-    
-    // Delete from Firestore
-    await deleteDoc(docRef);
-    console.log('✅ Photo metadata deleted from Firestore');
-    
-    // Remove from user's owned photos list
-    removeOwnedPhoto(photoId);
-    
-    // Decrement photo count for the event
+  console.log('🗑️ Requesting photo deletion:', photoId);
+
+  const response = await fetch('/.netlify/functions/delete-photo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      photoId,
+      ownerSecret: getOwnerSecret()
+    })
+  });
+
+  if (!response.ok) {
+    let message = 'Could not delete the photo. Please try again.';
     try {
-      const eventRef = doc(db, 'events', eventId);
-      await updateDoc(eventRef, {
-        photoCount: increment(-1)
-      });
-      console.log('✅ Event photo count decremented');
-    } catch (error) {
-      console.warn('⚠️ Failed to decrement event photo count:', error);
-      // Don't fail the entire deletion for this
+      const body = await response.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // Non-JSON error response; keep the generic message.
     }
-    
-    console.log('🎉 Photo deletion completed successfully:', photoId);
-    
-  } catch (error) {
-    console.error('❌ Photo deletion failed:', error);
-    throw error;
+    console.error('❌ Photo deletion failed:', response.status, message);
+    throw new Error(message);
   }
+
+  // Drop it from the local owned list so the UI stops offering a delete
+  // affordance for something that no longer exists.
+  removeOwnedPhoto(photoId);
+
+  console.log('🎉 Photo deletion completed:', photoId);
 };
 
 // Get photo ownership info (for UI display)

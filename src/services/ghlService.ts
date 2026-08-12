@@ -253,16 +253,23 @@ export const processPaymentWebhook = async (webhookData: any): Promise<void> => 
       const eventId = customFields?.event_id;
 
       if (eventId) {
-        // Import photoService functions here to avoid circular dependency
-        const { upgradeEventToPremium } = await import('./photoService');
+        // Upgrading an event is a server-side operation. It used to happen here
+        // by calling upgradeEventToPremium from the browser bundle, which meant
+        // the code path that grants unlimited uploads was reachable from the
+        // developer console with no payment (finding SEC-2).
+        //
+        // Plan state is now written only by netlify/functions/ghl-webhook.js,
+        // after it has verified the request signature. GoHighLevel should be
+        // configured to call that endpoint directly rather than routing a
+        // webhook through the browser, which it cannot reliably do anyway.
+        console.warn(
+          '⚠️ processPaymentWebhook is deprecated. Point the GoHighLevel ' +
+            'workflow at /.netlify/functions/ghl-webhook instead — a browser ' +
+            'cannot be trusted to grant premium.'
+        );
 
-        // Upgrade the event to premium
-        await upgradeEventToPremium(eventId, orderId);
-
-        // Update contact in GHL
+        // Keeping the CRM-side update, which is not privileged.
         await ghlService.updateContactToPremium(contactId, orderId);
-
-        console.log('✅ Payment webhook processed successfully');
       }
     }
   } catch (error) {

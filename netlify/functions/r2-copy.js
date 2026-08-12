@@ -1,23 +1,15 @@
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { doc, updateDoc } = require('firebase/firestore');
-const { initializeApp, getApps } = require('firebase/app');
-const { getFirestore } = require('firebase/firestore');
 const fetch = require('node-fetch');
+const { getDb } = require('./_lib/firebase-admin');
 
-// Firebase configuration
-const firebaseConfig = {
-  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.REACT_APP_FIREBASE_APP_ID,
-  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
-};
-
-// Initialize Firebase (only if not already initialized)
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(app);
+// This function stamps r2Key onto a photo document after copying the file to R2.
+//
+// It previously used the *client* Firebase SDK with the public web config, which
+// meant the write was subject to security rules. Now that firestore.rules denies
+// client updates to photos — a client-supplied r2Key could point the gallery at
+// any object in the bucket (finding SEC-2) — that write would fail. Using the
+// Admin SDK is what makes the tighter rule safe: the server can still stamp the
+// key, and nobody else can.
 
 exports.handler = async (event, context) => {
   console.log('Netlify R2 copy function called');
@@ -120,17 +112,16 @@ exports.handler = async (event, context) => {
     // 4. Update Firestore with R2 key
     console.log('📝 Updating Firestore document for photoId:', photoId);
     try {
-      const docRef = doc(db, 'photos', photoId);
       const updateData = {
         r2Key: r2Key,
         migratedToR2: true,
         r2MigrationDate: new Date(),
         originalFirebaseUrl: firebaseUrl // Keep for backup
       };
-      
+
       console.log('📝 Firestore update data:', updateData);
-      await updateDoc(docRef, updateData);
-      
+      await getDb().collection('photos').doc(photoId).update(updateData);
+
       console.log('✅ Successfully updated Firestore with R2 key for photoId:', photoId);
       console.log('✅ R2 key saved:', r2Key);
       
