@@ -56,13 +56,13 @@ function validEvent(overrides = {}) {
 function validPhoto(overrides = {}) {
   return {
     id: 'photo-uuid',
-    url: 'https://firebasestorage.googleapis.com/v0/b/x/o/y?alt=media',
+    url: 'https://photos.example.com/media/evt/abc.jpg',
     uploadedAt: Timestamp.now(),
     eventId: EVENT_ID,
     fileName: 'IMG_0001.jpg',
     size: 3_500_000,
     contentType: 'image/jpeg',
-    storagePath: `events/${EVENT_ID}/photos/photo-uuid.jpg`,
+    storage: 'r2',
     mediaType: 'photo',
     uploadedBy: 'sess_1234567890_abcdefghi',
     ...overrides,
@@ -201,46 +201,41 @@ describe('events — the premium escalation path (SEC-2)', () => {
   });
 });
 
-describe('events — photo counting', () => {
+describe('events — photo counting (now server-only)', () => {
   beforeEach(async () => {
     await seed((db) =>
       setDoc(doc(db, 'events', EVENT_ID), validEvent({ photoCount: 10 }))
     );
   });
 
-  test('incrementing by one is allowed', async () => {
+  // Clients used to be allowed to move photoCount by one, because the browser
+  // incremented it after each upload. Uploads are server-side now
+  // (upload-complete.js increments, delete-photo.js decrements), so there is no
+  // legitimate client write left and the rule denies all of them.
+  test('a client cannot increment the count', async () => {
     const db = testEnv.unauthenticatedContext().firestore();
-    await assertSucceeds(
+    await assertFails(
       updateDoc(doc(db, 'events', EVENT_ID), { photoCount: increment(1) })
     );
   });
 
-  test('decrementing by one is allowed', async () => {
+  test('a client cannot decrement the count', async () => {
     const db = testEnv.unauthenticatedContext().firestore();
-    await assertSucceeds(
+    await assertFails(
       updateDoc(doc(db, 'events', EVENT_ID), { photoCount: increment(-1) })
     );
   });
 
-  test('jumping the count by a large delta is rejected', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(
-      updateDoc(doc(db, 'events', EVENT_ID), { photoCount: increment(1000) })
-    );
-  });
-
-  test('resetting the count to zero to dodge the plan limit is rejected', async () => {
+  test('a client cannot reset the count to dodge the plan limit', async () => {
     const db = testEnv.unauthenticatedContext().firestore();
     await assertFails(updateDoc(doc(db, 'events', EVENT_ID), { photoCount: 0 }));
   });
 
-  test('driving the count negative is rejected', async () => {
-    await seed((db) =>
-      setDoc(doc(db, 'events', EVENT_ID), validEvent({ photoCount: 0 }))
-    );
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(
-      updateDoc(doc(db, 'events', EVENT_ID), { photoCount: increment(-1) })
+  test('the server can still adjust the count', async () => {
+    await assertSucceeds(
+      seed((db) =>
+        updateDoc(doc(db, 'events', EVENT_ID), { photoCount: increment(1) })
+      )
     );
   });
 });
@@ -258,26 +253,6 @@ describe('photos', () => {
     await seed((db) => setDoc(doc(db, 'events', EVENT_ID), validEvent()));
   });
 
-  test('a guest can upload a photo to an existing event', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertSucceeds(addDoc(collection(db, 'photos'), validPhoto()));
-  });
-
-  test('a guest can upload a video', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertSucceeds(
-      addDoc(
-        collection(db, 'photos'),
-        validPhoto({
-          mediaType: 'video',
-          fileName: 'IMG_0002.mov',
-          contentType: 'video/quicktime',
-          size: 480_000_000,
-        })
-      )
-    );
-  });
-
   test('the gallery can read photos for an event', async () => {
     await seed((db) => addDoc(collection(db, 'photos'), validPhoto()));
     const db = testEnv.unauthenticatedContext().firestore();
@@ -286,38 +261,39 @@ describe('photos', () => {
     );
   });
 
-  test('a photo attached to a non-existent event is rejected', async () => {
+  test('anyone can read a single photo', async () => {
+    let photoId;
+    await seed(async (db) => {
+      const ref = await addDoc(collection(db, 'photos'), validPhoto());
+      photoId = ref.id;
+    });
+    const db = testEnv.unauthenticatedContext().firestore();
+    await assertSucceeds(getDoc(doc(db, 'photos', photoId)));
+  });
+
+  // Photo documents are written only by upload-complete.js, after it has
+  // confirmed the object exists in R2 at the size we authorised. A client
+  // cannot create one at all, so a document can never exist without its bytes.
+  test('a client cannot create a photo document', async () => {
+    const db = testEnv.unauthenticatedContext().firestore();
+    await assertFails(addDoc(collection(db, 'photos'), validPhoto()));
+  });
+
+  test('a client cannot create one pointing at another event’s object', async () => {
     const db = testEnv.unauthenticatedContext().firestore();
     await assertFails(
-      addDoc(collection(db, 'photos'), validPhoto({ eventId: 'no-such-event' }))
+      addDoc(
+        collection(db, 'photos'),
+        validPhoto({ r2Key: 'media/some-other-event/private.jpg' })
+      )
     );
   });
 
-  test('a photo claiming an r2Key at creation is rejected', async () => {
-    // A client-supplied r2Key would point the gallery at an arbitrary object in
-    // the bucket. The server stamps it after the copy completes.
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(
-      addDoc(collection(db, 'photos'), validPhoto({ r2Key: 'media/other-event/secret.jpg' }))
-    );
-  });
-
-  test('a photo above the 2 GB ceiling is rejected', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(
-      addDoc(collection(db, 'photos'), validPhoto({ size: 3_000_000_000 }))
-    );
-  });
-
-  test('a photo with a zero size is rejected', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(addDoc(collection(db, 'photos'), validPhoto({ size: 0 })));
-  });
-
-  test('a photo with an unrecognised media type is rejected', async () => {
-    const db = testEnv.unauthenticatedContext().firestore();
-    await assertFails(
-      addDoc(collection(db, 'photos'), validPhoto({ mediaType: 'executable' }))
+  test('the server can create a photo document', async () => {
+    await assertSucceeds(
+      seed((db) =>
+        addDoc(collection(db, 'photos'), validPhoto({ r2Key: 'media/e/abc.jpg' }))
+      )
     );
   });
 

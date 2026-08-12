@@ -175,7 +175,23 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
-  // Get optimized URL for a media item
+  // Preview URL for grid tiles.
+  //
+  // The grid used to load every photo at full resolution — a 400-photo wedding
+  // meant several hundred megabytes over cellular before anything was usable,
+  // at the reception, on the venue's wifi (finding UX-3). Uploads now generate a
+  // ~30KB preview, so the grid pulls roughly 1% of what it did.
+  //
+  // Photos uploaded before thumbnails existed have none, and fall back to the
+  // full image — so the grid gets progressively lighter as old events age out
+  // rather than breaking for them.
+  const getThumbnailUrl = useCallback((media: Media): string => {
+    if (media.thumbnailUrl) return media.thumbnailUrl;
+    const optimized = optimizedUrls.get(media.id);
+    return optimized ? optimized.url : media.url;
+  }, [optimizedUrls]);
+
+  // Full-resolution URL, for the lightbox and downloads.
   const getMediaUrl = useCallback((media: Media): string => {
     const optimized = optimizedUrls.get(media.id);
     if (optimized) {
@@ -711,7 +727,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
                   <Box
                     component="video"
-                    src={getMediaUrl(photo)}
+                    src={getThumbnailUrl(photo)}
                     muted
                     preload="metadata"
                     sx={{
@@ -788,8 +804,9 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 // Regular image
                 <CardMedia
                   component="img"
+                  loading="lazy"
                   height={200}
-                  image={getMediaUrl(photo)}
+                  image={getThumbnailUrl(photo)}
                   alt={photo.fileName || 'Event photo'}
                   sx={{ 
                     objectFit: 'cover',

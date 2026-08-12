@@ -8,6 +8,11 @@ export interface Media {
   size?: number;
   r2Key?: string;
   contentType?: string;
+  /**
+   * Small preview generated at upload time (finding UX-3). Absent on anything
+   * uploaded before thumbnails existed, so always fall back to `url`.
+   */
+  thumbnailUrl?: string;
   mediaType: 'photo' | 'video';
   
   // Video-specific properties

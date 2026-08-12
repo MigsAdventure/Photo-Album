@@ -69,22 +69,20 @@ service cloud.firestore {
                     && request.resource.data.isActive == true
                     && request.resource.data.createdAt is timestamp;
 
-      // The only field a browser may change is photoCount, and only by one at a
-      // time. Everything else — including upgrading the plan — must go through a
-      // Netlify function using the Admin SDK.
+      // Nothing on an event is client-writable any more.
       //
-      // Note this permits a client to increment past its plan limit. That is
-      // deliberate: the plan limit is a commercial rule, not a security boundary,
-      // and enforcing it here would make an over-quota guest's upload fail at the
-      // database with an unexplainable error. The limit is enforced in the
-      // application, and finding UX-1 covers making it behave sensibly.
-      allow update: if changedKeys().hasOnly(['photoCount'])
-                    && request.resource.data.photoCount is int
-                    && request.resource.data.photoCount >= 0
-                    && (
-                         request.resource.data.photoCount == resource.data.photoCount + 1
-                         || request.resource.data.photoCount == resource.data.photoCount - 1
-                       );
+      // This previously allowed photoCount to move by one, because the browser
+      // incremented it after each upload. Since uploads became server-side
+      // (upload-complete.js increments it, delete-photo.js decrements it) there
+      // is no legitimate client write left, so the narrowest correct rule is
+      // none at all.
+      //
+      // Worth noting what that fixed as a side effect: the count and the gallery
+      // could previously disagree, because the upload wrote the photo document
+      // and then made a *separate* client write to bump the count. If a guest
+      // closed the tab in between, or the second write failed, the event was
+      // permanently miscounted — and the plan limit is computed from that count.
+      allow update: if false;
 
       // Events are never deleted from a client. Retention and takedown are
       // operational actions performed with the Admin SDK.
@@ -101,24 +99,20 @@ service cloud.firestore {
       // exposure is the same as the public gallery it feeds.
       allow read: if true;
 
-      allow create: if isString(request.resource.data.eventId, 200)
-                    && exists(/databases/$(database)/documents/events/$(request.resource.data.eventId))
-                    && isString(request.resource.data.url, 2000)
-                    && isString(request.resource.data.fileName, 500)
-                    && isString(request.resource.data.storagePath, 1000)
-                    && request.resource.data.mediaType in ['photo', 'video']
-                    && request.resource.data.size is int
-                    && request.resource.data.size > 0
-                    // 2 GB ceiling, comfortably above the 1.5 GB the client
-                    // permits (src/services/videoService.ts) and below anything
-                    // that could be used to run up a storage bill in one write.
-                    && request.resource.data.size <= 2147483648
-                    && request.resource.data.uploadedAt is timestamp
-                    && isString(request.resource.data.uploadedBy, 100)
-                    // r2Key is written by the server after the copy completes.
-                    // A client claiming one at creation time could point the
-                    // gallery at an arbitrary object in the bucket.
-                    && !('r2Key' in request.resource.data);
+      // Photo documents are written exclusively by
+      // netlify/functions/upload-complete.js, using the Admin SDK, after it has
+      // verified the object exists in R2 at the size we authorised.
+      //
+      // Clients previously created these themselves, which forced the rules to
+      // guess at validity from the document's shape alone — the server could not
+      // confirm that the bytes behind a document existed, so a failed upload
+      // left a broken tile in the gallery pointing at nothing. Now the document
+      // cannot exist unless the object does.
+      //
+      // It also removes the last place a client could influence r2Key, which was
+      // the one field capable of pointing the gallery at an arbitrary object in
+      // the bucket.
+      allow create: if false;
 
       // The only update that happens is the server stamping r2Key, which uses the
       // Admin SDK. Nothing legitimate updates a photo from a browser.

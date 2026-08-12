@@ -1,156 +1,23 @@
-import { GHLOrder } from '../types';
-
-// GoHighLevel API configuration
-const GHL_API_BASE = 'https://rest.gohighlevel.com/v1';
-
-// Initialize GHL service with API key (will be set from environment)
-class GoHighLevelService {
-  private apiKey: string = '';
-  private locationId: string = '';
-
-  constructor() {
-    // These will be set when the user provides their GHL credentials
-    this.apiKey = process.env.REACT_APP_GHL_API_KEY || '';
-    this.locationId = process.env.REACT_APP_GHL_LOCATION_ID || '';
-  }
-
-  // Create a contact in GoHighLevel
-  async createContact(email: string, eventTitle: string, eventId: string): Promise<string> {
-    try {
-      const response = await fetch(`${GHL_API_BASE}/contacts/`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email,
-          firstName: email.split('@')[0], // Use email prefix as first name
-          lastName: 'Event Organizer',
-          locationId: this.locationId,
-          customFields: {
-            event_id: eventId,
-            event_title: eventTitle,
-            plan_type: 'free'
-          }
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`GHL API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('✅ GHL contact created:', data.contact.id);
-      return data.contact.id;
-    } catch (error) {
-      console.error('❌ Failed to create GHL contact:', error);
-      throw error;
-    }
-  }
-
-  // Create an order for premium upgrade
-  async createOrder(orderData: GHLOrder): Promise<string> {
-    try {
-      const response = await fetch(`${GHL_API_BASE}/orders/`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contactId: orderData.contactId,
-          locationId: this.locationId,
-          amount: orderData.amount,
-          currency: orderData.currency || 'USD',
-          products: [{
-            name: `Premium Event Upgrade - ${orderData.eventTitle}`,
-            description: `Unlimited photo uploads for event: ${orderData.eventTitle}`,
-            amount: orderData.amount,
-            quantity: 1
-          }],
-          customFields: {
-            event_id: orderData.eventId,
-            event_title: orderData.eventTitle,
-            organizer_email: orderData.organizerEmail
-          }
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`GHL Order API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('✅ GHL order created:', data.order.id);
-      return data.order.id;
-    } catch (error) {
-      console.error('❌ Failed to create GHL order:', error);
-      throw error;
-    }
-  }
-
-  // Get payment link for an order
-  async getPaymentLink(orderId: string): Promise<string> {
-    try {
-      const response = await fetch(`${GHL_API_BASE}/orders/${orderId}/payment-link`, {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`GHL Payment Link API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('✅ GHL payment link generated');
-      return data.paymentLink;
-    } catch (error) {
-      console.error('❌ Failed to get GHL payment link:', error);
-      throw error;
-    }
-  }
-
-  // Update contact when payment is completed
-  async updateContactToPremium(contactId: string, paymentId: string): Promise<void> {
-    try {
-      await fetch(`${GHL_API_BASE}/contacts/${contactId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customFields: {
-            plan_type: 'premium',
-            payment_id: paymentId,
-            upgraded_at: new Date().toISOString()
-          }
-        }),
-      });
-
-      console.log('✅ GHL contact updated to premium');
-    } catch (error) {
-      console.error('❌ Failed to update GHL contact:', error);
-      throw error;
-    }
-  }
-
-  // Check if API credentials are configured
-  isConfigured(): boolean {
-    return !!(this.apiKey && this.locationId);
-  }
-
-  // Set API credentials (for when user provides them)
-  setCredentials(apiKey: string, locationId: string): void {
-    this.apiKey = apiKey;
-    this.locationId = locationId;
-  }
-}
-
-// Export singleton instance
-export const ghlService = new GoHighLevelService();
+// GoHighLevel integration — server-side only.
+//
+// This file used to hold a full GoHighLevel API client that ran in the browser
+// and read its key from REACT_APP_GHL_API_KEY (finding GHL-1). Anything prefixed
+// REACT_APP_ is compiled into the JavaScript bundle and readable by every
+// visitor, so populating that variable would have handed the entire GoHighLevel
+// location — contacts, orders, payment links — to anyone who opened devtools.
+//
+// It also targeted the v1 REST API, which is superseded by the OAuth-based v2
+// API where the current endpoints live.
+//
+// Everything privileged now runs in Netlify functions with a server-only token:
+//
+//   netlify/functions/ghl-webhook.js   receives upgrades, verifies the signature,
+//                                      confirms the payment, writes plan state
+//
+// If you need more GoHighLevel calls — contact creation on upload, lifecycle
+// automations, the reseller sync described in AUDIT_2026-08.md §06 — add them as
+// functions there. Do not reintroduce a browser-side client, and do not add a
+// REACT_APP_GHL_* variable.
 
 // Send upgrade notification to GHL webhook (simplified approach)
 export const sendUpgradeToGHL = async (upgradeData: {
@@ -163,8 +30,20 @@ export const sendUpgradeToGHL = async (upgradeData: {
   paymentId: string;
   paymentMethod: string;
 }): Promise<boolean> => {
-  const GHL_WEBHOOK_URL = 'https://services.leadconnectorhq.com/hooks/OD0oJMJ7R9OatD9liLM0/webhook-trigger/30e7e31b-9e78-4f69-8ecc-4678bd24b45f';
-  
+  // This trigger URL is a capability: anyone holding it can post events into the
+  // workflow. It was hardcoded, and this file ships to the browser, so it was
+  // public regardless — but it should not be baked into the source as well.
+  // Configure it as REACT_APP_GHL_UPGRADE_WEBHOOK.
+  //
+  // It is a notification only, carrying no authority to change plan state, so a
+  // public URL is tolerable. If it ever gains authority, it must move server-side.
+  const GHL_WEBHOOK_URL = process.env.REACT_APP_GHL_UPGRADE_WEBHOOK;
+
+  if (!GHL_WEBHOOK_URL) {
+    console.warn('⚠️ REACT_APP_GHL_UPGRADE_WEBHOOK is not set; skipping CRM notification');
+    return false;
+  }
+
   try {
     console.log('📨 Sending upgrade notification to GHL webhook...');
     
@@ -205,75 +84,10 @@ export const sendUpgradeToGHL = async (upgradeData: {
   }
 };
 
-// Helper function to initiate premium upgrade flow
-export const initiatePremiumUpgrade = async (
-  eventId: string,
-  eventTitle: string,
-  organizerEmail: string,
-  amount: number = 29 // Default price
-): Promise<string> => {
-  try {
-    console.log('🚀 Initiating premium upgrade flow for:', eventId);
-
-    // Create or find contact in GHL
-    const contactId = await ghlService.createContact(organizerEmail, eventTitle, eventId);
-
-    // Create order in GHL
-    const orderData: GHLOrder = {
-      contactId,
-      locationId: '', // Will be filled by service
-      amount,
-      currency: 'USD',
-      eventId,
-      eventTitle,
-      organizerEmail
-    };
-
-    const orderId = await ghlService.createOrder(orderData);
-
-    // Get payment link
-    const paymentLink = await ghlService.getPaymentLink(orderId);
-
-    console.log('✅ Premium upgrade flow initiated');
-    return paymentLink;
-
-  } catch (error) {
-    console.error('❌ Premium upgrade initiation failed:', error);
-    throw error;
-  }
-};
-
-// Process webhook from GoHighLevel when payment is completed
-export const processPaymentWebhook = async (webhookData: any): Promise<void> => {
-  try {
-    console.log('📨 Processing GHL payment webhook:', webhookData);
-
-    if (webhookData.type === 'order.completed') {
-      const { orderId, contactId, customFields } = webhookData.data;
-      const eventId = customFields?.event_id;
-
-      if (eventId) {
-        // Upgrading an event is a server-side operation. It used to happen here
-        // by calling upgradeEventToPremium from the browser bundle, which meant
-        // the code path that grants unlimited uploads was reachable from the
-        // developer console with no payment (finding SEC-2).
-        //
-        // Plan state is now written only by netlify/functions/ghl-webhook.js,
-        // after it has verified the request signature. GoHighLevel should be
-        // configured to call that endpoint directly rather than routing a
-        // webhook through the browser, which it cannot reliably do anyway.
-        console.warn(
-          '⚠️ processPaymentWebhook is deprecated. Point the GoHighLevel ' +
-            'workflow at /.netlify/functions/ghl-webhook instead — a browser ' +
-            'cannot be trusted to grant premium.'
-        );
-
-        // Keeping the CRM-side update, which is not privileged.
-        await ghlService.updateContactToPremium(contactId, orderId);
-      }
-    }
-  } catch (error) {
-    console.error('❌ Payment webhook processing failed:', error);
-    throw error;
-  }
-};
+// initiatePremiumUpgrade and processPaymentWebhook were here. Both drove the
+// browser-side client that has been removed, and nothing called either of them.
+//
+// The upgrade flow is: the customer pays through a GoHighLevel order form, and
+// GoHighLevel calls netlify/functions/ghl-webhook.js, which verifies the
+// signature, confirms the payment, and writes the plan state with the Admin SDK.
+// A browser is never in the trust path for granting premium.

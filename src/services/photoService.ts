@@ -67,137 +67,15 @@ const generateEventId = (title: string, date: string): string => {
   return `${formattedDate}_${slug}_${hash}`;
 };
 
-export const uploadPhoto = async (
-  file: File, 
-  eventId: string,
-  onProgress?: (progress: number) => void
-): Promise<string> => {
-  // Always use Firebase Storage for reliable uploads
-  console.log('🔥 Using Firebase Storage for upload (100% reliability)');
-  
-  const { ref, uploadBytesResumable, getDownloadURL } = await import('firebase/storage');
-  const { storage } = await import('../firebase');
-  const { v4: uuidv4 } = await import('uuid');
-  
-  const photoId = uuidv4();
-  const extension = file.name.split('.').pop() || 'jpg';
-  const storageRef = ref(storage, `events/${eventId}/photos/${photoId}.${extension}`);
-  
-  // Get current session ID for ownership tracking. The raw id is a bearer
-  // secret — it goes into Storage metadata (which only the server and the
-  // uploader can read) but never into the Firestore document, which every guest
-  // in the gallery can read. The document gets the hash instead. See
-  // netlify/functions/delete-photo.js for why (finding SEC-5).
-  const sessionId = getCurrentSessionId();
-  const ownerToken = await getOwnerToken();
-
-  // Add metadata with sessionId for security rules compliance
-  const metadata = {
-    customMetadata: {
-      sessionId: sessionId,
-      uploadedAt: new Date().toISOString()
-    }
-  };
-  
-  const uploadTask = uploadBytesResumable(storageRef, file, metadata);
-  
-  return new Promise((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 85; // Reserve 15% for R2 copy
-        console.log(`🔥 Firebase upload progress: ${Math.round(progress)}%`);
-        onProgress?.(progress);
-      },
-      (error) => {
-        console.error('❌ Firebase upload error:', error);
-        reject(error);
-      },
-      async () => {
-        try {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          
-          // Save photo metadata to Firestore with ownership tracking
-          const docRef = await addDoc(collection(db, 'photos'), {
-            id: photoId,
-            url: downloadURL,
-            uploadedAt: new Date(),
-            eventId,
-            fileName: file.name,
-            size: file.size,
-            contentType: file.type,
-            storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
-            mediaType: 'photo' as const,
-            uploadedBy: ownerToken // Hash of the session secret, safe to publish
-          });
-          
-          // Add to user's owned photos list
-          addOwnedPhoto(docRef.id);
-          
-          console.log('✅ Firebase upload completed, starting R2 copy...');
-          onProgress?.(90); // 90% - R2 copy starting
-          
-          // Copy to R2 using server-side API (don't block user experience)
-          copyToR2ViaAPI(docRef.id, downloadURL, file.name, eventId, file.type)
-            .then(() => {
-              console.log('✅ R2 copy completed for:', file.name);
-              onProgress?.(100); // 100% - everything done
-            })
-            .catch((error) => {
-              console.warn('⚠️ R2 copy failed (continuing with Firebase-only):', error);
-              onProgress?.(100); // Still complete the upload
-            });
-          
-          console.log('✅ Upload completed with ownership:', file.name, 'by session:', sessionId);
-          resolve(downloadURL);
-        } catch (error) {
-          console.error('❌ Firebase metadata save error:', error);
-          reject(error);
-        }
-      }
-    );
-  });
-};
-
-// Server-side R2 copy via API (non-blocking)
-const copyToR2ViaAPI = async (
-  photoId: string,
-  firebaseUrl: string, 
-  fileName: string,
-  eventId: string,
-  contentType: string
-): Promise<void> => {
-  try {
-    console.log('📦 Starting server-side R2 copy for:', fileName);
-    
-    // Create Netlify function for R2 copying
-    const response = await fetch('/.netlify/functions/r2-copy', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        photoId,
-        firebaseUrl,
-        fileName,
-        eventId,
-        contentType
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`R2 copy API failed: ${response.status}`);
-    }
-
-    const result = await response.json();
-    console.log('✅ Server-side R2 copy completed:', photoId, '→', result.r2Key);
-    
-  } catch (error: any) {
-    console.error('❌ Server-side R2 copy failed for', photoId, ':', error);
-    // Don't throw - this is background operation
-  }
-};
-
+// uploadPhoto and copyToR2ViaAPI lived here: the browser wrote to Firebase
+// Storage, then asked netlify/functions/r2-copy.js to pull the whole file into
+// memory and write it to R2. Anything near a gigabyte exceeded both the memory
+// limit and the execution window, so large videos never reached R2 at all -
+// staying on the expensive origin, being fetched from there by the archive
+// worker, and being stored and billed twice (finding ZIP-10).
+//
+// Uploads now go straight to R2 from the browser via presigned URLs. See
+// src/services/r2UploadService.ts and netlify/functions/upload-init.js.
 
 export const subscribeToPhotos = (
   eventId: string,
@@ -222,7 +100,8 @@ export const subscribeToPhotos = (
         mediaType: data.mediaType || 'photo' as const, // Default to 'photo' for backward compatibility
         uploadedBy: data.uploadedBy, // Include ownership info
         r2Key: data.r2Key, // Include R2 key for cost-effective display
-        contentType: data.contentType // Include content type for proper R2 handling
+        contentType: data.contentType, // Include content type for proper R2 handling
+        thumbnailUrl: data.thumbnailUrl || undefined // Small preview, absent on older photos
       });
     });
     
@@ -381,13 +260,13 @@ export const requestEmailDownload = async (
 
 // Freemium & Premium functions
 
-// Increment photo count for an event
-export const incrementPhotoCount = async (eventId: string): Promise<void> => {
-  const eventRef = doc(db, 'events', eventId);
-  await updateDoc(eventRef, {
-    photoCount: increment(1)
-  });
-};
+// incrementPhotoCount was here. The count is adjusted server-side now -
+// upload-complete.js increments it, delete-photo.js decrements it - and
+// firestore.rules denies the client write it used to perform.
+//
+// Doing it as a separate client write was also a correctness bug: if the guest
+// closed the tab between saving the photo and bumping the count, the event was
+// permanently miscounted, and the plan limit is computed from that count.
 
 // Check if event can accept more photos (freemium limit)
 export const canUploadPhoto = async (eventId: string): Promise<boolean> => {
