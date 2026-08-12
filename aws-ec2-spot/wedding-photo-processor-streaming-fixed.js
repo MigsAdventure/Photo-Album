@@ -4,7 +4,8 @@ const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
 const express = require('express');
 const archiver = require('archiver');
-const { PassThrough, Readable } = require('stream');
+const { PassThrough } = require('stream');
+const { safeEntryName, uniqueEntryName, addFileToArchive } = require('./archive-entries');
 const fs = require('fs');
 
 // Configuration from environment variables
@@ -294,153 +295,121 @@ async function processStreamingJob(jobData) {
 }
 
 async function createStreamingZip(photos, zipKey, eventId) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      // Create a PassThrough stream for the ZIP
-      const zipStream = new PassThrough();
-      const archive = archiver('zip', { 
-        zlib: { level: 6 }, // Reduced compression for faster processing
-        statConcurrency: 1 // Process files one at a time to manage memory
-      });
-      
-      let processedFiles = 0;
-      let totalBytes = 0;
-      let failedCount = 0;
+  const zipStream = new PassThrough();
 
-      // Track archive progress
-      archive.on('progress', (progress) => {
-        processedFiles = progress.entries.processed;
-        totalBytes = progress.bytes;
-        console.log(`📦 Processed ${progress.entries.processed}/${progress.entries.total} files (${(totalBytes / 1024 / 1024).toFixed(2)} MB)`);
-      });
+  const archive = archiver('zip', {
+    // Level 1, not 6. Wedding archives are overwhelmingly JPEG and H.264, both
+    // already compressed — deflate spends CPU to save a percent or two. On a
+    // 2-vCPU t3.medium that compression was a real share of the job's wall
+    // clock, and it is now the sequential loop's bottleneck rather than being
+    // hidden behind parallel downloads.
+    zlib: { level: 1 },
+    statConcurrency: 1
+  });
 
-      archive.on('end', async () => {
-        const finalSizeMB = archive.pointer() / (1024 * 1024);
-        console.log(`🌊 Streaming ZIP completed: ${finalSizeMB.toFixed(2)} MB`);
+  const failures = [];
+  const usedNames = new Set();
 
-        try {
-          // Wait for upload to complete
-          await uploadPromise;
-          console.log('✅ Upload to R2 completed');
+  archive.on('warning', (error) => {
+    // ENOENT is advisory. Anything else means the archive is suspect, and
+    // throwing inside an event handler would take the process down rather than
+    // failing this job, so record it and let the error handler surface it.
+    console.warn(`Archive warning: ${error.message}`);
+  });
 
-          // Verify object exists and size > 0
-          try {
-            const head = await s3Client.send(new HeadObjectCommand({
-              Bucket: config.r2.bucketName,
-              Key: zipKey
-            }));
-            const sizeMB = (Number(head.ContentLength || 0) / (1024 * 1024)).toFixed(2);
-            console.log(`🔎 R2 object verified. Content-Length: ${sizeMB} MB`);
-            
-            if (Number(head.ContentLength) === 0) {
-              throw new Error('Uploaded file is empty');
-            }
-          } catch (headErr) {
-            console.error('⚠️ HeadObject verification failed:', headErr);
-            throw headErr;
-          }
+  archive.pipe(zipStream);
 
-          resolve({ finalSizeMB, failedCount });
-        } catch (err) {
-          console.error('❌ Upload completion error:', err);
-          reject(err);
-        }
-      });
+  // Start the upload before writing any entries, so the multipart upload
+  // consumes the stream as it fills rather than buffering the archive in memory.
+  //
+  // Declared here on purpose: it used to be referenced inside archive.on('end')
+  // while being declared with const further down, which only worked because the
+  // event happened to fire later. Any reordering would have turned that into a
+  // TDZ ReferenceError inside an event handler — a crash with no useful stack.
+  const fileName = `photos-${eventId || 'download'}.zip`;
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: config.r2.bucketName,
+      Key: zipKey,
+      Body: zipStream,
+      ContentType: 'application/zip',
+      ContentDisposition: `attachment; filename="${fileName}"`
+    },
+    queueSize: 4,
+    partSize: 10 * 1024 * 1024
+  });
 
-      archive.on('error', (err) => {
-        console.error('❌ Archive error:', err);
-        reject(err);
-      });
-
-      archive.on('warning', (err) => {
-        if (err.code === 'ENOENT') {
-          console.warn('⚠️ Archive warning:', err);
-        } else {
-          throw err;
-        }
-      });
-
-      // Pipe archive to our stream
-      archive.pipe(zipStream);
-
-      // Start upload to R2 while creating ZIP
-      const fileName = `photos-${eventId || 'download'}.zip`;
-      const upload = new Upload({
-        client: s3Client,
-        params: {
-          Bucket: config.r2.bucketName,
-          Key: zipKey,
-          Body: zipStream,
-          ContentType: 'application/zip',
-          ContentDisposition: `attachment; filename="${fileName}"`
-        },
-        queueSize: 4, // Parallel parts
-        partSize: 10 * 1024 * 1024 // 10MB parts for large files
-      });
-
-      // Monitor upload progress
-      upload.on('httpUploadProgress', (progress) => {
-        if (progress.loaded && progress.total) {
-          const percent = ((progress.loaded / progress.total) * 100).toFixed(1);
-          console.log(`⬆️ Upload progress: ${percent}% (${(progress.loaded / 1024 / 1024).toFixed(2)}MB / ${(progress.total / 1024 / 1024).toFixed(2)}MB)`);
-        }
-      });
-
-      // Start the upload (this will consume the zipStream as we write to it)
-      const uploadPromise = upload.done();
-
-      // Add files to archive by streaming them directly
-      console.log(`🌊 Starting to stream ${photos.length} files...`);
-      
-      for (let i = 0; i < photos.length; i++) {
-        const photo = photos[i];
-        const sizeMB = ((photo.size || 0) / (1024 * 1024)).toFixed(2);
-        console.log(`📥 Streaming file ${i + 1}/${photos.length}: ${photo.fileName} (${sizeMB} MB)`);
-        
-        try {
-          // Add timeout for fetch
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 120000); // 2 minutes per file
-          
-          const response = await fetch(photo.url, {
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeout);
-          
-          if (!response.ok) {
-            console.error(`❌ Failed to fetch ${photo.fileName}: ${response.status}`);
-            failedCount++;
-            continue;
-          }
-
-          // Convert Web Stream (response.body) to Node.js stream
-          const nodeStream = Readable.fromWeb(response.body);
-          archive.append(nodeStream, { 
-            name: photo.fileName,
-            date: new Date()
-          });
-          
-          // Add a small delay between files to prevent overwhelming the system
-          if (i < photos.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 50)); // Reduced delay
-          }
-        } catch (error) {
-          console.error(`❌ Error streaming ${photo.fileName}:`, error.message || error);
-          failedCount++;
-          // Continue with next file instead of failing entire job
-        }
-      }
-
-      // Finalize the archive (this will end the stream)
-      console.log('🔄 Finalizing archive...');
-      archive.finalize();
-
-    } catch (error) {
-      console.error('❌ Streaming ZIP creation error:', error);
-      reject(error);
+  upload.on('httpUploadProgress', (progress) => {
+    if (progress.loaded) {
+      console.log(`⬆️ Uploaded ${(progress.loaded / 1024 / 1024).toFixed(2)}MB`);
     }
   });
+
+  const uploadPromise = upload.done();
+
+  // Surface an upload failure as a rejection we can await, rather than an
+  // unhandled rejection that the process-level handler swallows while this
+  // function keeps writing entries into a stream nobody is reading.
+  let uploadFailed = null;
+  uploadPromise.catch((error) => {
+    uploadFailed = error;
+  });
+
+  console.log(`🌊 Streaming ${photos.length} files, one at a time...`);
+
+  for (let i = 0; i < photos.length; i++) {
+    if (uploadFailed) {
+      throw new Error(`R2 upload failed partway through: ${uploadFailed.message}`);
+    }
+
+    const photo = photos[i];
+    const entryName = uniqueEntryName(safeEntryName(photo.fileName, i), usedNames);
+    const sizeMB = ((photo.size || 0) / (1024 * 1024)).toFixed(2);
+
+    console.log(`📥 [${i + 1}/${photos.length}] ${entryName} (${sizeMB} MB)`);
+
+    const result = await addFileToArchive(archive, photo, entryName);
+
+    if (!result.ok) {
+      console.error(`❌ Gave up on ${photo.fileName}: ${result.error}`);
+      failures.push({ fileName: photo.fileName, reason: result.error });
+    }
+  }
+
+  console.log('🔄 Finalizing archive...');
+  await archive.finalize();
+
+  await uploadPromise;
+  console.log('✅ Upload to R2 completed');
+
+  const head = await s3Client.send(new HeadObjectCommand({
+    Bucket: config.r2.bucketName,
+    Key: zipKey
+  }));
+
+  const bytes = Number(head.ContentLength || 0);
+  if (bytes === 0) {
+    throw new Error('Uploaded archive is empty');
+  }
+
+  const finalSizeMB = bytes / (1024 * 1024);
+  console.log(`🔎 R2 object verified: ${finalSizeMB.toFixed(2)} MB`);
+
+  // A job that dropped a large share of the collection should not be reported to
+  // the customer as a success (finding ZIP-7). Better to fail, leave the SQS
+  // message for a retry, and alert, than to email a bride an archive that is
+  // quietly missing a fifth of her wedding.
+  const failureRate = photos.length > 0 ? failures.length / photos.length : 0;
+  if (failureRate > 0.05) {
+    throw new Error(
+      `Too many files failed: ${failures.length}/${photos.length} ` +
+      `(${(failureRate * 100).toFixed(0)}%). Not sending a success email. ` +
+      `First failure: ${failures[0]?.fileName} — ${failures[0]?.reason}`
+    );
+  }
+
+  return { finalSizeMB, failedCount: failures.length, failures };
 }
 
 async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB, failedCount = 0) {
