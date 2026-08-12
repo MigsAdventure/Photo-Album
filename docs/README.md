@@ -46,6 +46,26 @@ Describe what the code does now and when we last verified it.
 
 ## Current state
 
-- **Phase 1 — Security hardening**: in progress. See
-  [`sessions/2026-08-12_phase-1-security.md`](sessions/2026-08-12_phase-1-security.md).
-- Phases 2–6 are described in `AUDIT_2026-08.md` §07.
+| Phase | Status |
+|---|---|
+| 1 — Security hardening | Code complete, **not deployed**. [Session](sessions/2026-08-12_phase-1-security.md) |
+| 2 — One download pipeline | Code complete, **not deployed, not exercised end to end**. [Session](sessions/2026-08-12_phase-2-download-pipeline.md) |
+| 3 — Storage plane | Not started |
+| 4 — Make it a product | Not started |
+| 5 — Modernize | Not started |
+| 6 — Differentiate | Not started |
+
+Phases 3–6 are described in `AUDIT_2026-08.md` §07.
+
+**Deploy order matters between phases 1 and 2**: phase 2 depends on the secrets
+introduced in phase 1, and within phase 2 the Lambda must be deployed before
+Netlify. Both session logs carry their own checklist.
+
+## Tests
+
+```bash
+npm run test:all        # everything (74 tests)
+npm run test:security   # rules + webhook auth
+npm run test:archive    # the ZIP-3 regression tests
+npm run test:rules      # Firestore rules + rate limiter, needs Java for the emulator
+```
