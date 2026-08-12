@@ -1,4 +1,10 @@
-const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
+const {
+  SQSClient,
+  ReceiveMessageCommand,
+  DeleteMessageCommand,
+  ChangeMessageVisibilityCommand,
+  GetQueueAttributesCommand
+} = require('@aws-sdk/client-sqs');
 const { S3Client, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
@@ -206,6 +212,79 @@ app.get('/health', (req, res) => {
 });
 app.listen(8080, () => console.log('Health check server running on port 8080'));
 
+// How long a single receive keeps a message invisible to other consumers. Kept
+// short and extended by heartbeat while the job runs (see ZIP-5 below).
+const VISIBILITY_SECONDS = 300;          // 5 minutes
+const HEARTBEAT_INTERVAL_MS = 120_000;   // extend every 2 minutes
+const MAX_JOB_MS = 60 * 60 * 1000;       // hard ceiling: 1 hour
+
+/**
+ * Keep a message invisible while we are still working on it (finding ZIP-5).
+ *
+ * This is the duplicate-email bug. The visibility timeout was a fixed 15
+ * minutes, while the job timeout was Math.max(600000, totalSize / 100) - which
+ * for a 5 GB collection evaluates to 50,000,000 ms, just under 14 hours. So SQS
+ * made the message visible again long before the job finished, a second
+ * consumer picked up the same work, and both completed and both sent email.
+ *
+ * Extending visibility on a heartbeat means the message stays hidden exactly as
+ * long as we are genuinely working, and becomes visible promptly if this
+ * instance dies - which is what you want a queue to do.
+ */
+function startVisibilityHeartbeat(receiptHandle, label) {
+  const timer = setInterval(async () => {
+    try {
+      await sqsClient.send(new ChangeMessageVisibilityCommand({
+        QueueUrl: config.sqs.queueUrl,
+        ReceiptHandle: receiptHandle,
+        VisibilityTimeout: VISIBILITY_SECONDS
+      }));
+      console.log(`💓 Extended visibility for ${label}`);
+    } catch (error) {
+      // Losing the heartbeat is not fatal to this job, but it does mean another
+      // consumer may pick the message up. Log loudly so it is visible in
+      // CloudWatch if duplicates ever reappear.
+      console.error(`⚠️ Failed to extend visibility for ${label}:`, error.message);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Is the queue empty right now?
+ *
+ * Used before idle termination (finding ZIP-8). The launcher checks for a
+ * running instance and, if it finds one, returns "an existing instance will
+ * process it". If that instance was seconds from its idle timeout it then
+ * terminated, and nothing ever polled the message - the request vanished with
+ * no error anywhere. Draining to empty before shutting down closes that window.
+ */
+async function queueIsEmpty() {
+  try {
+    const result = await sqsClient.send(new GetQueueAttributesCommand({
+      QueueUrl: config.sqs.queueUrl,
+      AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+    }));
+
+    const visible = Number(result.Attributes?.ApproximateNumberOfMessages || 0);
+    const inFlight = Number(result.Attributes?.ApproximateNumberOfMessagesNotVisible || 0);
+
+    if (visible + inFlight > 0) {
+      console.log(`📬 Queue not empty (${visible} waiting, ${inFlight} in flight) - staying up`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    // If we cannot tell, assume there is work. Staying up costs about a cent an
+    // hour; terminating with a queued job costs a customer their photos.
+    console.error('⚠️ Could not read queue depth, assuming not empty:', error.message);
+    return false;
+  }
+}
+
 // Poll SQS for jobs
 async function pollQueue() {
   while (true) {
@@ -214,52 +293,72 @@ async function pollQueue() {
         QueueUrl: config.sqs.queueUrl,
         MaxNumberOfMessages: 1,
         WaitTimeSeconds: 20,
-        VisibilityTimeout: 900 // 15 minutes for large jobs
+        VisibilityTimeout: VISIBILITY_SECONDS
       }));
 
       if (result.Messages && result.Messages.length > 0) {
         const message = result.Messages[0];
         const jobData = JSON.parse(message.Body);
+        const label = `${jobData.eventId} (${jobData.photos?.length || 0} files)`;
 
-        console.log(`📦 Received streaming job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
-        
-        // Calculate total size
         const totalSize = jobData.photos?.reduce((sum, photo) => sum + (photo.size || 0), 0) || 0;
-        const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
-        console.log(`📊 Total size to process: ${totalSizeMB} MB`);
-        
+        console.log(`📦 Received job for ${label}, ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
         lastActivity = Date.now();
         isProcessing = true;
 
+        const stopHeartbeat = startVisibilityHeartbeat(message.ReceiptHandle, label);
+
         try {
-          // Process with longer timeout for large files
-          const timeoutMs = Math.max(600000, totalSize / 100); // At least 10 minutes, or 10KB/s minimum
+          // A hard ceiling, not a size-derived one. The old formula produced
+          // timeouts measured in hours, which is indistinguishable from no
+          // timeout at all - a wedged job would hold the instance up
+          // indefinitely. An hour is far longer than any legitimate archive and
+          // short enough to recover from.
           await Promise.race([
             processStreamingJob(jobData),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Job timeout')), timeoutMs))
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`Job exceeded ${MAX_JOB_MS / 60000} minute ceiling`)), MAX_JOB_MS)
+            )
           ]);
-          
-          // Delete message from queue
+
           await sqsClient.send(new DeleteMessageCommand({
             QueueUrl: config.sqs.queueUrl,
             ReceiptHandle: message.ReceiptHandle
           }));
-          
-          jobsProcessed++;
-          console.log('✅ Streaming job completed and message deleted from queue');
-        } catch (error) {
-          console.error('❌ Streaming job processing failed:', error);
-          // Message will become visible again after visibility timeout
-        }
 
-        isProcessing = false;
+          jobsProcessed++;
+          console.log(`✅ Completed ${label} and removed it from the queue`);
+        } catch (error) {
+          console.error(`❌ Job failed for ${label}:`, error.message);
+
+          // Return the message immediately rather than waiting out the
+          // visibility window, so a retry (or the dead-letter queue, once it is
+          // configured) happens promptly.
+          try {
+            await sqsClient.send(new ChangeMessageVisibilityCommand({
+              QueueUrl: config.sqs.queueUrl,
+              ReceiptHandle: message.ReceiptHandle,
+              VisibilityTimeout: 30
+            }));
+          } catch (visibilityError) {
+            console.error('⚠️ Could not reset visibility:', visibilityError.message);
+          }
+        } finally {
+          stopHeartbeat();
+          isProcessing = false;
+          lastActivity = Date.now();
+        }
       }
 
-      // Check for idle timeout - only when not processing
+      // Idle shutdown - but never while there is work outstanding (ZIP-8).
       if (!isProcessing && Date.now() - lastActivity > IDLE_TIMEOUT) {
-        console.log(`⏰ Idle timeout reached (${IDLE_TIMEOUT/1000/60} minutes), terminating instance...`);
-        await terminateInstance();
-        process.exit(0);
+        if (await queueIsEmpty()) {
+          console.log(`⏰ Idle for ${IDLE_TIMEOUT / 60000} minutes and the queue is empty, terminating`);
+          await terminateInstance();
+          process.exit(0);
+        }
+        lastActivity = Date.now();
       }
     } catch (error) {
       console.error('❌ Queue polling error:', error);
@@ -269,29 +368,36 @@ async function pollQueue() {
 }
 
 async function processStreamingJob(jobData) {
-  const { eventId, email, photos = [] } = jobData;
-  console.log(`🚀 Starting streaming processing for ${photos.length} files for event ${eventId}`);
+  const { eventId, email, photos = [], requestId } = jobData;
+  console.log(`🚀 Archiving ${photos.length} files for event ${eventId}`);
 
-  try {
-    // Create streaming ZIP and upload directly to R2
-    const zipKey = `events/${eventId}/photos.zip`;
-    console.log('🌊 Starting streaming ZIP creation and upload...');
-    
-    const { finalSizeMB, failedCount } = await createStreamingZip(photos, zipKey, eventId);
+  // A unique key per job (finding ZIP-6).
+  //
+  // Every archive for an event previously wrote to events/{eventId}/photos.zip.
+  // A second request overwrote the object while a guest might be mid-download of
+  // the first, handing them a corrupt file, and silently changed what every
+  // previously emailed link pointed at. The Netlify path wrote to a completely
+  // different scheme (downloads/event_{id}_photos_{ts}.zip), so the two engines
+  // produced URLs in unrelated namespaces.
+  //
+  // One scheme, one namespace, immutable objects. Set an R2 lifecycle rule to
+  // expire the archives/ prefix after 30 days - they are regenerable, and the
+  // year of access the email promises is for the photos, which is a different
+  // thing.
+  const jobId = requestId || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const zipKey = `archives/${eventId}/${jobId}.zip`;
 
-    // Generate download URL
-    const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
-    console.log(`✅ Streaming upload complete: ${downloadUrl}`);
+  const { finalSizeMB, failedCount, failures } = await createStreamingZip(photos, zipKey, eventId);
 
-    // Send email via Netlify
-    console.log('📧 Sending email notification...');
-    await sendEmail(email, eventId, downloadUrl, photos.length, finalSizeMB, failedCount);
+  const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
+  console.log(`✅ Archive ready: ${downloadUrl}`);
 
-    console.log('✅ Streaming job completed successfully!');
-  } catch (error) {
-    console.error('❌ Error processing streaming job:', error);
-    throw error;
+  if (failedCount > 0) {
+    console.warn(`⚠️ ${failedCount} file(s) could not be included:`, failures.map(f => f.fileName).join(', '));
   }
+
+  await sendEmail(email, eventId, downloadUrl, photos.length - failedCount, finalSizeMB, failedCount);
+  console.log('✅ Job complete');
 }
 
 async function createStreamingZip(photos, zipKey, eventId) {
