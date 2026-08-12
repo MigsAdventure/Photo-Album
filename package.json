@@ -49,8 +49,8 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "test:rules": "firebase emulators:exec --only firestore --project sharedmoments-rules-test \"node --test tests/firestore.rules.test.js\"",
-    "test:functions": "node --test tests/*.test.js --test-skip-pattern='rules'",
+    "test:rules": "firebase emulators:exec --only firestore --project sharedmoments-rules-test \"node --test tests/firestore.rules.test.js tests/rate-limit.test.js\"",
+    "test:functions": "node --test tests/ghl-webhook.auth.test.js",
     "test:security": "npm run test:functions && npm run test:rules",
     "deploy:rules": "firebase deploy --only firestore:rules,storage",
     "eject": "react-scripts eject"
