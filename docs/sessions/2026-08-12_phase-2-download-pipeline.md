@@ -149,6 +149,47 @@ Then, and order matters here:
 video and at least 20 files** — that is the shape that failed before, and small
 test collections would have passed even with the old bug.
 
+## Correction — 2026-08-12, after an adversarial review
+
+**The first version of this fix could not survive the failure it was written
+for.** An independent reviewer probed what happens when an origin accepts a
+request and then drops the socket part-way through the body — which is exactly
+what Firebase/GCS does, and the entire premise of ZIP-3. Piping the response
+straight into archiver produced one of two outcomes:
+
+1. **No error listener on the source stream**: the Readable emits `'error'`
+   (`TypeError: terminated` / `SocketError: other side closed`) with nothing
+   handling it, so Node raises `uncaughtException`. The processor's handler calls
+   `process.exit(1)`. **One dropped connection killed the entire archive job.**
+2. **With an error listener**: the error is observed, but archiver emits neither
+   `entry` nor `error` for that append — the entry is abandoned mid-write.
+   `appendAndDrain` never settled, so the job hung until the one-hour ceiling.
+
+Either way the per-file retry was unreachable for the precise failure it existed
+to handle.
+
+**Why the tests missed it:** they simulated clean HTTP errors — a tidy 500, a
+tidy 404. Real origins do not fail tidily; they accept the request and then
+disappear. The concurrency test was sound and the retry test was sound, and
+between them they still left the actual production failure mode uncovered.
+
+**The fix:** each file is now downloaded to a temp file with retry, then appended
+from local disk. Retry becomes meaningful because nothing is committed to the
+archive until the bytes are complete, and archiver reads a file that cannot drop
+underneath it. Memory stays bounded — this streams to disk, it does not buffer —
+and only one file is on disk at a time. The launcher now provisions a 30 GB gp3
+root volume, since the AL2023 default is 8 GB and a single file can be 2 GB.
+
+Five regression tests cover it, against a server that destroys the socket
+mid-body: no unhandled error, always settles, transient drops recover, one bad
+file does not stop the collection, and temp files are cleaned up including on
+failure.
+
+**The lesson worth keeping:** when writing a test for a network failure, make the
+fake server fail the way the real one does. "Returns 500" and "accepts then
+vanishes" are different bugs, and only the second one was ever going to matter
+here.
+
 ## Still open
 
 - **`direct-email.js` is now unused** — the processor calls `email-download`

@@ -193,6 +193,28 @@ cannot be tested without real SQS.
 
 ---
 
+## A real bug the pre-handoff review caught
+
+Worth reading before trusting the rest of this work.
+
+An adversarial review of all four phases found that **the headline ZIP-3 fix —
+the one this whole effort was built around — could not survive the failure it was
+written for.** When an origin accepts a request then drops the socket mid-body
+(exactly what Firebase/GCS does), streaming that response into archiver either
+raised an unhandled error that the processor turned into `process.exit(1)`, or
+left the append hanging forever. Reproduced both ways.
+
+Fixed in commit `4e12dbe`: files stage to a temp file with retry, then append
+from local disk. Five regression tests against a socket-destroying server.
+
+**Why it survived my own testing:** my tests simulated *clean* HTTP failures — a
+tidy 500, a tidy 404. Real origins accept the request and then vanish. The
+concurrency test was correct, the retry test was correct, and the actual
+production failure mode was still uncovered.
+
+If you write a test for a network failure in this repo, make the fake server fail
+the way the real one does.
+
 ## Known-open, carried forward
 
 Not bugs found late — things deliberately left, each recorded in the relevant

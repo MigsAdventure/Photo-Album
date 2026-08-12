@@ -37,6 +37,16 @@ const connections = { current: 0, peak: 0 };
 /** Requests that should fail, and how many times each has been attempted. */
 const failures = new Map();
 
+/**
+ * Requests whose socket should be destroyed part-way through the body.
+ *
+ * This is the failure that matters: origins do not politely return 500, they
+ * accept the request and then drop the connection. Simulating only clean HTTP
+ * errors is why the first version of the ZIP-3 fix passed its tests while
+ * crashing the processor in exactly the scenario it was written for.
+ */
+const socketDrops = new Map();
+
 before(async () => {
   server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -49,6 +59,19 @@ before(async () => {
       if (state.attempts <= state.failTimes) {
         res.writeHead(state.status || 500);
         res.end('simulated failure');
+        return;
+      }
+    }
+
+    // Accept, start the body, then kill the socket — no clean error, just a
+    // dead connection part-way through.
+    if (socketDrops.has(name)) {
+      const state = socketDrops.get(name);
+      state.attempts++;
+      if (state.attempts <= state.dropTimes) {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.write(Buffer.alloc(4096, 1));
+        setTimeout(() => res.socket?.destroy(), 20);
         return;
       }
     }
@@ -220,6 +243,112 @@ describe('sequential streaming (ZIP-3)', () => {
 });
 
 // ------------------------------------------------------------------ retries
+
+describe('mid-body socket drops (the failure ZIP-3 is about)', () => {
+  // Regression tests for a bug the first version of this fix could not survive.
+  // Piping the response straight into archiver meant a dropped socket either
+  // raised an unhandled stream error - which the processor's uncaughtException
+  // handler turns into process.exit(1), killing the whole job for one bad file -
+  // or left archiver mid-entry with neither 'entry' nor 'error' ever emitted, so
+  // the append never settled and the job hung until the one-hour ceiling.
+
+  test('a dropped socket does not raise an unhandled error', async () => {
+    socketDrops.set('dropped.jpg', { attempts: 0, dropTimes: 99 });
+
+    const unhandled = [];
+    const onUnhandled = (e) => unhandled.push(e);
+    process.on('uncaughtException', onUnhandled);
+    process.on('unhandledRejection', onUnhandled);
+
+    const { archive } = makeArchive();
+    const result = await addFileToArchive(archive, photo('dropped.jpg'), 'dropped.jpg');
+    archive.abort();
+
+    // Let any stray async error surface before we judge.
+    await new Promise((r) => setTimeout(r, 200));
+
+    process.removeListener('uncaughtException', onUnhandled);
+    process.removeListener('unhandledRejection', onUnhandled);
+
+    assert.strictEqual(result.ok, false, 'the file should be reported as failed');
+    assert.deepStrictEqual(
+      unhandled.map((e) => e.message),
+      [],
+      'a dropped socket must not escape as an unhandled error - that crashes the processor'
+    );
+
+    socketDrops.delete('dropped.jpg');
+  });
+
+  test('a dropped socket settles rather than hanging', async () => {
+    socketDrops.set('hang.jpg', { attempts: 0, dropTimes: 99 });
+
+    const { archive } = makeArchive();
+
+    // Generous, but finite. The bug was an append that never settled at all.
+    const settled = await Promise.race([
+      addFileToArchive(archive, photo('hang.jpg'), 'hang.jpg').then(() => 'settled'),
+      new Promise((r) => setTimeout(() => r('hung'), 20000)),
+    ]);
+    archive.abort();
+
+    assert.strictEqual(settled, 'settled', 'addFileToArchive must always settle');
+
+    socketDrops.delete('hang.jpg');
+  });
+
+  test('a transient socket drop is retried and recovers', async () => {
+    // Drops once, then serves normally — the case retry exists for.
+    socketDrops.set('flaky-socket.jpg', { attempts: 0, dropTimes: 1 });
+
+    const { archive, entries } = makeArchive();
+    const result = await addFileToArchive(
+      archive,
+      photo('flaky-socket.jpg'),
+      'flaky-socket.jpg'
+    );
+    await archive.finalize();
+
+    assert.strictEqual(result.ok, true, 'should recover on the second attempt');
+    assert.deepStrictEqual(entries, ['flaky-socket.jpg']);
+
+    socketDrops.delete('flaky-socket.jpg');
+  });
+
+  test('one dropped file does not stop the rest of the collection', async () => {
+    socketDrops.set('doomed.jpg', { attempts: 0, dropTimes: 99 });
+
+    const { archive, entries } = makeArchive();
+    const results = [];
+
+    for (const name of ['before.jpg', 'doomed.jpg', 'after.jpg']) {
+      results.push(await addFileToArchive(archive, photo(name), name));
+    }
+    await archive.finalize();
+
+    assert.deepStrictEqual(results.map((r) => r.ok), [true, false, true]);
+    assert.deepStrictEqual(entries, ['before.jpg', 'after.jpg']);
+
+    socketDrops.delete('doomed.jpg');
+  });
+
+  test('temp files are cleaned up rather than filling the disk', async () => {
+    const fs = require('fs');
+    const os = require('os');
+
+    const before = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('entry-')).length;
+
+    socketDrops.set('leaky.jpg', { attempts: 0, dropTimes: 99 });
+    const { archive } = makeArchive();
+    await addFileToArchive(archive, photo('leaky.jpg'), 'leaky.jpg');
+    await addFileToArchive(archive, photo('fine.jpg'), 'fine.jpg');
+    await archive.finalize();
+    socketDrops.delete('leaky.jpg');
+
+    const after = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('entry-')).length;
+    assert.strictEqual(after, before, 'every temp file must be removed, including failed ones');
+  });
+});
 
 describe('failure handling', () => {
   test('retries a transient 500 and recovers', async () => {

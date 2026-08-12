@@ -340,6 +340,23 @@ echo "Setup complete at $(date)"`;
         const launchParams = {
             ImageId: 'ami-052064a798f08f0d3', // Amazon Linux 2023 AMI (supports Node.js 20)
             InstanceType: 't3.medium',
+            // The processor now stages each file to a temp file before adding it
+            // to the archive, so a dropped connection costs one retry instead of
+            // the whole job (finding ZIP-3). Only one file is on disk at a time,
+            // but a single file can be 2 GB, and the AL2023 AMI default root
+            // volume is 8 GB before the OS and node_modules. 30 GB gp3 costs
+            // pennies for the few minutes an instance lives and removes the
+            // failure mode entirely.
+            BlockDeviceMappings: [
+                {
+                    DeviceName: '/dev/xvda',
+                    Ebs: {
+                        VolumeSize: 30,
+                        VolumeType: 'gp3',
+                        DeleteOnTermination: true
+                    }
+                }
+            ],
             MinCount: 1,
             MaxCount: 1,
             KeyName: 'wedding-photo-spot-key',
