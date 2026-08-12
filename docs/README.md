@@ -50,7 +50,7 @@ Describe what the code does now and when we last verified it.
 |---|---|
 | 1 — Security hardening | Code complete, **not deployed**. [Session](sessions/2026-08-12_phase-1-security.md) |
 | 2 — One download pipeline | Code complete, **not deployed, not exercised end to end**. [Session](sessions/2026-08-12_phase-2-download-pipeline.md) |
-| 3 — Storage plane | Not started |
+| 3 — Storage plane | Code complete, **blocked on R2 CORS config**. [Session](sessions/2026-08-12_phase-3-storage-plane.md) |
 | 4 — Make it a product | Not started |
 | 5 — Modernize | Not started |
 | 6 — Differentiate | Not started |

@@ -3,6 +3,41 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — Phase 3: Storage plane
+
+Session: [`sessions/2026-08-12_phase-3-storage-plane.md`](sessions/2026-08-12_phase-3-storage-plane.md)
+
+**Blocked on R2 bucket configuration** — uploads fail until the CORS policy in
+[`runbooks/r2-bucket-setup.md`](runbooks/r2-bucket-setup.md) is applied.
+
+### Fixed
+
+- **Large videos never reached R2** (ZIP-10) — uploads went to Firebase Storage
+  and a Netlify function pulled the whole file into memory to copy it. Anything
+  near a gigabyte blew the memory limit and the execution window, leaving those
+  files on the expensive origin, fetched from there by the archive job, and
+  stored twice. The browser now writes to R2 directly via presigned URLs.
+- **The gallery loaded every photo at full resolution** (UX-3) — now ~480px
+  WebP previews generated at upload, so the grid pulls roughly 1% of what it did.
+- **A GoHighLevel API client shipped in the browser bundle** (GHL-1).
+- **Permanently miscounted events** — `photoCount` was a separate client write
+  after the photo document, so closing the tab in between left the count wrong
+  forever, and the plan limit is computed from it.
+- **Broken gallery tiles from failed uploads** — a photo document could exist
+  without its bytes. Documents are now written only after the object is verified.
+
+### Removed
+
+- ~2,100 lines of unreachable code: `PhotoUpload.tsx` (rendered nowhere) and the
+  three services only it used, plus two service workers nothing registered. This
+  was a second upload path still using the ownership model SEC-5 replaced.
+- `r2-copy.js`.
+
+### Tightened
+
+- Clients can no longer create photo documents or update events at all. Both are
+  server-written now, so the narrowest rule is none.
+
 ## 2026-08-12 — Phase 2: One download pipeline
 
 Session: [`sessions/2026-08-12_phase-2-download-pipeline.md`](sessions/2026-08-12_phase-2-download-pipeline.md)
