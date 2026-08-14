@@ -206,15 +206,35 @@ async function routeToAWS(eventId, email, photos, requestId, env) {
       source: 'cloudflare-worker'
     };
     
-    // Call AWS Lambda Function URL
-    const awsLambdaUrl = env.AWS_LAMBDA_URL || 'https://szfs7ixxp34s6nbeonngs726om0ihnqx.lambda-url.us-east-1.on.aws/';
-    
-    console.log(`📡 Calling AWS Lambda [${requestId}]: ${awsLambdaUrl}`);
-    
+    // Call AWS Lambda Function URL.
+    //
+    // The URL is public (AuthType NONE) and its address is committed in this
+    // repository, so the launcher now requires a shared secret before it will
+    // queue a job or start an instance (finding SEC-3). Set it with:
+    //
+    //   wrangler secret put LAUNCHER_SHARED_SECRET
+    //
+    // It must match LAUNCHER_SHARED_SECRET in the Lambda's environment. Keep it
+    // out of wrangler.toml — that file is committed.
+    const awsLambdaUrl = env.AWS_LAMBDA_URL;
+
+    if (!awsLambdaUrl) {
+      throw new Error('AWS_LAMBDA_URL is not configured');
+    }
+
+    if (!env.LAUNCHER_SHARED_SECRET) {
+      throw new Error(
+        'LAUNCHER_SHARED_SECRET is not configured — refusing to call the launcher unauthenticated'
+      );
+    }
+
+    console.log(`📡 Calling AWS Lambda [${requestId}]`);
+
     const response = await fetch(awsLambdaUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-sharedmoments-secret': env.LAUNCHER_SHARED_SECRET
       },
       body: JSON.stringify(payload)
     });

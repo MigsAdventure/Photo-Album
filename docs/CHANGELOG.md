@@ -1,0 +1,290 @@
+# Changelog
+
+Notable changes, newest first. Each entry links the session log with the full
+reasoning and the finding IDs from `AUDIT_2026-08.md`.
+
+## 2026-08-12 — Production diagnosis and the GoHighLevel boundary
+
+Not a code change. Two things established while reviewing the payment work, both
+recorded so they are not rediscovered from scratch.
+
+- **Production grants premium without payment, confirmed live by the owner.**
+  Cancelling the payment leaves the event premium — because paying was never
+  required. The browser tells GoHighLevel the upgrade completed *before* showing
+  a payment form, and `ghl-webhook` on `main` grants it with no verification of
+  any kind. Full chain, immediate mitigation, and the two GoHighLevel-side
+  changes this branch cannot make: step 0 of [`HANDOFF.md`](HANDOFF.md).
+- **How far to automate GoHighLevel, and by which door** — the official MCP
+  server exists and is scoped, but cannot create workflows, forms or funnels
+  because the public API cannot either. The session-token workaround can, at a
+  cost worth stating explicitly.
+  [ADR 0003](decisions/0003-gohighlevel-automation-boundary.md).
+
+## 2026-08-12 — Payments, and what the app says about them
+
+Session: [`sessions/2026-08-12_payment-flow-and-upgrade-ux.md`](sessions/2026-08-12_payment-flow-and-upgrade-ux.md)
+
+**Requires `CHECKOUT_URL` and `CHECKOUT_REF_SECRET`** — without them the upgrade
+button correctly reports that upgrades are unavailable, and nobody can pay.
+
+The payment surfaces were still describing the two-photo paywall that Phase 4
+replaced with a 72-hour upload window. The enforcement had changed; the
+explanation had not.
+
+### Fixed
+
+- **The upgrade modal sold a product that did not exist** — "you've uploaded
+  {n}/2 photos" alongside "no more 20 photo limit", two dead numbers in one
+  dialog. It now states when uploads close, or that they have.
+- **Guests were shown the upgrade button** — gated on the event being free rather
+  than on the viewer being the organizer. That is finding UX-1 surviving in a
+  component its fix never touched.
+- **The CRM was told the upgrade completed before any money moved** — every
+  abandoned checkout was recorded as a sale, with a payment id invented in the
+  browser. Replaced by a server-side `checkout_started` signal that is true.
+- **The price and payment URL moved to the server.** The browser no longer
+  proposes what to charge.
+- **Paying on a different device lost the event** — correlation was via
+  `localStorage`, written before the redirect. A signed reference now travels in
+  the URL, so scanning the QR on a phone and paying on a laptop works.
+- **The post-payment page showed customers debug output**, and announced success
+  before the upgrade existed. It now polls until the plan actually flips.
+- **The failed-payment page rendered `?reason=` from the URL** inside an alert
+  headed "Payment Error Details" and styled as ours — usable to display arbitrary
+  text under our branding. Failure codes now map to copy we control.
+- All three return pages (success, cancelled, **failed**) share one resolver.
+  Cancelled and failed were still on `localStorage` after the first pass.
+- Removed an `UpgradeModal` in `BottomNavbar` that could never open, and stopped
+  writing the dead `photoLimit` field that was still being rendered to customers
+  as "a limit of 2 photos".
+
+### Added
+
+- `checkout-start` / `checkout-status` functions, `_lib/pricing.js`,
+  `_lib/checkout-ref.js`, and `_lib/organizer-auth.js` (extracted from
+  `delete-photo.js` so both use one authorisation check).
+- `tests/checkout.test.js` — 15 tests, mostly negative cases on the signed ref.
+  `npm run test:all` is now 151 across six suites.
+
+## 2026-08-12 — The four remaining review findings
+
+Session: [`sessions/2026-08-12_review-findings.md`](sessions/2026-08-12_review-findings.md)
+
+### Fixed
+
+- **Archives arrived short without saying so** — the processor counts files it
+  could not fetch, but `email-download` dropped the number, so the ZIP-7 notice
+  could never render. Also fixed on the archive-reuse path, which had the same
+  defect and was not part of the original finding.
+- **`.HEIC` and some Android uploads were rejected after the app accepted them** —
+  the client falls back to the file extension when the browser supplies no MIME
+  type; the server judged by MIME type alone and returned 400. The server now
+  resolves a media type from the extension and returns it, because `ContentType`
+  is a signed header on the presigned URL and the client has to PUT with the same
+  value.
+- **The credential-rotation runbook fired a real production job** — its smoke
+  test queued SQS and launched an EC2 instance. Replaced with configuration
+  checks that have no side effects.
+
+### Added
+
+- `scripts/backfill-organizer-email.js` — normalises `organizerEmail` on events
+  created before the casing fix, which are otherwise invisible to their own
+  organizers. Dry-run by default. **Not yet run against production.**
+- `tests/upload-contract.test.js` — 14 tests over the two client/server contracts
+  that broke. `npm run test:all` is now 136 across five suites.
+
+## 2026-08-12 — Post-review correction
+
+The pre-handoff adversarial review found that the ZIP-3 fix — the headline
+change of this whole effort — could not survive the failure it was written for.
+An origin that accepts a request then drops the socket mid-body either crashed
+the processor (unhandled stream error → `process.exit(1)`, killing the whole job
+for one bad file) or hung the append forever. Fixed by staging each file to disk
+with retry before appending. Five regression tests against a socket-destroying
+server. See `sessions/2026-08-12_phase-2-download-pipeline.md`.
+
+## 2026-08-12 — Phase 4: Making it a product
+
+Session: [`sessions/2026-08-12_phase-4-product.md`](sessions/2026-08-12_phase-4-product.md)
+
+**Requires two Firebase console settings** — email-link sign-in and authorized
+domains — or organizer sign-in fails.
+
+### Fixed
+
+- **The free plan blocked guests** (UX-1) — two photos per *event*, so the third
+  person at a wedding was shown an upgrade modal for an event they neither owned
+  nor could pay for, and their photos were lost for good. Free events now accept
+  everything until 72 hours after the event date, then go view-only. Guests are
+  never asked to pay; the organizer gets the prompt.
+- **Organizers had nowhere to stand** (UX-2) — no way to see your events, reopen
+  one, check what came in, or moderate. Lose the confirmation email and the event
+  was gone. There is now magic-link sign-in and a `/dashboard`.
+- **Nobody could remove an inappropriate photo** — organizers can now delete
+  anything in their own event, authorised by a verified Firebase ID token.
+- **Thumbnail objects were orphaned on delete** — Phase 3 started writing a
+  second R2 object per photo and nothing removed it, recreating the SEC-7 orphan
+  class.
+
+### Added
+
+- First real identity in the codebase. `firestore.rules` now grants organizers
+  scoped access to their own events, with an allowlist of editable fields so
+  plan state stays server-only.
+- 44 new tests (29 plan and parity, 15 organizer rules). Suite total: 114.
+
+### Removed
+
+- Seven orphaned production endpoints, including a debug function that dumped
+  raw event documents to anyone who asked.
+
+## 2026-08-12 — Phase 3: Storage plane
+
+Session: [`sessions/2026-08-12_phase-3-storage-plane.md`](sessions/2026-08-12_phase-3-storage-plane.md)
+
+**Blocked on R2 bucket configuration** — uploads fail until the CORS policy in
+[`runbooks/r2-bucket-setup.md`](runbooks/r2-bucket-setup.md) is applied.
+
+### Fixed
+
+- **Large videos never reached R2** (ZIP-10) — uploads went to Firebase Storage
+  and a Netlify function pulled the whole file into memory to copy it. Anything
+  near a gigabyte blew the memory limit and the execution window, leaving those
+  files on the expensive origin, fetched from there by the archive job, and
+  stored twice. The browser now writes to R2 directly via presigned URLs.
+- **The gallery loaded every photo at full resolution** (UX-3) — now ~480px
+  WebP previews generated at upload, so the grid pulls roughly 1% of what it did.
+- **A GoHighLevel API client shipped in the browser bundle** (GHL-1).
+- **Permanently miscounted events** — `photoCount` was a separate client write
+  after the photo document, so closing the tab in between left the count wrong
+  forever, and the plan limit is computed from it.
+- **Broken gallery tiles from failed uploads** — a photo document could exist
+  without its bytes. Documents are now written only after the object is verified.
+
+### Removed
+
+- ~2,100 lines of unreachable code: `PhotoUpload.tsx` (rendered nowhere) and the
+  three services only it used, plus two service workers nothing registered. This
+  was a second upload path still using the ownership model SEC-5 replaced.
+- `r2-copy.js`.
+
+### Tightened
+
+- Clients can no longer create photo documents or update events at all. Both are
+  server-written now, so the narrowest rule is none.
+
+## 2026-08-12 — Phase 2: One download pipeline
+
+Session: [`sessions/2026-08-12_phase-2-download-pipeline.md`](sessions/2026-08-12_phase-2-download-pipeline.md)
+
+**Not deployed, and not yet exercised end to end.** Deploy the Lambda before
+Netlify or all downloads break.
+
+### Fixed
+
+- **The large-video archive failures** (ZIP-3) — the cause was a queueing bug,
+  not a size bug. The loop appended every file's live HTTP response to the
+  archiver without waiting, and the archiver drains one at a time, so most
+  connections sat idle until the origin closed them. It now streams one file at
+  a time. Proven with a test that tracks connection concurrency: new code peaks
+  at 1, the old loop at 8.
+- **Duplicate emails** (ZIP-5) — the SQS visibility timeout was 15 minutes while
+  the job timeout worked out to nearly 14 hours for a large collection, so a
+  second consumer picked up work still in progress. Visibility is now extended
+  on a heartbeat.
+- **Corrupt downloads from concurrent requests** (ZIP-6) — every archive for an
+  event wrote to the same R2 key, overwriting objects that guests might be
+  mid-download of. Keys are unique per job.
+- **Silently truncated archives** (ZIP-7) — a job that lost files still reported
+  success, and the failure count never reached a template. Files are retried,
+  losses above 5% fail the job, and any remaining are named in the email.
+- **Orphaned jobs** (ZIP-8) — an instance could terminate on idle while a message
+  sat unclaimed. It now drains the queue before shutting down.
+- **Photos lost at extraction** — twenty guests uploading `IMG_0001.jpg`
+  produced twenty identical ZIP entries that extractors silently overwrite.
+  Names are now deduplicated and sanitised against path traversal.
+
+### Removed
+
+- **Three of four routing tiers** (ZIP-1, ZIP-2, ZIP-4). The frontend's call to
+  a Google Cloud Run service decommissioned in January 2025, which burned a
+  30-second timeout on every large collection. The Netlify fire-and-forget
+  "background" path, which could never complete and left customers waiting for
+  an email that was never sent. The Cloudflare Worker tier, now out of the path
+  entirely.
+- ~400 lines of duplicated email HTML across four copies that had drifted apart.
+- `downloadAllPhotos`, which opened every photo in its own browser tab.
+- `email-download.js`: ~900 lines → ~280.
+
+### Added
+
+- Archive reuse for 30 minutes, so repeat requests don't rebuild identical bytes.
+- 17 archive tests. Suite total: 74.
+
+### Known regression
+
+Small collections now wait for an EC2 instance (~60–90s cold) instead of being
+zipped inline. Accepted: delivery is by email either way, and it removes an
+entire class of failure.
+
+## 2026-08-12 — Phase 1: Security hardening
+
+Session: [`sessions/2026-08-12_phase-1-security.md`](sessions/2026-08-12_phase-1-security.md)
+Decisions: [0001](decisions/0001-privileged-writes-move-server-side.md),
+[0002](decisions/0002-shared-secrets-for-internal-endpoints.md)
+
+**Not yet deployed.** Requires credential rotation and new environment
+variables — see the session log's deployment checklist.
+
+### Closed
+
+- **Free premium via the browser** (SEC-2) — `upgradeEventToPremium` was exported
+  client-side; one console call granted unlimited uploads with no payment. Plan
+  state is now Admin-SDK-only, enforced by security rules.
+- **Free premium via the webhook** (GHL-2) — the GoHighLevel endpoint performed
+  no verification. Now requires an HMAC signature or a shared secret, rejects
+  replays, and can confirm the payment with GoHighLevel first.
+- **Cross-guest photo deletion** (SEC-5) — photo documents published the
+  uploader's raw session id to every guest in the gallery. They now carry a hash;
+  the secret never leaves the uploader's browser.
+- **Phishing relay on our own domain** (SEC-8, new) — two endpoints sent branded
+  email to any address with any link, unauthenticated.
+- **Committed R2 credentials** (SEC-9, new) — two live key pairs across seven
+  files, granting full control of the production photo bucket.
+- **Committed SSH private key** (SEC-1) — removed from the tree; rotation runbook
+  written.
+- **Unauthenticated EC2 launcher** (SEC-3) — a public URL that started billable
+  instances. Now authenticated and capped at 2 concurrent.
+- **Orphaned storage on delete** (SEC-7) — deletion touched Firestore only, so
+  bytes stayed in Firebase Storage and R2 forever. Now one server operation
+  across all three.
+- **Unbounded uploads** (SEC-6) — storage rules accepted any file of any type or
+  size. Now bounded to images and video under 2 GB.
+
+### Added
+
+- `firestore.rules`, `storage.rules`, `firebase.json` — rules under version
+  control for the first time, with 33 emulator tests.
+- Three server functions and four shared modules for privileged operations.
+- Durable Firestore-backed rate limiting (SEC-4, ZIP-9), replacing ~250 lines of
+  in-memory bookkeeping that could not work in a serverless runtime.
+- `docs/` — session logs, decision records, runbooks, and an environment
+  reference.
+- 57 tests where there were none: `npm run test:security`.
+
+### Removed
+
+- The in-memory rate limiter and the circuit breaker, which keyed on a request id
+  generated in the same handler and so could never open.
+- `node_modules` and four Lambda zip bundles from version control. Tracked files:
+  6,297 → 201.
+
+### Known gaps
+
+- Ownership remains best-effort; there is no authentication to bind it to. Real
+  identity arrives in Phase 4.
+- Photos uploaded before this change still carry the old plaintext ownership
+  scheme, which `delete-photo` accepts for compatibility.
+- Git history still contains the leaked key and credentials. Purging rewrites
+  shared history and needs an explicit decision.

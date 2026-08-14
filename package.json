@@ -9,6 +9,7 @@
     "@aws-sdk/client-s3": "^3.848.0",
     "@aws-sdk/client-sqs": "^3.848.0",
     "@aws-sdk/client-ssm": "^3.849.0",
+    "@aws-sdk/s3-request-presigner": "^3.1108.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.2.0",
@@ -49,6 +50,15 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:rules": "firebase emulators:exec --only firestore --project sharedmoments-rules-test \"node --test tests/firestore.rules.test.js tests/rate-limit.test.js\"",
+    "test:functions": "node --test tests/ghl-webhook.auth.test.js",
+    "test:archive": "node --test tests/archive-entries.test.js",
+    "test:plan": "node --test tests/plan-parity.test.js",
+    "test:upload": "node --test tests/upload-contract.test.js",
+    "test:checkout": "node --test tests/checkout.test.js",
+    "test:security": "npm run test:functions && npm run test:rules",
+    "test:all": "npm run test:functions && npm run test:archive && npm run test:plan && npm run test:upload && npm run test:checkout && npm run test:rules",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -70,9 +80,11 @@
     ]
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
     "@types/archiver": "^6.0.3",
     "@types/multer": "^2.0.0",
     "@types/qrcode": "^1.5.5",
-    "@vercel/node": "^5.3.4"
+    "@vercel/node": "^5.3.4",
+    "firebase-tools": "^13.35.1"
   }
 }

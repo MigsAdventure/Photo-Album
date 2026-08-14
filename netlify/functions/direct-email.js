@@ -1,13 +1,31 @@
 const nodemailer = require('nodemailer');
+const { requireInternalCaller, isAllowedDownloadUrl } = require('./_lib/internal-auth');
+
+// Sends the "your photos are ready" email. Called by the EC2 processor once an
+// archive lands in R2 — never by a browser.
+//
+// SECURITY (finding SEC-8)
+// ------------------------
+// This endpoint took a recipient address and a download URL straight from the
+// request body, with no authentication, and rendered the URL into an anchor in a
+// SharedMoments-branded message sent from our authenticated Mailgun domain. That
+// is a working phishing relay: anyone could deliver "your wedding photos are
+// ready" to any address, pointing anywhere. Besides the harm to the recipient,
+// it puts the sending domain's reputation at risk, which would take legitimate
+// delivery down with it.
+//
+// Two controls now apply. The caller must hold INTERNAL_SERVICE_SECRET, and the
+// download URL must be on the R2 host — so even a compromised internal caller
+// cannot put an arbitrary link in front of a customer.
 
 exports.handler = async (event, context) => {
   const requestId = Math.random().toString(36).substr(2, 9);
-  
+
   console.log(`=== DIRECT EMAIL REQUEST [${requestId}] ===`);
-  
+
   const headers = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, x-sharedmoments-internal',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'X-Request-ID': requestId,
     'Content-Type': 'application/json'
@@ -25,6 +43,9 @@ exports.handler = async (event, context) => {
     };
   }
 
+  const unauthorised = requireInternalCaller(event, headers);
+  if (unauthorised) return unauthorised;
+
   let parsedBody;
   try {
     parsedBody = JSON.parse(event.body || '{}');
@@ -33,14 +54,29 @@ exports.handler = async (event, context) => {
     return {
       statusCode: 400,
       headers,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         error: 'Invalid JSON in request body',
-        requestId 
+        requestId
       }),
     };
   }
 
   const { email, downloadUrl, fileCount, finalSizeMB } = parsedBody;
+
+  // The link must point at our own archive storage. The template previously fell
+  // back to a placeholder URL when this was missing, which meant a malformed
+  // request still sent a branded email containing a link to example.com.
+  if (!isAllowedDownloadUrl(downloadUrl)) {
+    console.error(`❌ Rejected download URL [${requestId}]`);
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({
+        error: 'downloadUrl must be an https link on the configured R2 host',
+        requestId
+      }),
+    };
+  }
 
   // Early validation
   if (!email) {

@@ -8,6 +8,11 @@ export interface Media {
   size?: number;
   r2Key?: string;
   contentType?: string;
+  /**
+   * Small preview generated at upload time (finding UX-3). Absent on anything
+   * uploaded before thumbnails existed, so always fall back to `url`.
+   */
+  thumbnailUrl?: string;
   mediaType: 'photo' | 'video';
   
   // Video-specific properties
@@ -121,9 +126,11 @@ export interface UpgradeModalProps {
   open: boolean;
   onClose: () => void;
   eventId: string;
-  currentPhotoCount: number;
   onUpgradeSuccess: () => void;
 }
+// currentPhotoCount was here, feeding the modal's "you've uploaded {n}/2 photos"
+// headline. UX-1 replaced the count with an upload window, so the number stopped
+// describing anything — the modal now reads the window state from the server.
 
 // User session and ownership tracking
 export interface UserSession {

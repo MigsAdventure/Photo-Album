@@ -37,3 +37,21 @@ test-media/
 # Firebase service account keys
 wedding-photo-240c9-firebase-adminsdk-*.json
 *firebase-adminsdk*.json
+
+# Private keys and certificates — never commit these (see AUDIT_2026-08.md SEC-1)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# Vendored dependencies and build artifacts that were previously committed
+aws-ec2-spot/node_modules/
+cloudflare-worker/node_modules/
+*.zip
+
+# Firebase emulator state
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

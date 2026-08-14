@@ -15,6 +15,7 @@ import {
   useMediaQuery,
   TextField,
   Alert,
+  Snackbar,
   CircularProgress
 } from '@mui/material';
 import {
@@ -34,9 +35,9 @@ import {
   Print
 } from '@mui/icons-material';
 import { uploadMedia, validateMediaFile } from '../services/mediaUploadService';
-import { requestEmailDownload, getEvent, canUploadPhoto } from '../services/photoService';
+import { requestEmailDownload, getEvent } from '../services/photoService';
+import { getUploadState, explainUploadState, describeTimeRemaining } from '../services/planService';
 import { Photo, UploadProgress, Event } from '../types';
-import UpgradeModal from './UpgradeModal';
 import QRCode from 'qrcode';
 
 interface BottomNavbarProps {
@@ -64,12 +65,21 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
   
   // Freemium state
   const [event, setEvent] = useState<Event | null>(null);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  // Why uploads are unavailable, phrased for a guest. Null when they are open.
+  const [uploadBlockedMessage, setUploadBlockedMessage] = useState<string | null>(null);
   
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
 
   const eventUrl = `${window.location.origin}/event/${eventId}`;
+
+  // "2 days left to add photos", or null when the event is premium, already
+  // closed, or has no deadline to report.
+  const uploadWindowHint = React.useMemo(() => {
+    if (!event) return null;
+    const state = getUploadState(event);
+    return state.canUpload ? describeTimeRemaining(state.closesAt) : null;
+  }, [event]);
 
   // Load event data for freemium checking
   useEffect(() => {
@@ -85,16 +95,26 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
     loadEvent();
   }, [eventId]);
 
-  // Check if upload is allowed (freemium limits)
+  // Can this guest upload right now?
+  //
+  // This used to open the upgrade modal whenever the check failed — asking a
+  // wedding guest to pay $29 for an event they neither own nor can pay for
+  // (finding UX-1). They saw a paywall, gave up, and their photos were lost for
+  // good, while the organizer never learned it had happened.
+  //
+  // A closed window is now stated as a fact about the event, alongside what the
+  // guest *can* still do: browse and download everything. The upgrade prompt
+  // belongs to the organizer, in the dashboard.
   const checkUploadAllowed = async (): Promise<boolean> => {
     if (!event) return false;
-    
-    const canUpload = await canUploadPhoto(eventId);
-    if (!canUpload) {
-      setShowUpgradeModal(true);
+
+    const state = getUploadState(event);
+    if (!state.canUpload) {
+      setUploadBlockedMessage(explainUploadState(state, 'guest'));
       return false;
     }
-    
+
+    setUploadBlockedMessage(null);
     return true;
   };
 
@@ -875,6 +895,42 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         style={{ display: 'none' }}
       />
 
+      {/*
+        Gentle deadline cue. Guests upload when they remember to, which is often
+        the next morning — telling them the window is finite converts far better
+        than a limit that blocks them, and it never asks anyone to pay
+        (finding UX-1).
+      */}
+      {uploadWindowHint && (
+        <Box
+          sx={{
+            position: 'fixed',
+            bottom: 88,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+            zIndex: 999
+          }}
+        >
+          <Box
+            sx={{
+              px: 1.75,
+              py: 0.5,
+              borderRadius: 999,
+              bgcolor: alpha(theme.palette.common.black, 0.62),
+              color: 'common.white',
+              fontSize: 12,
+              fontWeight: 500,
+              backdropFilter: 'blur(4px)'
+            }}
+          >
+            {uploadWindowHint}
+          </Box>
+        </Box>
+      )}
+
       {/* Bottom Navigation Bar */}
       <Paper
         elevation={8}
@@ -1584,37 +1640,39 @@ const BottomNavbar: React.FC<BottomNavbarProps> = ({ photos, eventId, onUploadCo
         </DialogActions>
       </Dialog>
 
-      {/* Upgrade Modal for Freemium Limits */}
-      {event && (
-        <UpgradeModal
-          open={showUpgradeModal}
-          onClose={() => setShowUpgradeModal(false)}
-          eventId={eventId}
-          currentPhotoCount={event.photoCount || 0}
-          onUpgradeSuccess={async () => {
-            setShowUpgradeModal(false);
-            console.log('🔄 BottomNavbar: Upgrade successful, refreshing event data...');
-            
-            try {
-              // Wait a moment for server to process upgrade
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Force refresh event data
-              const updatedEvent = await getEvent(eventId);
-              if (updatedEvent) {
-                setEvent(updatedEvent);
-                console.log('✅ BottomNavbar: Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
-              } else {
-                console.warn('⚠️ BottomNavbar: Failed to get updated event data');
-              }
-            } catch (error) {
-              console.error('❌ BottomNavbar: Error refreshing event data:', error);
-              // Fallback: reload the page to ensure fresh data
-              window.location.reload();
-            }
-          }}
-        />
-      )}
+      {/*
+        Why uploads are unavailable, stated to a guest as a fact about the event
+        rather than a paywall (finding UX-1). Deliberately not a modal: it does
+        not block the gallery, because browsing and downloading still work.
+      */}
+      <Snackbar
+        open={Boolean(uploadBlockedMessage)}
+        autoHideDuration={8000}
+        onClose={() => setUploadBlockedMessage(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        sx={{ mb: 10 }}
+      >
+        <Alert
+          severity="info"
+          variant="filled"
+          onClose={() => setUploadBlockedMessage(null)}
+          sx={{ width: '100%' }}
+        >
+          {uploadBlockedMessage}
+        </Alert>
+      </Snackbar>
+
+      {/*
+        The UpgradeModal was mounted here but unreachable: nothing ever called
+        setShowUpgradeModal(true), because the UX-1 fix removed the trigger — a
+        blocked guest used to be shown the paywall — without removing the modal
+        it opened. It rendered a dialog that could not open, kept a dead
+        `photoLimit` reference alive, and gave the impression this component had
+        an upgrade path when the guest-facing navbar deliberately does not.
+
+        The upgrade prompt belongs to the organizer: the gallery header shows it
+        to a signed-in organizer, and the dashboard has it too.
+      */}
     </>
   );
 };

@@ -1,10 +1,17 @@
-const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
+const {
+  SQSClient,
+  ReceiveMessageCommand,
+  DeleteMessageCommand,
+  ChangeMessageVisibilityCommand,
+  GetQueueAttributesCommand
+} = require('@aws-sdk/client-sqs');
 const { S3Client, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { EC2Client, TerminateInstancesCommand } = require('@aws-sdk/client-ec2');
 const { Upload } = require('@aws-sdk/lib-storage');
 const express = require('express');
 const archiver = require('archiver');
-const { PassThrough, Readable } = require('stream');
+const { PassThrough } = require('stream');
+const { safeEntryName, uniqueEntryName, addFileToArchive } = require('./archive-entries');
 const fs = require('fs');
 
 // Configuration from environment variables
@@ -21,14 +28,22 @@ const config = {
     region: process.env.AWS_REGION
   },
   netlify: {
-    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/direct-email'
+    // Points at email-download rather than direct-email. Both send the same
+    // template now, but email-download also records the completed archive so a
+    // repeat request within the reuse window returns this URL instead of
+    // rebuilding the same bytes on a fresh instance.
+    emailEndpoint: process.env.NETLIFY_EMAIL_ENDPOINT || 'https://sharedmoments.socialboostai.com/.netlify/functions/email-download',
+    // Proves to the email endpoint that this request came from our own backend
+    // rather than from anyone who found the URL (finding SEC-8).
+    internalSecret: process.env.INTERNAL_SERVICE_SECRET
   }
 };
 
 // Validate environment variables
 const requiredEnvVars = [
-  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 
-  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION'
+  'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY',
+  'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'AWS_SQS_QUEUE_URL', 'AWS_REGION',
+  'INTERNAL_SERVICE_SECRET'
 ];
 
 for (const envVar of requiredEnvVars) {
@@ -201,6 +216,79 @@ app.get('/health', (req, res) => {
 });
 app.listen(8080, () => console.log('Health check server running on port 8080'));
 
+// How long a single receive keeps a message invisible to other consumers. Kept
+// short and extended by heartbeat while the job runs (see ZIP-5 below).
+const VISIBILITY_SECONDS = 300;          // 5 minutes
+const HEARTBEAT_INTERVAL_MS = 120_000;   // extend every 2 minutes
+const MAX_JOB_MS = 60 * 60 * 1000;       // hard ceiling: 1 hour
+
+/**
+ * Keep a message invisible while we are still working on it (finding ZIP-5).
+ *
+ * This is the duplicate-email bug. The visibility timeout was a fixed 15
+ * minutes, while the job timeout was Math.max(600000, totalSize / 100) - which
+ * for a 5 GB collection evaluates to 50,000,000 ms, just under 14 hours. So SQS
+ * made the message visible again long before the job finished, a second
+ * consumer picked up the same work, and both completed and both sent email.
+ *
+ * Extending visibility on a heartbeat means the message stays hidden exactly as
+ * long as we are genuinely working, and becomes visible promptly if this
+ * instance dies - which is what you want a queue to do.
+ */
+function startVisibilityHeartbeat(receiptHandle, label) {
+  const timer = setInterval(async () => {
+    try {
+      await sqsClient.send(new ChangeMessageVisibilityCommand({
+        QueueUrl: config.sqs.queueUrl,
+        ReceiptHandle: receiptHandle,
+        VisibilityTimeout: VISIBILITY_SECONDS
+      }));
+      console.log(`💓 Extended visibility for ${label}`);
+    } catch (error) {
+      // Losing the heartbeat is not fatal to this job, but it does mean another
+      // consumer may pick the message up. Log loudly so it is visible in
+      // CloudWatch if duplicates ever reappear.
+      console.error(`⚠️ Failed to extend visibility for ${label}:`, error.message);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Is the queue empty right now?
+ *
+ * Used before idle termination (finding ZIP-8). The launcher checks for a
+ * running instance and, if it finds one, returns "an existing instance will
+ * process it". If that instance was seconds from its idle timeout it then
+ * terminated, and nothing ever polled the message - the request vanished with
+ * no error anywhere. Draining to empty before shutting down closes that window.
+ */
+async function queueIsEmpty() {
+  try {
+    const result = await sqsClient.send(new GetQueueAttributesCommand({
+      QueueUrl: config.sqs.queueUrl,
+      AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
+    }));
+
+    const visible = Number(result.Attributes?.ApproximateNumberOfMessages || 0);
+    const inFlight = Number(result.Attributes?.ApproximateNumberOfMessagesNotVisible || 0);
+
+    if (visible + inFlight > 0) {
+      console.log(`📬 Queue not empty (${visible} waiting, ${inFlight} in flight) - staying up`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    // If we cannot tell, assume there is work. Staying up costs about a cent an
+    // hour; terminating with a queued job costs a customer their photos.
+    console.error('⚠️ Could not read queue depth, assuming not empty:', error.message);
+    return false;
+  }
+}
+
 // Poll SQS for jobs
 async function pollQueue() {
   while (true) {
@@ -209,52 +297,72 @@ async function pollQueue() {
         QueueUrl: config.sqs.queueUrl,
         MaxNumberOfMessages: 1,
         WaitTimeSeconds: 20,
-        VisibilityTimeout: 900 // 15 minutes for large jobs
+        VisibilityTimeout: VISIBILITY_SECONDS
       }));
 
       if (result.Messages && result.Messages.length > 0) {
         const message = result.Messages[0];
         const jobData = JSON.parse(message.Body);
+        const label = `${jobData.eventId} (${jobData.photos?.length || 0} files)`;
 
-        console.log(`📦 Received streaming job for eventId: ${jobData.eventId} (${jobData.photos?.length || 0} files)`);
-        
-        // Calculate total size
         const totalSize = jobData.photos?.reduce((sum, photo) => sum + (photo.size || 0), 0) || 0;
-        const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
-        console.log(`📊 Total size to process: ${totalSizeMB} MB`);
-        
+        console.log(`📦 Received job for ${label}, ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
         lastActivity = Date.now();
         isProcessing = true;
 
+        const stopHeartbeat = startVisibilityHeartbeat(message.ReceiptHandle, label);
+
         try {
-          // Process with longer timeout for large files
-          const timeoutMs = Math.max(600000, totalSize / 100); // At least 10 minutes, or 10KB/s minimum
+          // A hard ceiling, not a size-derived one. The old formula produced
+          // timeouts measured in hours, which is indistinguishable from no
+          // timeout at all - a wedged job would hold the instance up
+          // indefinitely. An hour is far longer than any legitimate archive and
+          // short enough to recover from.
           await Promise.race([
             processStreamingJob(jobData),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Job timeout')), timeoutMs))
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`Job exceeded ${MAX_JOB_MS / 60000} minute ceiling`)), MAX_JOB_MS)
+            )
           ]);
-          
-          // Delete message from queue
+
           await sqsClient.send(new DeleteMessageCommand({
             QueueUrl: config.sqs.queueUrl,
             ReceiptHandle: message.ReceiptHandle
           }));
-          
-          jobsProcessed++;
-          console.log('✅ Streaming job completed and message deleted from queue');
-        } catch (error) {
-          console.error('❌ Streaming job processing failed:', error);
-          // Message will become visible again after visibility timeout
-        }
 
-        isProcessing = false;
+          jobsProcessed++;
+          console.log(`✅ Completed ${label} and removed it from the queue`);
+        } catch (error) {
+          console.error(`❌ Job failed for ${label}:`, error.message);
+
+          // Return the message immediately rather than waiting out the
+          // visibility window, so a retry (or the dead-letter queue, once it is
+          // configured) happens promptly.
+          try {
+            await sqsClient.send(new ChangeMessageVisibilityCommand({
+              QueueUrl: config.sqs.queueUrl,
+              ReceiptHandle: message.ReceiptHandle,
+              VisibilityTimeout: 30
+            }));
+          } catch (visibilityError) {
+            console.error('⚠️ Could not reset visibility:', visibilityError.message);
+          }
+        } finally {
+          stopHeartbeat();
+          isProcessing = false;
+          lastActivity = Date.now();
+        }
       }
 
-      // Check for idle timeout - only when not processing
+      // Idle shutdown - but never while there is work outstanding (ZIP-8).
       if (!isProcessing && Date.now() - lastActivity > IDLE_TIMEOUT) {
-        console.log(`⏰ Idle timeout reached (${IDLE_TIMEOUT/1000/60} minutes), terminating instance...`);
-        await terminateInstance();
-        process.exit(0);
+        if (await queueIsEmpty()) {
+          console.log(`⏰ Idle for ${IDLE_TIMEOUT / 60000} minutes and the queue is empty, terminating`);
+          await terminateInstance();
+          process.exit(0);
+        }
+        lastActivity = Date.now();
       }
     } catch (error) {
       console.error('❌ Queue polling error:', error);
@@ -264,191 +372,172 @@ async function pollQueue() {
 }
 
 async function processStreamingJob(jobData) {
-  const { eventId, email, photos = [] } = jobData;
-  console.log(`🚀 Starting streaming processing for ${photos.length} files for event ${eventId}`);
+  const { eventId, email, photos = [], requestId } = jobData;
+  console.log(`🚀 Archiving ${photos.length} files for event ${eventId}`);
 
-  try {
-    // Create streaming ZIP and upload directly to R2
-    const zipKey = `events/${eventId}/photos.zip`;
-    console.log('🌊 Starting streaming ZIP creation and upload...');
-    
-    const { finalSizeMB, failedCount } = await createStreamingZip(photos, zipKey, eventId);
+  // A unique key per job (finding ZIP-6).
+  //
+  // Every archive for an event previously wrote to events/{eventId}/photos.zip.
+  // A second request overwrote the object while a guest might be mid-download of
+  // the first, handing them a corrupt file, and silently changed what every
+  // previously emailed link pointed at. The Netlify path wrote to a completely
+  // different scheme (downloads/event_{id}_photos_{ts}.zip), so the two engines
+  // produced URLs in unrelated namespaces.
+  //
+  // One scheme, one namespace, immutable objects. Set an R2 lifecycle rule to
+  // expire the archives/ prefix after 30 days - they are regenerable, and the
+  // year of access the email promises is for the photos, which is a different
+  // thing.
+  const jobId = requestId || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const zipKey = `archives/${eventId}/${jobId}.zip`;
 
-    // Generate download URL
-    const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
-    console.log(`✅ Streaming upload complete: ${downloadUrl}`);
+  const { finalSizeMB, failedCount, failures } = await createStreamingZip(photos, zipKey, eventId);
 
-    // Send email via Netlify
-    console.log('📧 Sending email notification...');
-    await sendEmail(email, eventId, downloadUrl, photos.length, finalSizeMB, failedCount);
+  const downloadUrl = `${config.r2.publicUrl}/${zipKey}`;
+  console.log(`✅ Archive ready: ${downloadUrl}`);
 
-    console.log('✅ Streaming job completed successfully!');
-  } catch (error) {
-    console.error('❌ Error processing streaming job:', error);
-    throw error;
+  if (failedCount > 0) {
+    console.warn(`⚠️ ${failedCount} file(s) could not be included:`, failures.map(f => f.fileName).join(', '));
   }
+
+  await sendEmail(email, eventId, downloadUrl, photos.length - failedCount, finalSizeMB, failedCount);
+  console.log('✅ Job complete');
 }
 
 async function createStreamingZip(photos, zipKey, eventId) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      // Create a PassThrough stream for the ZIP
-      const zipStream = new PassThrough();
-      const archive = archiver('zip', { 
-        zlib: { level: 6 }, // Reduced compression for faster processing
-        statConcurrency: 1 // Process files one at a time to manage memory
-      });
-      
-      let processedFiles = 0;
-      let totalBytes = 0;
-      let failedCount = 0;
+  const zipStream = new PassThrough();
 
-      // Track archive progress
-      archive.on('progress', (progress) => {
-        processedFiles = progress.entries.processed;
-        totalBytes = progress.bytes;
-        console.log(`📦 Processed ${progress.entries.processed}/${progress.entries.total} files (${(totalBytes / 1024 / 1024).toFixed(2)} MB)`);
-      });
+  const archive = archiver('zip', {
+    // Level 1, not 6. Wedding archives are overwhelmingly JPEG and H.264, both
+    // already compressed — deflate spends CPU to save a percent or two. On a
+    // 2-vCPU t3.medium that compression was a real share of the job's wall
+    // clock, and it is now the sequential loop's bottleneck rather than being
+    // hidden behind parallel downloads.
+    zlib: { level: 1 },
+    statConcurrency: 1
+  });
 
-      archive.on('end', async () => {
-        const finalSizeMB = archive.pointer() / (1024 * 1024);
-        console.log(`🌊 Streaming ZIP completed: ${finalSizeMB.toFixed(2)} MB`);
+  const failures = [];
+  const usedNames = new Set();
 
-        try {
-          // Wait for upload to complete
-          await uploadPromise;
-          console.log('✅ Upload to R2 completed');
+  archive.on('warning', (error) => {
+    // ENOENT is advisory. Anything else means the archive is suspect, and
+    // throwing inside an event handler would take the process down rather than
+    // failing this job, so record it and let the error handler surface it.
+    console.warn(`Archive warning: ${error.message}`);
+  });
 
-          // Verify object exists and size > 0
-          try {
-            const head = await s3Client.send(new HeadObjectCommand({
-              Bucket: config.r2.bucketName,
-              Key: zipKey
-            }));
-            const sizeMB = (Number(head.ContentLength || 0) / (1024 * 1024)).toFixed(2);
-            console.log(`🔎 R2 object verified. Content-Length: ${sizeMB} MB`);
-            
-            if (Number(head.ContentLength) === 0) {
-              throw new Error('Uploaded file is empty');
-            }
-          } catch (headErr) {
-            console.error('⚠️ HeadObject verification failed:', headErr);
-            throw headErr;
-          }
+  archive.pipe(zipStream);
 
-          resolve({ finalSizeMB, failedCount });
-        } catch (err) {
-          console.error('❌ Upload completion error:', err);
-          reject(err);
-        }
-      });
+  // Start the upload before writing any entries, so the multipart upload
+  // consumes the stream as it fills rather than buffering the archive in memory.
+  //
+  // Declared here on purpose: it used to be referenced inside archive.on('end')
+  // while being declared with const further down, which only worked because the
+  // event happened to fire later. Any reordering would have turned that into a
+  // TDZ ReferenceError inside an event handler — a crash with no useful stack.
+  const fileName = `photos-${eventId || 'download'}.zip`;
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: config.r2.bucketName,
+      Key: zipKey,
+      Body: zipStream,
+      ContentType: 'application/zip',
+      ContentDisposition: `attachment; filename="${fileName}"`
+    },
+    queueSize: 4,
+    partSize: 10 * 1024 * 1024
+  });
 
-      archive.on('error', (err) => {
-        console.error('❌ Archive error:', err);
-        reject(err);
-      });
-
-      archive.on('warning', (err) => {
-        if (err.code === 'ENOENT') {
-          console.warn('⚠️ Archive warning:', err);
-        } else {
-          throw err;
-        }
-      });
-
-      // Pipe archive to our stream
-      archive.pipe(zipStream);
-
-      // Start upload to R2 while creating ZIP
-      const fileName = `photos-${eventId || 'download'}.zip`;
-      const upload = new Upload({
-        client: s3Client,
-        params: {
-          Bucket: config.r2.bucketName,
-          Key: zipKey,
-          Body: zipStream,
-          ContentType: 'application/zip',
-          ContentDisposition: `attachment; filename="${fileName}"`
-        },
-        queueSize: 4, // Parallel parts
-        partSize: 10 * 1024 * 1024 // 10MB parts for large files
-      });
-
-      // Monitor upload progress
-      upload.on('httpUploadProgress', (progress) => {
-        if (progress.loaded && progress.total) {
-          const percent = ((progress.loaded / progress.total) * 100).toFixed(1);
-          console.log(`⬆️ Upload progress: ${percent}% (${(progress.loaded / 1024 / 1024).toFixed(2)}MB / ${(progress.total / 1024 / 1024).toFixed(2)}MB)`);
-        }
-      });
-
-      // Start the upload (this will consume the zipStream as we write to it)
-      const uploadPromise = upload.done();
-
-      // Add files to archive by streaming them directly
-      console.log(`🌊 Starting to stream ${photos.length} files...`);
-      
-      for (let i = 0; i < photos.length; i++) {
-        const photo = photos[i];
-        const sizeMB = ((photo.size || 0) / (1024 * 1024)).toFixed(2);
-        console.log(`📥 Streaming file ${i + 1}/${photos.length}: ${photo.fileName} (${sizeMB} MB)`);
-        
-        try {
-          // Add timeout for fetch
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 120000); // 2 minutes per file
-          
-          const response = await fetch(photo.url, {
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeout);
-          
-          if (!response.ok) {
-            console.error(`❌ Failed to fetch ${photo.fileName}: ${response.status}`);
-            failedCount++;
-            continue;
-          }
-
-          // Convert Web Stream (response.body) to Node.js stream
-          const nodeStream = Readable.fromWeb(response.body);
-          archive.append(nodeStream, { 
-            name: photo.fileName,
-            date: new Date()
-          });
-          
-          // Add a small delay between files to prevent overwhelming the system
-          if (i < photos.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 50)); // Reduced delay
-          }
-        } catch (error) {
-          console.error(`❌ Error streaming ${photo.fileName}:`, error.message || error);
-          failedCount++;
-          // Continue with next file instead of failing entire job
-        }
-      }
-
-      // Finalize the archive (this will end the stream)
-      console.log('🔄 Finalizing archive...');
-      archive.finalize();
-
-    } catch (error) {
-      console.error('❌ Streaming ZIP creation error:', error);
-      reject(error);
+  upload.on('httpUploadProgress', (progress) => {
+    if (progress.loaded) {
+      console.log(`⬆️ Uploaded ${(progress.loaded / 1024 / 1024).toFixed(2)}MB`);
     }
   });
+
+  const uploadPromise = upload.done();
+
+  // Surface an upload failure as a rejection we can await, rather than an
+  // unhandled rejection that the process-level handler swallows while this
+  // function keeps writing entries into a stream nobody is reading.
+  let uploadFailed = null;
+  uploadPromise.catch((error) => {
+    uploadFailed = error;
+  });
+
+  console.log(`🌊 Streaming ${photos.length} files, one at a time...`);
+
+  for (let i = 0; i < photos.length; i++) {
+    if (uploadFailed) {
+      throw new Error(`R2 upload failed partway through: ${uploadFailed.message}`);
+    }
+
+    const photo = photos[i];
+    const entryName = uniqueEntryName(safeEntryName(photo.fileName, i), usedNames);
+    const sizeMB = ((photo.size || 0) / (1024 * 1024)).toFixed(2);
+
+    console.log(`📥 [${i + 1}/${photos.length}] ${entryName} (${sizeMB} MB)`);
+
+    const result = await addFileToArchive(archive, photo, entryName);
+
+    if (!result.ok) {
+      console.error(`❌ Gave up on ${photo.fileName}: ${result.error}`);
+      failures.push({ fileName: photo.fileName, reason: result.error });
+    }
+  }
+
+  console.log('🔄 Finalizing archive...');
+  await archive.finalize();
+
+  await uploadPromise;
+  console.log('✅ Upload to R2 completed');
+
+  const head = await s3Client.send(new HeadObjectCommand({
+    Bucket: config.r2.bucketName,
+    Key: zipKey
+  }));
+
+  const bytes = Number(head.ContentLength || 0);
+  if (bytes === 0) {
+    throw new Error('Uploaded archive is empty');
+  }
+
+  const finalSizeMB = bytes / (1024 * 1024);
+  console.log(`🔎 R2 object verified: ${finalSizeMB.toFixed(2)} MB`);
+
+  // A job that dropped a large share of the collection should not be reported to
+  // the customer as a success (finding ZIP-7). Better to fail, leave the SQS
+  // message for a retry, and alert, than to email a bride an archive that is
+  // quietly missing a fifth of her wedding.
+  const failureRate = photos.length > 0 ? failures.length / photos.length : 0;
+  if (failureRate > 0.05) {
+    throw new Error(
+      `Too many files failed: ${failures.length}/${photos.length} ` +
+      `(${(failureRate * 100).toFixed(0)}%). Not sending a success email. ` +
+      `First failure: ${failures[0]?.fileName} — ${failures[0]?.reason}`
+    );
+  }
+
+  return { finalSizeMB, failedCount: failures.length, failures };
 }
 
 async function sendEmail(email, eventId, downloadUrl, fileCount, finalSizeMB, failedCount = 0) {
   try {
     const response = await fetch(config.netlify.emailEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-sharedmoments-internal': config.netlify.internalSecret
+      },
       body: JSON.stringify({
+        source: 'processor',
+        eventId: eventId,
         email: email,
         downloadUrl: downloadUrl,
         fileCount: fileCount,
-        finalSizeMB: finalSizeMB
+        finalSizeMB: finalSizeMB,
+        failedCount: failedCount
       })
     });
 

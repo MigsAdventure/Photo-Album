@@ -510,8 +510,8 @@ SyslogIdentifier=wedding-processor
 
 Environment="AWS_REGION=us-east-1"
 Environment="NODE_ENV=production"
-Environment="R2_ACCESS_KEY_ID=726f0a5bdc6875ec2aa7a8102c6c8b29"
-Environment="R2_SECRET_ACCESS_KEY=3b01b8e969d99c3bb0c3e7db50edf3de6e8c59dea87cfa967c18dc956c07ff77"
+Environment="R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}"
+Environment="R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}"
 Environment="SYSTEME_API_KEY=cd0e896f13c7ad0af079db93b72e4c38b060f0e1af8f1bdaf21f4b5b7f85a0f0:43e699f37e4c8e088a29a19e0baaedd5"
 Environment="INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
 

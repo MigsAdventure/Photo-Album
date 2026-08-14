@@ -1,6 +1,6 @@
 // Unified media upload service that handles both photos and videos
-import { uploadPhoto, incrementPhotoCount, canUploadPhoto, getEvent } from './photoService';
-import { analyzeVideoFile, validateVideoFile, generateVideoThumbnail, compressVideo } from './videoService';
+import { uploadMediaToR2 } from './r2UploadService';
+import { analyzeVideoFile, validateVideoFile } from './videoService';
 import { FileAnalysis } from '../types';
 
 // Detect if file is a video
@@ -127,127 +127,72 @@ const compressImage = async (file: File): Promise<File> => {
   });
 };
 
-// Unified upload function that handles both photos and videos
+// Unified upload function that handles both photos and videos.
+//
+// Uploads now go straight to R2 from the browser (finding ZIP-10). The previous
+// path wrote to Firebase Storage and then asked a Netlify function to copy the
+// file to R2, which pulled the whole thing into memory — so anything near a
+// gigabyte never made it, and those files stayed on the expensive origin while
+// being stored and billed twice.
+//
+// The plan limit is still checked here for a fast, friendly failure, but it is
+// enforced server-side in upload-init.js. This check is a courtesy, not a
+// control.
 export const uploadMedia = async (
   file: File,
   eventId: string,
   onProgress?: (progress: number) => void
 ): Promise<string> => {
   const startTime = Date.now();
+  const video = isVideoFile(file);
+
   console.log('📤 Starting media upload:', {
     fileName: file.name,
     size: (file.size / 1024 / 1024).toFixed(2) + 'MB',
     type: file.type,
-    isVideo: isVideoFile(file),
-    isImage: isImageFile(file)
+    mediaType: video ? 'video' : 'photo'
   });
 
+  if (!video && !isImageFile(file)) {
+    throw new Error('Unsupported file type. Please select a photo or video file.');
+  }
+
+  if (video) {
+    const validation = validateVideoFile(file);
+    if (!validation.isValid) {
+      throw new Error(validation.error || 'Invalid video file');
+    }
+  }
+
+  let fileToUpload = file;
+
+  // Compress large camera photos before upload. Videos are left alone: browser
+  // re-encoding is slow, lossy, and frequently worse than the original.
+  if (!video) {
+    const analysis = await analyzeMediaFile(file);
+    if (analysis.isCamera && file.size > 8 * 1024 * 1024) {
+      console.log('🗜️ Compressing camera photo...');
+      onProgress?.(2);
+      fileToUpload = await compressImage(file);
+    }
+  }
+
   try {
-    // CRITICAL: Check freemium limits BEFORE starting upload
-    console.log('🔒 Checking upload permissions for event:', eventId);
-    const canUpload = await canUploadPhoto(eventId);
-    if (!canUpload) {
-      const event = await getEvent(eventId);
-      const currentCount = event?.photoCount || 0;
-      const limit = event?.photoLimit || 2;
-      throw new Error(`Upload limit reached! You have uploaded ${currentCount}/${limit} photos. Upgrade to premium for unlimited uploads.`);
-    }
-    
-    // Validate file type
-    if (!isVideoFile(file) && !isImageFile(file)) {
-      throw new Error('Unsupported file type. Please select a photo or video file.');
-    }
+    const result = await uploadMediaToR2(fileToUpload, eventId, onProgress);
 
-    // Video-specific validation
-    if (isVideoFile(file)) {
-      console.log('🎥 Processing video file');
-      const validation = validateVideoFile(file);
-      if (!validation.isValid) {
-        throw new Error(validation.error || 'Invalid video file');
-      }
-
-      // Optional: Generate thumbnail for video (could be used for gallery preview)
-      try {
-        const thumbnail = await generateVideoThumbnail(file, 1);
-        console.log('🖼️ Video thumbnail generated:', thumbnail.substring(0, 50) + '...');
-      } catch (thumbError) {
-        console.warn('⚠️ Failed to generate video thumbnail:', thumbError);
-        // Continue without thumbnail - not critical
-      }
-
-      // Optional: Compress video if too large
-      let processedFile = file;
-      if (file.size > 50 * 1024 * 1024) { // 50MB threshold
-        console.log('🗜️ Video file is large, attempting compression...');
-        onProgress?.(10);
-        try {
-          processedFile = await compressVideo(file);
-          console.log('✅ Video compressed successfully');
-        } catch (compressError) {
-          console.warn('⚠️ Video compression failed, using original file:', compressError);
-          // Continue with original file
-        }
-      }
-
-      // Upload video using existing photo upload infrastructure
-      // The Netlify function should be file-agnostic and handle any file type
-      onProgress?.(20);
-      console.log('📤 Uploading video via photo upload service...');
-      const result = await uploadPhoto(processedFile, eventId, (progress) => {
-        // Adjust progress to account for preprocessing
-        const adjustedProgress = 20 + (progress * 0.8); // Map 0-100 to 20-100
-        onProgress?.(adjustedProgress);
-      });
-
-      // Increment photo count for freemium tracking
-      await incrementPhotoCount(eventId);
-
-      const duration = Date.now() - startTime;
-      console.log(`🎥✅ Video upload completed in ${duration}ms:`, result);
-      return result;
-
-    } else {
-      // Handle image files (existing logic)
-      console.log('📷 Processing image file');
-      
-      // Analyze image
-      const analysis = await analyzeMediaFile(file);
-      let processedFile = file;
-
-      // Compress if needed
-      if (analysis.isCamera && file.size > 8 * 1024 * 1024) {
-        console.log('🗜️ Compressing camera photo...');
-        onProgress?.(10);
-        processedFile = await compressImage(file);
-        onProgress?.(20);
-      }
-
-      // Upload image
-      console.log('📤 Uploading image...');
-      const result = await uploadPhoto(processedFile, eventId, (progress) => {
-        const adjustedProgress = analysis.needsCompression ? 20 + (progress * 0.8) : progress;
-        onProgress?.(adjustedProgress);
-      });
-
-      // Increment photo count for freemium tracking
-      await incrementPhotoCount(eventId);
-
-      const duration = Date.now() - startTime;
-      console.log(`📷✅ Image upload completed in ${duration}ms:`, result);
-      return result;
-    }
-
+    // photoCount is incremented server-side in upload-complete, so there is no
+    // separate incrementPhotoCount call here any more. It used to run as a
+    // second client write that could fail independently, leaving the count and
+    // the gallery disagreeing.
+    console.log(`✅ Upload completed in ${Date.now() - startTime}ms:`, result.photoId);
+    return result.url;
   } catch (error) {
-    const duration = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    
-    console.error(`❌ Media upload failed after ${duration}ms:`, {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`❌ Media upload failed after ${Date.now() - startTime}ms:`, {
       fileName: file.name,
-      fileSize: (file.size / 1024 / 1024).toFixed(2) + 'MB',
-      error: errorMessage,
-      isVideo: isVideoFile(file)
+      sizeMB: (file.size / 1024 / 1024).toFixed(2),
+      error: message
     });
-
     throw error;
   }
 };

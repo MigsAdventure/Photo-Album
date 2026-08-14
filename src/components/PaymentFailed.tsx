@@ -1,272 +1,102 @@
-import React, { useState, useEffect } from 'react';
+// Shown when a payment did not go through.
+//
+// What was wrong with it
+// ----------------------
+// 1. It rendered `?reason=` verbatim, inside an alert headed "Payment Error
+//    Details" and styled as ours. Anyone could send a link that displayed
+//    arbitrary text there under our branding — "your card was declined, call
+//    this number to resolve it" being the obvious abuse. React escapes the
+//    string, which prevents script injection and does nothing whatsoever about
+//    the actual problem. Failure codes now map to copy we control.
+//
+// 2. It identified the event through `localStorage.pendingUpgrade`, so paying on
+//    a different device from the one that opened the gallery lost it, and then
+//    showed "Event ID not found" to someone whose card had just been declined.
+//
+// 3. Its error branch printed raw exception text (`'Failed to load event data: '
+//    + String(catchError)`) to the customer.
+//
+// Refs: AUDIT_2026-08.md GHL-2, UX-7
+
+import React from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Container,
   Typography,
-  Box,
   Card,
   CardContent,
   Button,
   Alert,
-  CircularProgress
+  CircularProgress,
+  Stack,
 } from '@mui/material';
-import {
-  Error,
-  ArrowBack,
-  Refresh,
-  PhotoLibrary,
-  ContactSupport
-} from '@mui/icons-material';
-import { getEvent } from '../services/photoService';
-import { Event } from '../types';
+import { ErrorOutline, Refresh, ContactSupport } from '@mui/icons-material';
+import { useCheckoutEvent, describeFailureReason } from '../services/paymentReturn';
 
 const PaymentFailed: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [event, setEvent] = useState<Event | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { eventId, eventTitle, loading } = useCheckoutEvent();
 
-  // Try URL parameter first, then localStorage as fallback
-  const getEventId = (): string | null => {
-    const urlEventId = searchParams.get('event_id');
-    if (urlEventId && urlEventId !== '{event_id}') {
-      console.log('✅ PaymentFailed: Got event_id from URL:', urlEventId);
-      return urlEventId;
-    }
-    
-    console.log('⚠️ PaymentFailed: No valid event_id in URL, checking localStorage...');
-    
-    try {
-      const pendingUpgradeData = localStorage.getItem('pendingUpgrade');
-      if (pendingUpgradeData) {
-        const upgradeData = JSON.parse(pendingUpgradeData);
-        const isRecent = upgradeData.timestamp && (Date.now() - upgradeData.timestamp < 3600000); // 1 hour
-        
-        if (isRecent && upgradeData.eventId) {
-          console.log('✅ PaymentFailed: Got event_id from localStorage:', upgradeData.eventId);
-          // Don't clear localStorage here since payment failed - they might try again
-          return upgradeData.eventId;
-        } else if (!isRecent) {
-          console.log('⚠️ PaymentFailed: localStorage data expired, clearing...');
-          localStorage.removeItem('pendingUpgrade');
-        }
-      }
-    } catch (error) {
-      console.error('❌ PaymentFailed: Error reading localStorage:', error);
-      localStorage.removeItem('pendingUpgrade');
-    }
-    
-    return null;
-  };
-
-  const eventId = getEventId();
-  const reason = searchParams.get('reason') || 'Unknown error';
-
-  useEffect(() => {
-    const loadEventData = async () => {
-      if (!eventId) {
-        console.error('❌ PaymentFailed: No event_id found in URL or localStorage');
-        setError('Event ID not found. Please return to your event gallery.');
-        setLoading(false);
-        return;
-      }
-
-      console.log('🔍 PaymentFailed: Loading event data for ID:', eventId);
-
-      try {
-        const eventData = await getEvent(eventId);
-        console.log('📊 PaymentFailed: Event data loaded:', eventData);
-        
-        if (eventData) {
-          setEvent(eventData);
-          console.log('✅ PaymentFailed: Event loaded successfully:', eventData.title);
-        } else {
-          console.error('❌ PaymentFailed: Event not found for ID:', eventId);
-          setError(`Event not found (ID: ${eventId})`);
-        }
-      } catch (catchError) {
-        console.error('❌ PaymentFailed: Failed to load event:', catchError);
-        setError('Failed to load event data: ' + String(catchError));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadEventData();
-  }, [eventId]);
-
-  const handleReturnToGallery = () => {
-    if (eventId) {
-      navigate(`/event/${eventId}`);
-    } else {
-      navigate('/');
-    }
-  };
-
-  const handleTryAgain = () => {
-    if (eventId) {
-      // Navigate back to the event page where they can try upgrading again
-      navigate(`/event/${eventId}`);
-    } else {
-      navigate('/');
-    }
-  };
+  const reason = describeFailureReason(searchParams.get('reason'));
 
   if (loading) {
     return (
-      <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
-        <CircularProgress size={60} sx={{ mb: 2 }} />
-        <Typography variant="h6" color="text.secondary">
-          Loading event details...
-        </Typography>
+      <Container maxWidth="sm" sx={{ py: 10, textAlign: 'center' }}>
+        <CircularProgress size={48} />
       </Container>
     );
   }
 
-  if (error) {
-    return (
-      <Container maxWidth="sm" sx={{ py: 8 }}>
-        <Alert severity="error" sx={{ mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Error Loading Event
-          </Typography>
-          <Typography variant="body1">
-            {error}
-          </Typography>
-        </Alert>
-        <Button
-          variant="outlined"
-          onClick={() => {
-            if (eventId) {
-              navigate(`/event/${eventId}`);
-            } else {
-              navigate('/');
-            }
-          }}
-          fullWidth
-        >
-          {eventId ? 'Go to Event Gallery' : 'Go to Home'}
-        </Button>
-      </Container>
-    );
-  }
+  const supportSubject = encodeURIComponent(
+    `Payment issue${eventTitle ? ` — ${eventTitle}` : ''}`
+  );
 
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
-      <Box textAlign="center" mb={4}>
-        <Error 
-          sx={{ 
-            fontSize: 80, 
-            color: 'error.main', 
-            mb: 2
-          }} 
-        />
-        <Typography variant="h3" gutterBottom color="error.main" sx={{ fontWeight: 600 }}>
-          Payment Failed
-        </Typography>
-        <Typography variant="h6" color="text.secondary" sx={{ mb: 3 }}>
-          We encountered an issue processing your payment.
-        </Typography>
-      </Box>
+    <Container maxWidth="sm" sx={{ py: { xs: 6, sm: 10 } }}>
+      <Card elevation={0} sx={{ borderRadius: 4, border: '1px solid', borderColor: 'grey.200' }}>
+        <CardContent sx={{ p: { xs: 3, sm: 5 }, textAlign: 'center' }}>
+          <ErrorOutline sx={{ fontSize: 72, color: 'error.main', mb: 2 }} />
 
-      {/* Error Details Card */}
-      <Card elevation={3} sx={{ mb: 4, borderRadius: 3, borderColor: 'error.main', borderWidth: 1, borderStyle: 'solid' }}>
-        <CardContent sx={{ p: 4 }}>
-          <Typography variant="h5" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-            <PhotoLibrary sx={{ mr: 1, color: 'primary.main' }} />
-            {event?.title || 'Event Gallery'}
+          <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+            That payment didn't go through
           </Typography>
-          
-          <Alert severity="error" sx={{ my: 3 }}>
-            <Typography variant="body1" sx={{ fontWeight: 600, mb: 1 }}>
-              Payment Error Details:
-            </Typography>
-            <Typography variant="body2">
-              {reason}
-            </Typography>
+
+          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
+            {reason}
+          </Typography>
+
+          {/*
+            The reassurance belongs high up, not buried under a list of
+            troubleshooting steps. Someone whose card was just declined wants to
+            know their gallery is fine before anything else.
+          */}
+          <Alert severity="info" sx={{ mb: 3, textAlign: 'left' }}>
+            Your gallery is unaffected — it's still live and guests can still upload. You can try
+            again whenever you like.
           </Alert>
 
-          <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
-            Common Solutions:
-          </Typography>
-          
-          <Box component="ul" sx={{ pl: 2, m: 0, mb: 3 }}>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              💳 Check that your card details are correct
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              💰 Ensure you have sufficient funds available
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              🌐 Try a different payment method or card
-            </Typography>
-            <Typography component="li" variant="body1" sx={{ mb: 1 }}>
-              📱 Contact your bank if the issue persists
-            </Typography>
-          </Box>
+          <Stack spacing={1}>
+            <Button
+              variant="contained"
+              size="large"
+              fullWidth
+              startIcon={<Refresh />}
+              onClick={() => navigate(eventId ? `/event/${eventId}` : '/')}
+              sx={{ py: 1.5, textTransform: 'none', fontWeight: 600 }}
+            >
+              {eventId ? 'Back to the gallery to try again' : 'Go to SharedMoments'}
+            </Button>
 
-          <Alert severity="info">
-            <Typography variant="body2">
-              Don't worry! Your event gallery is still active on the free plan. You can try upgrading again anytime.
-            </Typography>
-          </Alert>
-        </CardContent>
-      </Card>
-
-      {/* Action Buttons */}
-      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', flexWrap: 'wrap' }}>
-        <Button
-          variant="contained"
-          size="large"
-          onClick={handleTryAgain}
-          startIcon={<Refresh />}
-          sx={{ 
-            px: 4, 
-            py: 1.5,
-            fontWeight: 600,
-            background: 'linear-gradient(45deg, #d81b60, #8e24aa)',
-            '&:hover': {
-              background: 'linear-gradient(45deg, #c2185b, #7b1fa2)',
-            }
-          }}
-        >
-          Try Payment Again
-        </Button>
-        
-        <Button
-          variant="outlined"
-          size="large"
-          onClick={handleReturnToGallery}
-          startIcon={<ArrowBack />}
-          sx={{ 
-            px: 4, 
-            py: 1.5,
-            fontWeight: 600
-          }}
-        >
-          Return to Gallery
-        </Button>
-      </Box>
-
-      {/* Support Section */}
-      <Card elevation={2} sx={{ mt: 4, bgcolor: 'grey.50', borderRadius: 3 }}>
-        <CardContent sx={{ p: 3, textAlign: 'center' }}>
-          <ContactSupport sx={{ fontSize: 40, color: 'primary.main', mb: 2 }} />
-          <Typography variant="h6" gutterBottom>
-            Still having trouble?
-          </Typography>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-            Our support team is here to help with payment issues.
-          </Typography>
-          <Button
-            variant="outlined"
-            href={`mailto:support@socialboostai.com?subject=Payment Issue - Event: ${event?.title || eventId}`}
-            startIcon={<ContactSupport />}
-            sx={{ fontWeight: 600 }}
-          >
-            Contact Support
-          </Button>
+            <Button
+              fullWidth
+              startIcon={<ContactSupport />}
+              href={`mailto:support@socialboostai.com?subject=${supportSubject}`}
+              sx={{ textTransform: 'none' }}
+            >
+              Email support
+            </Button>
+          </Stack>
         </CardContent>
       </Card>
     </Container>

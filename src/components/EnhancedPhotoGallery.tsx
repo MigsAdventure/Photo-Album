@@ -34,12 +34,13 @@ import {
   PlayArrow,
   Videocam,
   Star,
-  Security,
   Delete,
   Download
 } from '@mui/icons-material';
 import { useSwipeable } from 'react-swipeable';
-import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, canDeletePhoto } from '../services/photoService';
+import { subscribeToPhotos, requestEmailDownload, getEvent, deletePhoto, getPhotoOwnershipInfo } from '../services/photoService';
+import { getCurrentUserEmail, onAuthChange } from '../services/authService';
+import { getUploadState, explainUploadState, describeTimeRemaining } from '../services/planService';
 import { preloadOptimalUrls } from '../services/r2UrlService';
 import { Media, Event } from '../types';
 import UpgradeModal from './UpgradeModal';
@@ -150,21 +151,7 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     const unsubscribe = subscribeToPhotos(eventId, async (newPhotos) => {
       setPhotos(newPhotos);
       setLoading(false);
-      
-      // Check ownership for all photos
-      const owned = new Set<string>();
-      for (const photo of newPhotos) {
-        try {
-          const canDelete = await canDeletePhoto(photo.id);
-          if (canDelete) {
-            owned.add(photo.id);
-          }
-        } catch (error) {
-          console.warn('Failed to check ownership for photo:', photo.id, error);
-        }
-      }
-      setOwnedPhotos(owned);
-      
+
       // Optimize URLs for cost savings using R2 when available
       if (newPhotos.length > 0) {
         optimizeMediaUrls(newPhotos);
@@ -175,7 +162,65 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
-  // Get optimized URL for a media item
+  // Track sign-in, so an organizer opening their own gallery gets moderation
+  // controls without having to go via the dashboard.
+  const [signedInEmail, setSignedInEmail] = useState<string | null>(getCurrentUserEmail());
+
+  useEffect(() => onAuthChange((user) => setSignedInEmail(user?.email?.toLowerCase() ?? null)), []);
+
+  // Is the person looking at this page the organizer?
+  //
+  // Hoisted out of the ownership effect below because the upgrade CTA needs it
+  // too: a guest must never be shown a payment prompt for an event they neither
+  // own nor can pay for. That was finding UX-1, and it survived in this
+  // component after the upload path was fixed — the button was gated on
+  // `planType === 'free'` alone, so every guest at a free event saw "Upgrade".
+  const isOrganizer = Boolean(
+    signedInEmail && event?.organizerEmail?.toLowerCase() === signedInEmail
+  );
+
+  // Which photos does this browser get a delete affordance for?
+  //
+  // A guest sees it on their own uploads. An organizer signed in as this event's
+  // owner sees it on everything, because moderation is the point — they need to
+  // remove something a guest should not have posted (finding UX-2).
+  //
+  // Derived rather than computed inside the photo subscription: `event` and
+  // `photos` load from two independent effects, so a subscription callback that
+  // read `event` would see null whenever photos arrived first, and never
+  // recompute once the event landed. Organizers would intermittently get no
+  // controls, depending on which request won — the kind of bug that reproduces
+  // only on a slow connection.
+  //
+  // Both paths are UI hints. delete-photo.js re-checks independently, so being
+  // wrong here shows or hides an icon and nothing more.
+  useEffect(() => {
+    const owned = new Set<string>();
+    for (const photo of photos) {
+      if (isOrganizer || getPhotoOwnershipInfo(photo.id).canDelete) {
+        owned.add(photo.id);
+      }
+    }
+    setOwnedPhotos(owned);
+  }, [photos, isOrganizer]);
+
+  // Preview URL for grid tiles.
+  //
+  // The grid used to load every photo at full resolution — a 400-photo wedding
+  // meant several hundred megabytes over cellular before anything was usable,
+  // at the reception, on the venue's wifi (finding UX-3). Uploads now generate a
+  // ~30KB preview, so the grid pulls roughly 1% of what it did.
+  //
+  // Photos uploaded before thumbnails existed have none, and fall back to the
+  // full image — so the grid gets progressively lighter as old events age out
+  // rather than breaking for them.
+  const getThumbnailUrl = useCallback((media: Media): string => {
+    if (media.thumbnailUrl) return media.thumbnailUrl;
+    const optimized = optimizedUrls.get(media.id);
+    return optimized ? optimized.url : media.url;
+  }, [optimizedUrls]);
+
+  // Full-resolution URL, for the lightbox and downloads.
   const getMediaUrl = useCallback((media: Media): string => {
     const optimized = optimizedUrls.get(media.id);
     if (optimized) {
@@ -562,26 +607,43 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 label={
                   event.planType === 'premium' 
                     ? `${photos.length} photos • Unlimited`
-                    : `${photos.length}/${event.photoLimit} photos`
+                    : `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'}`
                 }
                 color={
-                  event.planType === 'premium' 
+                  event.planType === 'premium'
                     ? 'success'
-                    : photos.length >= event.photoLimit 
-                      ? 'error' 
-                      : 'primary'
+                    : getUploadState(event).canUpload
+                      ? 'primary'
+                      : 'default'
                 }
                 variant="outlined"
                 sx={{ fontWeight: 'bold' }}
               />
             )}
             
-            {/* Plan Status Indicator */}
+            {/*
+              Plan status.
+
+              Was a "Free Trial" chip, which told a guest nothing they could act
+              on and did not describe the model — uploads run on a window, so the
+              fact that matters is when it closes. A free event now shows the
+              deadline; a premium one says uploads are open for good.
+            */}
             {!eventLoading && event && (
               <Chip
-                icon={event.planType === 'premium' ? <Star /> : <Security />}
-                label={event.planType === 'premium' ? 'Premium Plan' : 'Free Trial'}
-                color={event.planType === 'premium' ? 'warning' : 'default'}
+                icon={event.planType === 'premium' ? <Star /> : <AccessTime />}
+                label={
+                  event.planType === 'premium'
+                    ? 'Uploads always open'
+                    : describeTimeRemaining(getUploadState(event).closesAt) ?? 'Uploads closed'
+                }
+                color={
+                  event.planType === 'premium'
+                    ? 'warning'
+                    : getUploadState(event).canUpload
+                      ? 'default'
+                      : 'error'
+                }
                 variant={event.planType === 'premium' ? 'filled' : 'outlined'}
                 sx={{
                   fontWeight: 'bold',
@@ -595,9 +657,15 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 }}
               />
             )}
-            
-            {/* Upgrade Button for Free Users */}
-            {!eventLoading && event && event.planType === 'free' && (
+
+            {/*
+              Upgrade CTA — organizers only.
+
+              A guest cannot pay for an event they do not own, and asking them to
+              is finding UX-1. The upload path was fixed; this button was not, so
+              a free event still showed every guest a payment prompt.
+            */}
+            {!eventLoading && event && event.planType === 'free' && isOrganizer && (
               <Button
                 variant="contained"
                 color="primary"
@@ -613,10 +681,10 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                   }
                 }}
               >
-                Upgrade
+                {getUploadState(event).canUpload ? 'Keep open' : 'Reopen uploads'}
               </Button>
             )}
-            
+
           </Box>
         </Box>
         
@@ -631,9 +699,22 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           </Box>
           
           {/* Limit Warning for Free Users */}
-          {!eventLoading && event && event.planType === 'free' && photos.length >= event.photoLimit && (
+          {/*
+            Was: photos.length >= event.photoLimit — the count-based paywall UX-1
+            removed. It survived here after BottomNavbar was fixed, so free events
+            still showed guests "Upload limit reached • Upgrade" permanently while
+            uploads carried on working. Now driven by the actual window state, and
+            only shown once uploads have genuinely closed.
+          */}
+          {!eventLoading && event && !getUploadState(event).canUpload && (
             <Typography variant="body2" color="error" sx={{ fontWeight: 'bold' }}>
-              Upload limit reached • Upgrade for unlimited photos
+              {/*
+                Audience matters here. The organizer gets "upgrade to reopen",
+                because they can; a guest gets "you can still browse and
+                download", because being sold to for someone else's event is the
+                bug UX-1 was about.
+              */}
+              {explainUploadState(getUploadState(event), isOrganizer ? 'organizer' : 'guest')}
             </Typography>
           )}
         </Box>
@@ -707,11 +788,26 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
               onTouchMove={handleTouchMove}
             >
               {isVideo(photo) ? (
-                // Video thumbnail with actual frame
+                /*
+                  A video tile shows a still, not a <video> element.
+                  Phase 3 pointed this at getThumbnailUrl but left
+                  component="video". thumbnailUrl is a WebP/JPEG frame grab
+                  (thumbnailService.generateVideoThumbnail), and a video element
+                  cannot decode a still image — so it fired onError and every
+                  video tile in every gallery fell back to a 🎬 emoji on a
+                  gradient. Strictly worse than before the thumbnail work, which
+                  at least loaded the video and seeked to a real frame.
+
+                  When the photo predates thumbnails, getThumbnailUrl falls back
+                  to the media URL, which an <img> cannot render either — so
+                  those keep the placeholder, which is the correct outcome for a
+                  video with no poster.
+                */
                 <Box sx={{ position: 'relative', height: 200, overflow: 'hidden' }}>
                   <Box
-                    component="video"
-                    src={getMediaUrl(photo)}
+                    component={photo.thumbnailUrl ? 'img' : 'video'}
+                    loading="lazy"
+                    src={getThumbnailUrl(photo)}
                     muted
                     preload="metadata"
                     sx={{
@@ -720,13 +816,17 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                       objectFit: 'cover',
                       backgroundColor: 'grey.900'
                     }}
-                    onLoadedMetadata={(e) => {
+                    onLoadedMetadata={(e: React.SyntheticEvent<HTMLElement>) => {
+                      // Only meaningful on the <video> fallback path, for photos
+                      // that predate thumbnails. Seek in a little way — the first
+                      // frame of a phone video is usually black.
                       const video = e.target as HTMLVideoElement;
-                      // Seek to 3 seconds for thumbnail
-                      video.currentTime = Math.min(3, video.duration * 0.1);
+                      if (video.tagName === 'VIDEO') {
+                        video.currentTime = Math.min(3, video.duration * 0.1);
+                      }
                     }}
-                    onError={(e) => {
-                      // Fallback: show video icon if frame extraction fails
+                    onError={(e: React.SyntheticEvent<HTMLElement>) => {
+                      // Last resort: no poster and the video will not preview.
                       const video = e.target as HTMLVideoElement;
                       const parent = video.parentElement;
                       if (parent) {
@@ -788,8 +888,9 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
                 // Regular image
                 <CardMedia
                   component="img"
+                  loading="lazy"
                   height={200}
-                  image={getMediaUrl(photo)}
+                  image={getThumbnailUrl(photo)}
                   alt={photo.fileName || 'Event photo'}
                   sx={{ 
                     objectFit: 'cover',
@@ -1394,26 +1495,14 @@ const EnhancedPhotoGallery: React.FC<EnhancedPhotoGalleryProps> = ({ eventId }) 
           open={showUpgradeModal}
           onClose={() => setShowUpgradeModal(false)}
           eventId={event.id}
-          currentPhotoCount={event.photoCount || 0}
           onUpgradeSuccess={async () => {
             setShowUpgradeModal(false);
-            console.log('🔄 Upgrade successful, refreshing event data...');
-            
+
             try {
-              // Wait a moment for server to process upgrade
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Force refresh event data
               const updatedEvent = await getEvent(event.id);
-              if (updatedEvent) {
-                setEvent(updatedEvent);
-                console.log('✅ Event data refreshed:', updatedEvent.planType, updatedEvent.photoLimit);
-              } else {
-                console.warn('⚠️ Failed to get updated event data');
-              }
+              if (updatedEvent) setEvent(updatedEvent);
             } catch (error) {
-              console.error('❌ Error refreshing event data:', error);
-              // Fallback: reload the page to ensure fresh data
+              console.error('Could not refresh event after upgrade:', error);
               window.location.reload();
             }
           }}

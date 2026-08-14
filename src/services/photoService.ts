@@ -1,29 +1,17 @@
-import { 
-  collection, 
-  addDoc,
-  onSnapshot, 
-  query, 
+import {
+  collection,
+  onSnapshot,
+  query,
   where,
   doc,
   getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  increment,
-  deleteDoc
+  setDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Photo, Event } from '../types';
-import { getCurrentSessionId, addOwnedPhoto, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
-
-// Interface for photo analysis data
-interface PhotoAnalysisData {
-  id: string;
-  fileName: string;
-  size: number;
-  sizeMB: number;
-  mediaType: string;
-}
+import { getUploadState, UploadState } from './planService';
+import { getOwnerSecret, removeOwnedPhoto, getPhotoOwnership } from './sessionService';
+import { getIdToken } from './authService';
 
 // Helper function to create URL-safe slug from event title
 const createSlug = (text: string): string => {
@@ -70,132 +58,15 @@ const generateEventId = (title: string, date: string): string => {
   return `${formattedDate}_${slug}_${hash}`;
 };
 
-export const uploadPhoto = async (
-  file: File, 
-  eventId: string,
-  onProgress?: (progress: number) => void
-): Promise<string> => {
-  // Always use Firebase Storage for reliable uploads
-  console.log('🔥 Using Firebase Storage for upload (100% reliability)');
-  
-  const { ref, uploadBytesResumable, getDownloadURL } = await import('firebase/storage');
-  const { storage } = await import('../firebase');
-  const { v4: uuidv4 } = await import('uuid');
-  
-  const photoId = uuidv4();
-  const extension = file.name.split('.').pop() || 'jpg';
-  const storageRef = ref(storage, `events/${eventId}/photos/${photoId}.${extension}`);
-  
-  // Get current session ID for ownership tracking
-  const sessionId = getCurrentSessionId();
-  
-  // Add metadata with sessionId for security rules compliance
-  const metadata = {
-    customMetadata: {
-      sessionId: sessionId,
-      uploadedAt: new Date().toISOString()
-    }
-  };
-  
-  const uploadTask = uploadBytesResumable(storageRef, file, metadata);
-  
-  return new Promise((resolve, reject) => {
-    uploadTask.on(
-      'state_changed',
-      (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 85; // Reserve 15% for R2 copy
-        console.log(`🔥 Firebase upload progress: ${Math.round(progress)}%`);
-        onProgress?.(progress);
-      },
-      (error) => {
-        console.error('❌ Firebase upload error:', error);
-        reject(error);
-      },
-      async () => {
-        try {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          
-          // Save photo metadata to Firestore with ownership tracking
-          const docRef = await addDoc(collection(db, 'photos'), {
-            id: photoId,
-            url: downloadURL,
-            uploadedAt: new Date(),
-            eventId,
-            fileName: file.name,
-            size: file.size,
-            contentType: file.type,
-            storagePath: `events/${eventId}/photos/${photoId}.${extension}`,
-            mediaType: 'photo' as const,
-            uploadedBy: sessionId // Track ownership
-          });
-          
-          // Add to user's owned photos list
-          addOwnedPhoto(docRef.id);
-          
-          console.log('✅ Firebase upload completed, starting R2 copy...');
-          onProgress?.(90); // 90% - R2 copy starting
-          
-          // Copy to R2 using server-side API (don't block user experience)
-          copyToR2ViaAPI(docRef.id, downloadURL, file.name, eventId, file.type)
-            .then(() => {
-              console.log('✅ R2 copy completed for:', file.name);
-              onProgress?.(100); // 100% - everything done
-            })
-            .catch((error) => {
-              console.warn('⚠️ R2 copy failed (continuing with Firebase-only):', error);
-              onProgress?.(100); // Still complete the upload
-            });
-          
-          console.log('✅ Upload completed with ownership:', file.name, 'by session:', sessionId);
-          resolve(downloadURL);
-        } catch (error) {
-          console.error('❌ Firebase metadata save error:', error);
-          reject(error);
-        }
-      }
-    );
-  });
-};
-
-// Server-side R2 copy via API (non-blocking)
-const copyToR2ViaAPI = async (
-  photoId: string,
-  firebaseUrl: string, 
-  fileName: string,
-  eventId: string,
-  contentType: string
-): Promise<void> => {
-  try {
-    console.log('📦 Starting server-side R2 copy for:', fileName);
-    
-    // Create Netlify function for R2 copying
-    const response = await fetch('/.netlify/functions/r2-copy', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        photoId,
-        firebaseUrl,
-        fileName,
-        eventId,
-        contentType
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`R2 copy API failed: ${response.status}`);
-    }
-
-    const result = await response.json();
-    console.log('✅ Server-side R2 copy completed:', photoId, '→', result.r2Key);
-    
-  } catch (error: any) {
-    console.error('❌ Server-side R2 copy failed for', photoId, ':', error);
-    // Don't throw - this is background operation
-  }
-};
-
+// uploadPhoto and copyToR2ViaAPI lived here: the browser wrote to Firebase
+// Storage, then asked netlify/functions/r2-copy.js to pull the whole file into
+// memory and write it to R2. Anything near a gigabyte exceeded both the memory
+// limit and the execution window, so large videos never reached R2 at all -
+// staying on the expensive origin, being fetched from there by the archive
+// worker, and being stored and billed twice (finding ZIP-10).
+//
+// Uploads now go straight to R2 from the browser via presigned URLs. See
+// src/services/r2UploadService.ts and netlify/functions/upload-init.js.
 
 export const subscribeToPhotos = (
   eventId: string,
@@ -220,7 +91,8 @@ export const subscribeToPhotos = (
         mediaType: data.mediaType || 'photo' as const, // Default to 'photo' for backward compatibility
         uploadedBy: data.uploadedBy, // Include ownership info
         r2Key: data.r2Key, // Include R2 key for cost-effective display
-        contentType: data.contentType // Include content type for proper R2 handling
+        contentType: data.contentType, // Include content type for proper R2 handling
+        thumbnailUrl: data.thumbnailUrl || undefined // Small preview, absent on older photos
       });
     });
     
@@ -232,6 +104,19 @@ export const subscribeToPhotos = (
 };
 
 export const createEvent = async (title: string, date: string, organizerEmail: string): Promise<string> => {
+  // Normalize at the point of storage. The organizer dashboard queries
+  // where('organizerEmail','==', signedInEmail.toLowerCase()), and Firestore's
+  // == is byte-exact — so an event created by someone typing
+  // "Sarah.Jones@Gmail.com" was invisible to its own organizer forever, showing
+  // the empty "No events yet" state with no error to explain it.
+  //
+  // The security rules and every other consumer already lowercase both sides;
+  // the query filter was the one place that could not, because a Firestore
+  // filter cannot transform the stored value. Fixing it here is the only place
+  // that works for new events. Pre-existing events need the backfill noted in
+  // docs/HANDOFF.md.
+  const normalizedEmail = organizerEmail.trim().toLowerCase();
+
   // Generate custom event ID using event date, title, and random hash
   const customEventId = generateEventId(title, date);
   
@@ -245,9 +130,13 @@ export const createEvent = async (title: string, date: string, organizerEmail: s
     date,
     createdAt: new Date(),
     isActive: true,
-    organizerEmail,
+    organizerEmail: normalizedEmail,
     planType: 'free',
-    photoLimit: 2,
+    // photoLimit is deliberately not written. It was `2`, and although nothing
+    // enforces it any more — uploads run on a time window since UX-1 — the field
+    // was still being *read* and rendered: the cancelled-payment page told
+    // customers they were "on the free plan with a limit of 2 photos". A dead
+    // field that still reaches the screen is worse than no field.
     photoCount: 0
   });
   
@@ -269,7 +158,12 @@ export const getEvent = async (eventId: string): Promise<Event | null> => {
       isActive: data.isActive,
       organizerEmail: data.organizerEmail || '',
       planType: data.planType || 'free',
-      photoLimit: data.planType === 'free' ? 2 : (data.photoLimit || 2), // Force 2-photo limit for all free events
+      // photoLimit is retained on the document for older events but no longer
+      // drives anything. Uploads are governed by a time window now
+      // (src/services/planService.ts, finding UX-1) — the old line here forced
+      // every free event to 2 regardless of what the document said, which is
+      // what blocked the third guest at a wedding.
+      photoLimit: data.photoLimit ?? -1,
       photoCount: data.photoCount || 0,
       paymentId: data.paymentId,
       customBranding: data.customBranding
@@ -306,401 +200,186 @@ export const downloadPhoto = async (photoId: string): Promise<void> => {
   }
 };
 
-// Professional bulk download with email delivery - enhanced with smart routing
+// Request an emailed archive of the event's media.
+//
+// This used to analyse the whole collection in the browser and pick a processing
+// backend from the result (findings ZIP-1, ZIP-4). Three things were wrong with
+// that:
+//
+//   1. The first branch called a Google Cloud Run URL that was decommissioned in
+//      January 2025. Any collection with an 80MB+ video, over 500MB total, or
+//      more than 10 videos hit it first and sat through the full 30-second
+//      AbortSignal timeout before falling back. project-state.md recorded the
+//      removal; the frontend never got the memo.
+//   2. It posted the resulting photo array onward, so a client could nominate
+//      arbitrary URLs for our processor to fetch and package into an archive we
+//      then email out.
+//   3. Its size thresholds disagreed with the three server-side routers behind
+//      it, so identical collections took different paths depending on which
+//      entry point saw them first.
+//
+// The browser now states what it wants and lets the server decide how. The
+// server reads the collection from Firestore rather than trusting this call.
 export const requestEmailDownload = async (
   eventId: string,
   email: string
 ): Promise<{
   success: boolean;
-  processing: 'immediate' | 'background' | 'google-cloud';
+  processing: string;
   message: string;
   fileCount?: number;
   estimatedSizeMB?: number;
   videoCount?: number;
   estimatedWaitTime?: string;
   requestId: string;
-  processingEngine?: string;
 }> => {
-  try {
-    console.log('📧 Requesting email download for event:', eventId, 'to:', email);
-    
-    // Step 1: Analyze collection to determine optimal processing route
-    console.log('🔍 Analyzing collection for smart routing...');
-    const q = query(
-      collection(db, 'photos'),
-      where('eventId', '==', eventId)
-    );
-    
-    const snapshot = await getDocs(q);
-    const photos: PhotoAnalysisData[] = [];
-    let totalSizeMB = 0;
-    let videoCount = 0;
-    let largeVideoCount = 0;
-    let maxVideoSizeMB = 0;
-    
-    snapshot.forEach((doc) => {
-      const data = doc.data();
-      const fileSizeMB = (data.size || 0) / 1024 / 1024;
-      totalSizeMB += fileSizeMB;
-      
-      photos.push({
-        id: doc.id,
-        fileName: data.fileName || `photo_${doc.id}.jpg`,
-        size: data.size || 0,
-        sizeMB: fileSizeMB,
-        mediaType: data.mediaType || 'photo'
-      });
-      
-      // Check for videos
-      const isVideo = data.mediaType === 'video' || 
-                     /\.(mp4|mov|avi|webm|mkv)$/i.test(data.fileName || '');
-      if (isVideo) {
-        videoCount++;
-        maxVideoSizeMB = Math.max(maxVideoSizeMB, fileSizeMB);
-        
-        // Check for large videos (80MB+ threshold) 
-        if ((data.size || 0) > 80 * 1024 * 1024) {
-          largeVideoCount++;
-        }
+  console.log('📧 Requesting email download for event:', eventId);
+
+  const response = await fetch('/.netlify/functions/email-download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ eventId, email })
+  });
+
+  if (!response.ok) {
+    let message = 'We could not start your download. Please try again in a moment.';
+
+    try {
+      const body = await response.json();
+      // The server writes messages meant to be read by a person, including the
+      // rate-limit case where the wait time matters. Prefer them over a generic
+      // string, and keep the follow-up action if one was given.
+      if (body?.error) {
+        message = body.action ? `${body.error} ${body.action}` : body.error;
       }
-    });
-
-    console.log('📊 Collection analysis:', {
-      totalFiles: photos.length,
-      totalSizeMB: totalSizeMB.toFixed(2),
-      videoCount,
-      largeVideoCount,
-      maxVideoSizeMB: maxVideoSizeMB.toFixed(2)
-    });
-
-    // Step 2: Smart routing decision
-    let shouldUseGoogleCloud = false;
-    let routingReason = '';
-
-    if (largeVideoCount > 0) {
-      shouldUseGoogleCloud = true;
-      routingReason = `${largeVideoCount} video(s) above 80MB detected`;
-    } else if (totalSizeMB > 500) {
-      shouldUseGoogleCloud = true;
-      routingReason = `Collection size ${totalSizeMB.toFixed(0)}MB exceeds 500MB limit`;
-    } else if (videoCount > 10) {
-      shouldUseGoogleCloud = true;
-      routingReason = `${videoCount} videos require enhanced processing`;
+    } catch {
+      // A non-JSON body means something upstream returned an error page rather
+      // than the function running. Don't show the customer raw HTML.
+      message = 'The download service is temporarily unavailable. Please try again shortly.';
     }
 
-    console.log(`🎯 Routing decision: ${shouldUseGoogleCloud ? 'Google Cloud Run' : 'Netlify/Cloudflare'}`);
-    if (shouldUseGoogleCloud) {
-      console.log(`📋 Reason: ${routingReason}`);
-    }
-
-    // Step 3: Route to appropriate processing engine
-    if (shouldUseGoogleCloud) {
-      console.log('🚀 Routing to Google Cloud Run for large video processing...');
-      return await routeToGoogleCloudRun(eventId, email, photos, routingReason);
-    } else {
-      console.log('⚡ Using standard Netlify/Cloudflare processing...');
-      return await routeToNetlifyCloudflare(eventId, email);
-    }
-    
-  } catch (error) {
-    console.error('❌ Email download request failed:', error);
-    throw error;
+    throw new Error(message);
   }
+
+  const result = await response.json();
+  console.log('✅ Download request accepted:', result.requestId);
+  return result;
 };
 
-// Route to Google Cloud Run for large video processing
-const routeToGoogleCloudRun = async (
-  eventId: string, 
-  email: string, 
-  photos: any[], 
-  reason: string
-): Promise<any> => {
-  try {
-    console.log('☁️ Calling Google Cloud Run processor...');
-    
-    const CLOUD_RUN_URL = 'https://wedding-photo-processor-767610841427.us-west1.run.app';
-    
-    const response = await fetch(`${CLOUD_RUN_URL}/process-photos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'SharedMoments/1.0',
-      },
-      body: JSON.stringify({
-        eventId,
-        email,
-        photos: photos.slice(0, 100), // Limit to first 100 for payload size
-        source: 'frontend-smart-routing',
-        routingReason: reason
-      }),
-      // 30 second timeout for Cloud Run communication
-      signal: AbortSignal.timeout(30000)
-    });
-
-    if (!response.ok) {
-      let errorMessage = `Google Cloud Run responded with ${response.status}`;
-      try {
-        const errorText = await response.text();
-        if (errorText) {
-          errorMessage += `: ${errorText}`;
-        }
-      } catch (e) {
-        // Ignore text parsing errors
-      }
-      throw new Error(errorMessage);
-    }
-
-    const result = await response.json();
-    console.log('✅ Google Cloud Run accepted request:', result);
-    
-    return {
-      success: true,
-      processing: 'google-cloud' as const,
-      message: result.message || `Processing ${photos.length} files with Google Cloud Run. Large videos detected - using enhanced processing engine. You'll receive an email in 3-8 minutes.`,
-      fileCount: photos.length,
-      estimatedSizeMB: Math.round(photos.reduce((sum, p) => sum + p.sizeMB, 0)),
-      videoCount: photos.filter(p => p.mediaType === 'video' || /\.(mp4|mov|avi|webm)$/i.test(p.fileName)).length,
-      estimatedWaitTime: '3-8 minutes',
-      requestId: result.requestId || `gcr-${Date.now()}`,
-      processingEngine: 'google-cloud-run'
-    };
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('❌ Google Cloud Run routing failed:', errorMessage);
-    console.log('🔄 Falling back to Netlify/Cloudflare...');
-    
-    // Fallback to standard processing
-    return await routeToNetlifyCloudflare(eventId, email, true);
-  }
-};
-
-// Route to Netlify/Cloudflare for standard processing
-const routeToNetlifyCloudflare = async (
-  eventId: string, 
-  email: string, 
-  isFallback: boolean = false
-): Promise<any> => {
-  try {
-    console.log(isFallback ? '🔄 Using Netlify fallback processing...' : '⚡ Using standard Netlify/Cloudflare processing...');
-    
-    const response = await fetch('/.netlify/functions/email-download', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        eventId,
-        email,
-        source: isFallback ? 'fallback-from-cloud-run' : 'standard-routing'
-      }),
-    });
-
-    if (!response.ok) {
-      let errorMessage = 'Failed to request email download';
-      try {
-        const responseText = await response.text();
-        try {
-          const errorData = JSON.parse(responseText);
-          errorMessage = errorData.error || errorData.details || errorMessage;
-        } catch (parseError) {
-          if (responseText.includes('DOCTYPE')) {
-            errorMessage = 'Server error: The download service is temporarily unavailable. Please try again in a few moments.';
-          } else {
-            errorMessage = `Server error (${response.status}): ${response.statusText}`;
-          }
-        }
-      } catch (textError) {
-        errorMessage = `Server error (${response.status}): ${response.statusText}`;
-      }
-      throw new Error(errorMessage);
-    }
-
-    const result = await response.json();
-    console.log('✅ Netlify/Cloudflare processing requested:', result);
-    
-    // Add processing engine info
-    result.processingEngine = isFallback ? 'netlify-fallback' : 'netlify-cloudflare';
-    
-    return result;
-    
-  } catch (error) {
-    console.error('❌ Netlify/Cloudflare processing failed:', error);
-    throw error;
-  }
-};
-
-// Legacy bulk download - will be replaced with email system
-export const downloadAllPhotos = async (
-  eventId: string,
-  onProgress?: (downloaded: number, total: number) => void
-): Promise<void> => {
-  try {
-    console.log('📥 Legacy bulk download - opening photos individually');
-    
-    // Get all photos for this event
-    const q = query(
-      collection(db, 'photos'),
-      where('eventId', '==', eventId)
-    );
-    
-    const snapshot = await getDocs(q);
-    const photos: any[] = [];
-    snapshot.forEach((docSnapshot) => {
-      photos.push(docSnapshot.data());
-    });
-    
-    if (photos.length === 0) {
-      throw new Error('No photos found for this event');
-    }
-    
-    console.log(`Opening ${photos.length} photos individually`);
-    
-    // Open each photo in a new tab with delay
-    for (let i = 0; i < photos.length; i++) {
-      setTimeout(() => {
-        window.open(photos[i].url, '_blank');
-        onProgress?.(i + 1, photos.length);
-      }, i * 300); // 300ms delay between each tab
-    }
-    
-  } catch (error) {
-    console.error('Legacy bulk download failed:', error);
-    throw error;
-  }
-};
+// downloadAllPhotos used to live here: it opened every photo in its own browser
+// tab, 300ms apart. Nothing has called it since the email flow landed, and every
+// popup blocker in existence stops it after the third tab. Removed rather than
+// left as a trap for whoever finds it next.
 
 // Freemium & Premium functions
 
-// Increment photo count for an event
-export const incrementPhotoCount = async (eventId: string): Promise<void> => {
-  const eventRef = doc(db, 'events', eventId);
-  await updateDoc(eventRef, {
-    photoCount: increment(1)
-  });
-};
+// incrementPhotoCount was here. The count is adjusted server-side now -
+// upload-complete.js increments it, delete-photo.js decrements it - and
+// firestore.rules denies the client write it used to perform.
+//
+// Doing it as a separate client write was also a correctness bug: if the guest
+// closed the tab between saving the photo and bumping the count, the event was
+// permanently miscounted, and the plan limit is computed from that count.
 
-// Check if event can accept more photos (freemium limit)
+// Can this event accept uploads right now?
+//
+// Delegates to the shared window logic. The server runs the same check in
+// upload-init.js and is authoritative; this is so the UI can explain the state
+// before a guest picks a file rather than failing afterwards.
 export const canUploadPhoto = async (eventId: string): Promise<boolean> => {
   const event = await getEvent(eventId);
   if (!event) return false;
-  
-  if (event.planType === 'premium') return true;
-  
-  return event.photoCount < event.photoLimit;
+
+  return getUploadState(event).canUpload;
 };
 
-// Upgrade event to premium
-export const upgradeEventToPremium = async (
-  eventId: string, 
-  paymentId: string,
-  customBranding?: any
-): Promise<void> => {
-  const eventRef = doc(db, 'events', eventId);
-  await updateDoc(eventRef, {
-    planType: 'premium',
-    paymentId,
-    photoLimit: -1, // Unlimited
-    customBranding: customBranding || null
-  });
-  
-  console.log('✅ Event upgraded to premium:', eventId);
+// The full state, for UI that needs to explain itself rather than just gate.
+export const getEventUploadState = async (eventId: string): Promise<UploadState | null> => {
+  const event = await getEvent(eventId);
+  return event ? getUploadState(event) : null;
 };
+
+// Upgrading an event to premium is deliberately NOT available on the client.
+//
+// This function used to write planType, photoLimit and paymentId directly from
+// the browser. Because it was an exported module function, unlocking unlimited
+// uploads for any event was a single call from the developer console with no
+// payment involved (finding SEC-2).
+//
+// Plan state is now Admin-SDK-only, enforced by firestore.rules, and is written
+// exclusively by netlify/functions/ghl-webhook.js after it has verified the
+// payment signature. If you need to upgrade an event manually, do it from the
+// Firebase console or add an authenticated admin endpoint — do not reintroduce
+// a client-side path.
 
 // Photo deletion functions with ownership checking
 
-// Check if current user can delete a photo
+// Can the current browser offer a delete affordance for this photo?
+//
+// This is a UI hint, answered entirely from the local owned-photos list. The
+// real check happens in netlify/functions/delete-photo.js, which requires the
+// session secret — so being wrong here costs nothing worse than showing or
+// hiding an icon.
+//
+// It previously fetched the photo document from Firestore to read uploadedBy.
+// The gallery calls it once per photo on every snapshot, so a 400-photo event
+// issued 400 Firestore reads every time anyone uploaded anything, purely to
+// decide whether to draw a delete button (finding UX-3). It is now synchronous
+// and free; the async signature is kept so existing call sites don't change.
 export const canDeletePhoto = async (photoId: string): Promise<boolean> => {
-  try {
-    // Get photo metadata from Firestore
-    const docRef = doc(db, 'photos', photoId);
-    const docSnap = await getDoc(docRef);
-    
-    if (!docSnap.exists()) {
-      console.warn('⚠️ Photo not found for deletion check:', photoId);
-      return false;
-    }
-    
-    const photoData = docSnap.data();
-    const uploaderSessionId = photoData.uploadedBy;
-    
-    // Check ownership using session service
-    const ownership = getPhotoOwnership(photoId, uploaderSessionId);
-    
-    console.log('🔍 Delete permission check for', photoId, ':', ownership.canDelete ? 'ALLOWED' : 'DENIED');
-    return ownership.canDelete;
-    
-  } catch (error) {
-    console.error('❌ Error checking delete permission:', error);
-    return false;
-  }
+  return getPhotoOwnership(photoId).canDelete;
 };
 
-// Delete a photo (with ownership validation)
+// Delete a photo.
+//
+// This used to run entirely in the browser: check localStorage, delete the
+// Firestore document, attempt the Storage object, never touch R2. Two things
+// were wrong with that. The ownership check was advisory — nothing stopped a
+// caller skipping it — and the Storage delete was denied by the storage rules,
+// so the photo disappeared from the gallery while its bytes stayed in Firebase
+// Storage and R2, billed forever and unreachable by any UI (findings SEC-5,
+// SEC-7).
+//
+// Deletion now happens server-side in one operation across all three stores.
+// The browser presents its session secret; the server checks it against the
+// hash recorded on the photo.
 export const deletePhoto = async (photoId: string): Promise<void> => {
-  try {
-    console.log('🗑️ Initiating photo deletion:', photoId);
-    
-    // First verify ownership
-    const canDelete = await canDeletePhoto(photoId);
-    if (!canDelete) {
-      throw new Error('You can only delete photos that you uploaded');
-    }
-    
-    // Get photo metadata to find storage path
-    const docRef = doc(db, 'photos', photoId);
-    const docSnap = await getDoc(docRef);
-    
-    if (!docSnap.exists()) {
-      throw new Error('Photo not found');
-    }
-    
-    const photoData = docSnap.data();
-    const storagePath = photoData.storagePath;
-    const eventId = photoData.eventId;
-    
-    console.log('📁 Deleting from storage path:', storagePath);
-    
-    // Delete from Firebase Storage
-    if (storagePath) {
-      try {
-        const { ref, deleteObject } = await import('firebase/storage');
-        const { storage } = await import('../firebase');
-        
-        const storageRef = ref(storage, storagePath);
-        await deleteObject(storageRef);
-        console.log('✅ Photo deleted from Firebase Storage');
-      } catch (storageError) {
-        console.warn('⚠️ Failed to delete from storage (may not exist):', storageError);
-        // Continue with Firestore deletion even if storage deletion fails
-      }
-    }
-    
-    // Delete from Firestore
-    await deleteDoc(docRef);
-    console.log('✅ Photo metadata deleted from Firestore');
-    
-    // Remove from user's owned photos list
-    removeOwnedPhoto(photoId);
-    
-    // Decrement photo count for the event
+  console.log('🗑️ Requesting photo deletion:', photoId);
+
+  // Two ways to be allowed, and we send both when we have them: the uploader's
+  // session secret, and — if an organizer is signed in — a Firebase ID token.
+  // The server verifies the token properly, so this is real authorisation
+  // rather than a claim, and it is what lets an organizer moderate their own
+  // event (finding UX-2).
+  const idToken = await getIdToken().catch(() => null);
+
+  const response = await fetch('/.netlify/functions/delete-photo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      photoId,
+      ownerSecret: getOwnerSecret(),
+      idToken
+    })
+  });
+
+  if (!response.ok) {
+    let message = 'Could not delete the photo. Please try again.';
     try {
-      const eventRef = doc(db, 'events', eventId);
-      await updateDoc(eventRef, {
-        photoCount: increment(-1)
-      });
-      console.log('✅ Event photo count decremented');
-    } catch (error) {
-      console.warn('⚠️ Failed to decrement event photo count:', error);
-      // Don't fail the entire deletion for this
+      const body = await response.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // Non-JSON error response; keep the generic message.
     }
-    
-    console.log('🎉 Photo deletion completed successfully:', photoId);
-    
-  } catch (error) {
-    console.error('❌ Photo deletion failed:', error);
-    throw error;
+    console.error('❌ Photo deletion failed:', response.status, message);
+    throw new Error(message);
   }
+
+  // Drop it from the local owned list so the UI stops offering a delete
+  // affordance for something that no longer exists.
+  removeOwnedPhoto(photoId);
+
+  console.log('🎉 Photo deletion completed:', photoId);
 };
 
 // Get photo ownership info (for UI display)

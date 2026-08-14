@@ -1,0 +1,72 @@
+rules_version = '2';
+
+// SharedMoments Firebase Storage security rules
+//
+// Replaces the untracked, looser rules previously described in
+// firebase-storage-rules.txt. That version allowed any create whose metadata
+// contained a sessionId field of any value, with no size or content-type
+// constraint — so any caller could write unlimited files of any kind into any
+// event prefix, served from the project's domain (finding SEC-6).
+//
+// These rules keep uploads anonymous, which the product requires, but bound what
+// an anonymous write can be: a photo or a video, under 2 GB, inside an event
+// prefix, carrying a sessionId.
+//
+// UPDATE (Phase 3): that migration has happened. Uploads go straight to R2 via
+// presigned URLs, and nothing in the application writes to Firebase Storage any
+// more. The create rule below is retained deliberately for one deploy cycle so a
+// rollback has somewhere to land — once the R2 path is confirmed in production,
+// change it to `allow create: if false` and this becomes a read-only archive of
+// everything uploaded before the migration.
+//
+// Read access must stay: photos uploaded before Phase 3 still live here and are
+// still served from here.
+//
+// Refs: AUDIT_2026-08.md SEC-6, ZIP-10
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /events/{eventId}/{allPaths=**} {
+
+      // Guests need to view the gallery without signing in.
+      allow read: if true;
+
+      allow create: if request.resource != null
+                    // 2 GB ceiling, matching firestore.rules. Without this a
+                    // single request can commit an unbounded amount of billable
+                    // storage.
+                    && request.resource.size > 0
+                    && request.resource.size <= 2147483648
+                    // Only media. Previously any content type was accepted,
+                    // including HTML and scripts that would then be served from
+                    // the project's storage domain.
+                    && (
+                         request.resource.contentType.matches('image/.*')
+                         || request.resource.contentType.matches('video/.*')
+                       )
+                    && (
+                         request.auth != null
+                         || (
+                              request.resource.metadata != null
+                              && request.resource.metadata.sessionId is string
+                              && request.resource.metadata.sessionId.size() > 0
+                            )
+                       );
+
+      // Nothing in the application overwrites an uploaded object. Allowing it
+      // would let a caller replace someone else's photo in place, leaving the
+      // Firestore metadata intact and the gallery none the wiser.
+      allow update: if false;
+
+      // Deletion runs through netlify/functions/delete-photo.js with the Admin
+      // SDK, so that Storage, R2 and Firestore are cleaned up together.
+      allow delete: if false;
+    }
+
+    // Anything outside the events prefix is denied.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

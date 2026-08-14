@@ -54,10 +54,18 @@ export async function sendEmail(data, env) {
       source: 'cloudflare-worker'
     };
 
+    // The email endpoint only accepts callers holding the internal secret, since
+    // it renders a caller-supplied link into a message sent from our own domain
+    // (finding SEC-8). Set with: wrangler secret put INTERNAL_SERVICE_SECRET
+    if (!env.INTERNAL_SERVICE_SECRET) {
+      throw new Error('INTERNAL_SERVICE_SECRET is not configured on the Worker');
+    }
+
     const response = await fetch(netlifyEmailUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-sharedmoments-internal': env.INTERNAL_SERVICE_SECRET,
       },
       body: JSON.stringify(emailPayload)
     });
@@ -101,10 +109,18 @@ export async function sendErrorEmail(eventId, email, requestId, errorMessage, en
       source: 'cloudflare-worker'
     };
 
+    // The email endpoint only accepts callers holding the internal secret, since
+    // it renders a caller-supplied link into a message sent from our own domain
+    // (finding SEC-8). Set with: wrangler secret put INTERNAL_SERVICE_SECRET
+    if (!env.INTERNAL_SERVICE_SECRET) {
+      throw new Error('INTERNAL_SERVICE_SECRET is not configured on the Worker');
+    }
+
     const response = await fetch(netlifyEmailUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-sharedmoments-internal': env.INTERNAL_SERVICE_SECRET,
       },
       body: JSON.stringify(errorPayload)
     });

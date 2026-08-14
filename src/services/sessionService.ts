@@ -2,10 +2,67 @@ import { UserSession, PhotoOwnership } from '../types';
 
 const SESSION_STORAGE_KEY = 'wedding-app-session';
 
-// Generate a unique session ID
+// Generate a unique session ID.
+//
+// This value is a bearer secret: presenting it to the delete-photo function is
+// what proves you uploaded a photo (see netlify/functions/delete-photo.js). It
+// must therefore be unguessable.
+//
+// The previous implementation was `sess_${Date.now()}_${Math.random()...}`,
+// which carried roughly 46 bits of entropy on top of a timestamp an attacker
+// can narrow to the minute. crypto.randomUUID gives 122 bits from a CSPRNG.
+// Math.random is not a CSPRNG and must not be used for this.
 const generateSessionId = (): string => {
-  return `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `sess_${crypto.randomUUID()}`;
+  }
+
+  // Fallback for older browsers that have getRandomValues but not randomUUID.
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const hex = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return `sess_${hex}`;
+  }
+
+  console.warn('⚠️ No secure random source available; photo ownership will be weak');
+  return `sess_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 };
+
+// Derive the public ownership token from the session secret.
+//
+// The photo document stores this hash rather than the session id itself. Every
+// guest can read every photo document through the gallery subscription, so
+// storing the raw id would hand each of them the credential needed to delete
+// other people's photos — which is exactly the hole finding SEC-5 describes.
+// A hash is safe to publish; the secret behind it never leaves this browser
+// except when calling delete-photo.
+export const getOwnerToken = async (): Promise<string> => {
+  const sessionId = getCurrentSessionId();
+
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    // Without SubtleCrypto we cannot hash, so fall back to the legacy scheme.
+    // delete-photo accepts both. SubtleCrypto requires a secure context, so in
+    // practice this only happens on plain http during local development.
+    console.warn('⚠️ SubtleCrypto unavailable; falling back to legacy ownership token');
+    return sessionId;
+  }
+
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(sessionId)
+  );
+
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+// The raw secret, sent only to the delete-photo function. Never store this in
+// Firestore and never render it into the page.
+export const getOwnerSecret = (): string => getCurrentSessionId();
 
 // Get or create user session
 export const getOrCreateSession = (): UserSession => {
@@ -93,19 +150,24 @@ export const isPhotoOwned = (photoId: string): boolean => {
   }
 };
 
-// Check photo ownership details
+// Check photo ownership details.
+//
+// This is a UI hint only — it decides whether to offer a delete affordance. The
+// actual authorisation happens server-side in netlify/functions/delete-photo.js,
+// which requires the session secret. Never gate anything destructive or billable
+// on this function alone.
+//
+// The `uploaderSessionId` parameter is retained for call-site compatibility but
+// is no longer compared: photo documents now store a hash of the session secret
+// rather than the secret itself, so a plaintext comparison would never match.
+// The local owned-photos list is the authoritative source for the UI, and it
+// avoids a Firestore read per photo (finding UX-3).
 export const getPhotoOwnership = (photoId: string, uploaderSessionId?: string): PhotoOwnership => {
   try {
     const currentSessionId = getCurrentSessionId();
-    
-    // Check if photo is in our owned list (fastest check)
-    const isInOwnedList = isPhotoOwned(photoId);
-    
-    // Also check if the uploaderSessionId matches (for recently uploaded photos)
-    const matchesUploader = Boolean(uploaderSessionId && uploaderSessionId === currentSessionId);
-    
-    const isOwner = isInOwnedList || matchesUploader;
-    
+
+    const isOwner = isPhotoOwned(photoId);
+
     return {
       canDelete: isOwner,
       isOwner: isOwner,
