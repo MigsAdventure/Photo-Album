@@ -3,6 +3,23 @@
 Notable changes, newest first. Each entry links the session log with the full
 reasoning and the finding IDs from `AUDIT_2026-08.md`.
 
+## 2026-08-12 — Production diagnosis and the GoHighLevel boundary
+
+Not a code change. Two things established while reviewing the payment work, both
+recorded so they are not rediscovered from scratch.
+
+- **Production grants premium without payment, confirmed live by the owner.**
+  Cancelling the payment leaves the event premium — because paying was never
+  required. The browser tells GoHighLevel the upgrade completed *before* showing
+  a payment form, and `ghl-webhook` on `main` grants it with no verification of
+  any kind. Full chain, immediate mitigation, and the two GoHighLevel-side
+  changes this branch cannot make: step 0 of [`HANDOFF.md`](HANDOFF.md).
+- **How far to automate GoHighLevel, and by which door** — the official MCP
+  server exists and is scoped, but cannot create workflows, forms or funnels
+  because the public API cannot either. The session-token workaround can, at a
+  cost worth stating explicitly.
+  [ADR 0003](decisions/0003-gohighlevel-automation-boundary.md).
+
 ## 2026-08-12 — Payments, and what the app says about them
 
 Session: [`sessions/2026-08-12_payment-flow-and-upgrade-ux.md`](sessions/2026-08-12_payment-flow-and-upgrade-ux.md)

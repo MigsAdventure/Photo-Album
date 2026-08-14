@@ -148,8 +148,48 @@ better move *specifically because of where this project is*:
 
 ## Do these first, in this order
 
-Each has a runbook. Steps 1 and 2 are the urgent ones — they are live exposures,
-not deployment chores.
+Steps 0, 1 and 2 are the urgent ones — they are live exposures, not deployment
+chores. Step 0 is losing money right now.
+
+0. **Production grants premium without payment. Confirmed live, 2026-08-12.**
+   The owner reproduced it: cancel the payment and the event is premium anyway.
+
+   It is not that cancelling fails to revoke — paying was never required. The
+   chain on `main` is:
+
+   - `UpgradeModal.handleUpgrade` posts to the GoHighLevel inbound webhook
+     *before the payment form is shown*, with `planType: 'premium'`,
+     `paymentAmount: 29`, and a `paymentId` of `` `${eventId}_${Date.now()}` ``
+     invented in the browser
+   - the GoHighLevel workflow calls back to `ghl-webhook`
+   - `ghl-webhook` on `main` has **no signature check, no shared secret, and no
+     payment verification** (finding GHL-2), so it grants premium
+
+   So clicking "Upgrade" is sufficient. Separately, the same missing
+   authentication means anyone who can guess an event id — and they are
+   semi-guessable by construction, `YYYY-MM-DD_title-slug_8char` — can `curl`
+   themselves premium.
+
+   **Immediate mitigation, no deploy needed:** disable the GoHighLevel workflow
+   that fires `upgrade_confirmed`.
+
+   This branch fixes the application side: the browser call is deleted, and
+   `ghl-webhook` requires an HMAC or shared secret. But **the workflow lives in
+   GoHighLevel, not in this repo**, and two things still need doing there:
+
+   - Do not point `GHL_CHECKOUT_WEBHOOK_URL` at the same inbound webhook that
+     triggers the upgrade workflow, unless the workflow branches on `action`.
+     Otherwise `checkout_started` still fires `upgrade_confirmed` — and it will
+     now be *authenticated*, so the new checks will not stop it. Authentication
+     stops strangers, not a misconfigured workflow.
+   - **Set `GHL_API_TOKEN`.** It makes `ghl-webhook` confirm the transaction with
+     GoHighLevel before writing `planType`. It is optional in code and when unset
+     the handler logs a warning and grants anyway. Given the above, treat it as
+     required rather than optional.
+
+   Worth auditing what was already given away: wrongly-granted events carry a
+   `paymentId` matching `<eventId>_<13-digit-timestamp>`, or the string
+   `'unverified'`, which makes them identifiable in Firestore.
 
 1. **Rotate the R2 credentials.** Two live key pairs were committed across seven
    files (finding SEC-9) and are still in git history. They grant read, write and
@@ -323,6 +363,36 @@ session log's "Still open".
   Left for one deploy cycle as a rollback target.
 
 ---
+
+## Picking this up locally
+
+The branch is `claude/photo-album-audit-be5aap`. A fresh clone needs:
+
+```bash
+git fetch origin claude/photo-album-audit-be5aap
+git checkout claude/photo-album-audit-be5aap
+npm install          # not optional — see below
+npm run test:all     # expect 153 passing across six suites
+npm run build        # expect a clean build, no warnings
+```
+
+**`npm install` first, always.** `node_modules` is no longer tracked (it used to
+be — 6,090 of 6,297 tracked files). Without it the first test run fails with
+`Cannot find module 'firebase-admin'`, which reads alarmingly like a broken
+branch and is not.
+
+**The rules and rate-limit suites need Java** for the Firestore emulator. If
+`npm run test:rules` is the only thing failing, that is almost certainly why —
+the other five suites run without it.
+
+**Nothing needs real credentials to develop.** All 153 tests, the build and
+`tsc --noEmit` run with no AWS, R2, Firebase or GoHighLevel access. That is also
+the limitation: none of the seams between components have ever been exercised.
+For a local dev server against real services you need a gitignored `.env.local`
+with the `REACT_APP_*` values from [`ENVIRONMENT.md`](ENVIRONMENT.md).
+
+**Do not rebase or squash this branch.** Commits reference finding IDs, so
+`git log --grep=ZIP-3` is how the reasoning behind a change is found.
 
 ## How to work in this repo
 
